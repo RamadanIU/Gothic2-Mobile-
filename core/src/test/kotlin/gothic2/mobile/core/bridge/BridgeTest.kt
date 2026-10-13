@@ -47,6 +47,13 @@ class BridgeTest {
     }
 
     @Test
+    fun `failed connection without handshake keeps manual mode`() {
+        modes.manual(ControlMode.COMBAT)
+        session.onLine("HELLO 1 ${"d".repeat(64)} ${session.token}")
+        assertEquals(ControlMode.COMBAT, arbiter.mode)
+    }
+
+    @Test
     fun `state before hello is a violation`() {
         session.onLine("STATE mode=WORLD weapon=NONE target=0 cansave=0")
         assertEquals(BridgeSession.Status.CLOSED, session.status)

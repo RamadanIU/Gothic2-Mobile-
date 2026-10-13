@@ -16,6 +16,8 @@ data class UserSettings(
     val buttonScale: Float = 1f,
     val overlayOpacity: Float = 0.6f,
     val masterVolume: Float = 1f,
+    /** Короткая вибрация при нажатии сенсорной кнопки. */
+    val haptics: Boolean = true,
 ) {
     enum class Quality { AUTO, COMPATIBILITY, BALANCED, QUALITY }
 

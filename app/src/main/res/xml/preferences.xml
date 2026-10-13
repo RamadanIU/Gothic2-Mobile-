@@ -36,6 +36,8 @@
             app:showSeekBarValue="true" />
         <SwitchPreferenceCompat app:key="invert_y" app:title="Инвертировать вертикаль" app:defaultValue="false" />
         <SwitchPreferenceCompat app:key="left_handed" app:title="Раскладка для левши" app:defaultValue="false" />
+        <SwitchPreferenceCompat app:key="haptics" app:title="Вибрация при нажатии кнопок" app:defaultValue="true" />
+        <Preference app:key="reset_layout" app:title="Сбросить расположение кнопок" app:summary="Перенести кнопки можно в игре: «Ещё» → «Настроить кнопки»" />
         <SeekBarPreference
             app:key="button_scale"
             app:title="Размер кнопок, %"

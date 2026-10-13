@@ -45,6 +45,7 @@ class SettingsStore(context: Context) {
             buttonScale = prefs.getInt("button_scale", 100) / 100f,
             overlayOpacity = prefs.getInt("overlay_opacity", 60) / 100f,
             masterVolume = prefs.getInt("volume", 100) / 100f,
+            haptics = prefs.getBoolean("haptics", true),
         )
     }.getOrElse { UserSettings() }
 

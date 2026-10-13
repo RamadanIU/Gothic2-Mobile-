@@ -10,10 +10,12 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
 import gothic2.mobile.app.storage.SafGameTree
+import gothic2.mobile.core.diagnostics.SessionJournal
 import gothic2.mobile.core.gamedata.BuildVerifier
 import gothic2.mobile.core.gamedata.BuildVerifier.Result
 import gothic2.mobile.core.gamedata.GameImporter
@@ -37,7 +39,13 @@ class LauncherActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (intent.getBooleanExtra(EXTRA_REIMPORT, false).not() && isGameReady()) {
-            startGame()
+            val interrupted = SessionJournal(app.paths.sessionMarker).takeInterrupted()
+            if (interrupted == null) {
+                startGame()
+            } else {
+                app.diagnostics.log("session", "interrupted: started=${interrupted.startedAt} last=${interrupted.lastHeartbeat}")
+                showRecovery()
+            }
             return
         }
         buildUi()
@@ -145,6 +153,20 @@ class LauncherActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /** Экран восстановления после нештатного завершения (раздел 17 плана). */
+    private fun showRecovery() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.recovery_title)
+            .setMessage(R.string.recovery_message)
+            .setPositiveButton(R.string.recovery_continue) { _, _ -> startGame() }
+            .setNeutralButton(R.string.recovery_restore) { _, _ ->
+                startActivity(Intent(this, SettingsActivity::class.java))
+                finish()
+            }
+            .setOnCancelListener { finish() }
+            .show()
     }
 
     private fun startGame() {

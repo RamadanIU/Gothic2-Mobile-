@@ -1,5 +1,6 @@
 package gothic2.mobile.core.runtime
 
+import gothic2.mobile.core.bridge.BridgeProtocol
 import gothic2.mobile.core.config.DeviceProfile
 import gothic2.mobile.core.config.RendererChain
 import gothic2.mobile.core.gamedata.SupportedBuild
@@ -31,11 +32,20 @@ data class RuntimePaths(
     val cacheDir: String,
 )
 
+/** Куда игровому адаптеру подключаться и чем подтверждать подлинность (раздел 12 плана). */
+data class BridgeEndpoint(val socketPath: String, val token: String)
+
 object LaunchSpecBuilder {
     /** DLL обёртки D3D7→D3D9, кладётся рядом с EXE (проверить имя для выбранной обёртки). */
     const val WRAPPER_DLL = "ddraw"
 
-    fun build(build: SupportedBuild, profile: DeviceProfile, paths: RuntimePaths, dxvkConf: String?): LaunchSpec {
+    fun build(
+        build: SupportedBuild,
+        profile: DeviceProfile,
+        paths: RuntimePaths,
+        dxvkConf: String?,
+        bridge: BridgeEndpoint? = null,
+    ): LaunchSpec {
         val winGameDir = "${paths.gameDrive}:\\${paths.gameDirOnDrive.replace('/', '\\')}"
         val exe = build.exePath.replace('/', '\\')
         val exeDir = exe.substringBeforeLast('\\', "")
@@ -61,6 +71,10 @@ object LaunchSpecBuilder {
             }
         }
         env.putAll(profile.translatorEnv)
+        if (bridge != null) {
+            env[BridgeProtocol.SOCKET_ENV] = bridge.socketPath
+            env[BridgeProtocol.TOKEN_ENV] = bridge.token
+        }
         return LaunchSpec(
             windowsExePath = "$winGameDir\\$exe",
             workingDir = if (exeDir.isEmpty()) winGameDir else "$winGameDir\\$exeDir",
