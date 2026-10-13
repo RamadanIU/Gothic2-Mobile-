@@ -6,6 +6,7 @@ import gothic2.mobile.core.config.GothicIniWriter
 import gothic2.mobile.core.config.GraphicsPreset
 import gothic2.mobile.core.config.IniFile
 import gothic2.mobile.core.config.RendererChain
+import gothic2.mobile.core.gamedata.GameVariant
 import gothic2.mobile.core.gamedata.PathGameTree
 import gothic2.mobile.core.gamedata.SupportedBuild
 import gothic2.mobile.core.runtime.BridgeEndpoint
@@ -25,7 +26,7 @@ class GameLauncher(private val app: GothicApplication, private val backend: Runt
 
     data class Launched(val spec: LaunchSpec, val graphics: GraphicsPreset)
 
-    fun prepareAndLaunch(build: SupportedBuild, profile: DeviceProfile, bridge: BridgeEndpoint?): Launched {
+    fun prepareAndLaunch(build: SupportedBuild, variant: GameVariant, profile: DeviceProfile, bridge: BridgeEndpoint?): Launched {
         val graphics = app.settings.userSettings().effectiveGraphics(profile)
         val root = app.paths.gameRoot
         val tree = PathGameTree(root)
@@ -40,6 +41,7 @@ class GameLauncher(private val app: GothicApplication, private val backend: Runt
         val dxvk = if (profile.renderer == RendererChain.D3D7_TO_D3D9_DXVK) GothicIniWriter.dxvkConf(graphics) else null
         val spec = LaunchSpecBuilder.build(
             build,
+            variant,
             profile,
             RuntimePaths(
                 wineprefix = app.paths.wineprefix.toString(),
@@ -54,7 +56,7 @@ class GameLauncher(private val app: GothicApplication, private val backend: Runt
             Files.createDirectories(p.parent)
             p.writeText(content)
         }
-        app.diagnostics.log("launch", "profile=${profile.id} renderer=${profile.renderer} ${graphics.width}x${graphics.height}@${graphics.fpsLimit}")
+        app.diagnostics.log("launch", "variant=${variant.id} profile=${profile.id} renderer=${profile.renderer} ${graphics.width}x${graphics.height}@${graphics.fpsLimit}")
         backend.prepare(app.components)
         backend.launch(spec)
         return Launched(spec, graphics)

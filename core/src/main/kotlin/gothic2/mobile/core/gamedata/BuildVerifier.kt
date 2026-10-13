@@ -3,7 +3,8 @@ package gothic2.mobile.core.gamedata
 import gothic2.mobile.core.util.Hashing
 
 /**
- * Определяет, является ли выбранная папка поддерживаемой Gothic II Classic.
+ * Определяет, является ли выбранная папка поддерживаемой сборкой Gothic II
+ * (Gold-издание с «Ночью Ворона» и классической игрой или отдельная Classic).
  *
  * Решение принимается по контрольной сумме EXE, а не по имени файла: обычный
  * `Gothic2.exe` в разных поставках может запускать разные версии.
@@ -35,7 +36,7 @@ class BuildVerifier(private val builds: List<SupportedBuild>) {
         val pinnedMatch = candidates.firstOrNull { (b, p) -> b.isPinned && b.exeSha256 == hashes[p] }
         if (pinnedMatch != null) {
             val (build, exe) = pinnedMatch
-            val missing = build.requiredFiles.filter { tree.resolve(it) == null }
+            val missing = missingFiles(tree, build)
             if (missing.isNotEmpty()) return Result.MissingFiles(build, missing)
             val corrupted = build.requiredSha256.filter { (path, expected) ->
                 val real = tree.resolve(path) ?: return@filter true
@@ -45,21 +46,24 @@ class BuildVerifier(private val builds: List<SupportedBuild>) {
             return Result.Supported(build, hashes.getValue(exe))
         }
 
-        val unpinned = candidates.firstOrNull { (b, _) -> !b.isPinned }
-        if (unpinned != null) {
-            val (build, exe) = unpinned
-            val missing = build.requiredFiles.filter { tree.resolve(it) == null }
-            if (missing.isNotEmpty()) return Result.MissingFiles(build, missing)
+        // Незакреплённые сборки различаются составом файлов: у Gold есть архивы дополнения,
+        // у отдельной Classic их быть не должно.
+        val unpinned = candidates.filter { (b, _) -> !b.isPinned }
+        val fitting = unpinned.firstOrNull { (b, _) -> missingFiles(tree, b).isEmpty() && presentForbidden(tree, b).isEmpty() }
+        if (fitting != null) {
+            val (build, exe) = fitting
             return Result.Unpinned(build, hashes.getValue(exe), addon)
         }
+        val closest = unpinned.firstOrNull { (b, _) -> presentForbidden(tree, b).isEmpty() }
+        if (closest != null) return Result.MissingFiles(closest.first, missingFiles(tree, closest.first))
         return Result.UnknownExe(hashes.values.first(), addon)
     }
 
-    /**
-     * Архивы дополнения «Ночь Ворона». Их наличие само по себе не означает, что Classic
-     * не запустится (Gold-издания содержат обе версии), но подсказывает пользователю,
-     * почему EXE не опознан.
-     */
+    private fun missingFiles(tree: GameTree, build: SupportedBuild) = build.requiredFiles.filter { tree.resolve(it) == null }
+
+    private fun presentForbidden(tree: GameTree, build: SupportedBuild) = build.forbiddenFiles.filter { tree.resolve(it) != null }
+
+    /** Архивы дополнения «Ночь Ворона» — признак Gold-издания. */
     fun hasAddonFiles(tree: GameTree): Boolean {
         val data = tree.resolve("Data") ?: return false
         return tree.list(data).any { !it.isDirectory && it.name.contains("addon", ignoreCase = true) }
@@ -72,10 +76,11 @@ class BuildVerifier(private val builds: List<SupportedBuild>) {
             is Result.Unpinned ->
                 "Найдена ${result.build.title}, но эталонная контрольная сумма ещё не закреплена. " +
                     "Запуск возможен только в режиме разработчика." +
-                    (if (result.addonFilesPresent) " Обнаружены файлы «Ночи Ворона»: убедитесь, что это Classic." else "")
+                    (if (result.addonFilesPresent) " Обнаружено дополнение «Ночь Ворона» (Gold-издание)." else "")
             is Result.UnknownExe ->
-                "Исполняемый файл не совпадает ни с одной поддерживаемой сборкой Gothic II Classic." +
-                    (if (result.addonFilesPresent) " Похоже, это Gothic II Gold / «Ночь Ворона» — она не поддерживается." else "")
+                "Исполняемый файл не совпадает ни с одной закреплённой сборкой Gothic II." +
+                    (if (result.addonFilesPresent) " Похоже на Gold-издание другой версии или поставки." else "") +
+                    " Сохраните отчёт о сборке и пришлите его разработчикам — по нему сборку можно добавить."
             is Result.MissingFiles -> "Не хватает файлов игры: ${result.missing.joinToString()}."
             is Result.Corrupted -> "Файлы игры повреждены: ${result.files.joinToString()}."
             Result.NotGothic2 -> "В выбранной папке не найдена установленная Gothic II. Выберите корневую папку игры."

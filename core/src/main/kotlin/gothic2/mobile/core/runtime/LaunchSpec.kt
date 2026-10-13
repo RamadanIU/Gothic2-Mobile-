@@ -3,6 +3,7 @@ package gothic2.mobile.core.runtime
 import gothic2.mobile.core.bridge.BridgeProtocol
 import gothic2.mobile.core.config.DeviceProfile
 import gothic2.mobile.core.config.RendererChain
+import gothic2.mobile.core.gamedata.GameVariant
 import gothic2.mobile.core.gamedata.SupportedBuild
 
 /**
@@ -41,6 +42,7 @@ object LaunchSpecBuilder {
 
     fun build(
         build: SupportedBuild,
+        variant: GameVariant,
         profile: DeviceProfile,
         paths: RuntimePaths,
         dxvkConf: String?,
@@ -78,7 +80,7 @@ object LaunchSpecBuilder {
         return LaunchSpec(
             windowsExePath = "$winGameDir\\$exe",
             workingDir = if (exeDir.isEmpty()) winGameDir else "$winGameDir\\$exeDir",
-            args = build.launchArgs,
+            args = variant.args ?: error("Вариант ${variant.id} ещё не подтверждён: нет аргументов запуска"),
             env = env,
             prefixSetup = listOf(
                 listOf("reg", "add", "HKCU\\Software\\Wine", "/v", "Version", "/d", profile.windowsVersion.wineName, "/f"),

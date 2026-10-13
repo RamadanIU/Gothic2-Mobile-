@@ -6,6 +6,7 @@ import gothic2.mobile.app.storage.Diagnostics
 import gothic2.mobile.app.storage.SettingsStore
 import gothic2.mobile.core.gamedata.BuildVerifier
 import gothic2.mobile.core.gamedata.GameImporter
+import gothic2.mobile.core.gamedata.GameVariant
 import gothic2.mobile.core.gamedata.SupportedBuild
 import gothic2.mobile.core.runtime.RuntimeComponents
 import gothic2.mobile.core.saves.SaveManager
@@ -37,8 +38,12 @@ class GothicApplication : Application() {
     /** Импортированная сборка или null, если игра ещё не импортирована. */
     fun importedBuild(): SupportedBuild? = settings.importedBuildId?.let { id -> builds.firstOrNull { it.id == id } }
 
-    fun saveManager(build: SupportedBuild): SaveManager =
-        SaveManager(paths.gameRoot.resolve(build.savesDir), paths.backups)
+    /** Выбранный игроком вариант или вариант сборки по умолчанию. */
+    fun selectedVariant(build: SupportedBuild): GameVariant? = build.variant(settings.variantId) ?: build.defaultVariant()
+
+    /** Сохранения варианта; резервные копии разных вариантов не смешиваются. */
+    fun saveManager(build: SupportedBuild, variant: GameVariant): SaveManager =
+        SaveManager(paths.gameRoot.resolve(build.savesDirOf(variant)), paths.backups.resolve(variant.id))
 
     override fun onCreate() {
         super.onCreate()

@@ -9,17 +9,21 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import gothic2.mobile.app.BuildConfig
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
 import gothic2.mobile.app.storage.SafGameTree
 import gothic2.mobile.core.diagnostics.SessionJournal
+import gothic2.mobile.core.gamedata.BuildFingerprint
 import gothic2.mobile.core.gamedata.BuildVerifier
 import gothic2.mobile.core.gamedata.BuildVerifier.Result
 import gothic2.mobile.core.gamedata.GameImporter
 import gothic2.mobile.core.gamedata.PathGameTree
+import gothic2.mobile.core.gamedata.SupportedBuild
 
 /**
  * Первый запуск: импорт легальной копии игры. При каждом следующем запуске экран
@@ -30,10 +34,17 @@ class LauncherActivity : AppCompatActivity() {
     private lateinit var progress: ProgressBar
     private lateinit var choose: Button
     private lateinit var start: Button
+    private lateinit var report: Button
     private var pending: Pair<Uri, Result>? = null
+    private var verifiedUri: Uri? = null
 
     private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) verify(uri)
+    }
+
+    private val saveReport = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { out ->
+        val source = verifiedUri
+        if (out != null && source != null) writeReport(source, out)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,6 +64,7 @@ class LauncherActivity : AppCompatActivity() {
 
     private fun isGameReady(): Boolean {
         val build = app.importedBuild() ?: return false
+        if (app.selectedVariant(build) == null) return false
         val sha = app.settings.importedExeSha256 ?: return false
         // Быстрая проверка на месте: EXE не подменён и на месте после обновлений.
         val exe = PathGameTree(app.paths.gameRoot).resolve(build.exePath) ?: return false
@@ -79,6 +91,11 @@ class LauncherActivity : AppCompatActivity() {
             visibility = View.GONE
             setOnClickListener { pending?.let { (uri, r) -> import(uri, r) } }
         }
+        report = Button(this).apply {
+            text = getString(R.string.build_report_button)
+            visibility = View.GONE
+            setOnClickListener { saveReport.launch("gothic2-build-report.txt") }
+        }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -87,6 +104,7 @@ class LauncherActivity : AppCompatActivity() {
             addView(progress)
             addView(choose)
             addView(start)
+            addView(report)
         })
     }
 
@@ -106,6 +124,9 @@ class LauncherActivity : AppCompatActivity() {
                     message.text = text
                     pending = if (allowed) uri to r else null
                     start.visibility = if (allowed) View.VISIBLE else View.GONE
+                    // Отчёт полезен и для неопознанной копии: по нему сборку можно добавить.
+                    verifiedUri = uri.takeIf { r != Result.NotGothic2 }
+                    report.visibility = if (verifiedUri != null) View.VISIBLE else View.GONE
                 }
             }
         }
@@ -142,7 +163,7 @@ class LauncherActivity : AppCompatActivity() {
                     app.settings.importedBuildId = build.id
                     app.settings.importedExeSha256 = sha
                     app.diagnostics.log("import", "done")
-                    startGame()
+                    chooseVariantThenStart(build)
                 }
                 outcome.onFailure {
                     app.diagnostics.log("import", "failed: $it")
@@ -166,6 +187,53 @@ class LauncherActivity : AppCompatActivity() {
                 finish()
             }
             .setOnCancelListener { finish() }
+            .show()
+    }
+
+    /** Отчёт о сборке из выбранной папки — без копирования игры в приложение. */
+    private fun writeReport(source: Uri, out: Uri) {
+        report.isEnabled = false
+        progress.visibility = View.VISIBLE
+        app.background.execute {
+            val result = runCatching {
+                val r = BuildFingerprint.collect(
+                    SafGameTree(contentResolver, source),
+                    app.verifier,
+                    onProgress = { done, total, _ ->
+                        val permille = if (total == 0L) 1000 else (done * 1000 / total).toInt()
+                        runOnUiThread {
+                            progress.progress = permille
+                            message.text = getString(R.string.build_report_progress, permille / 10)
+                        }
+                    },
+                    isCancelled = { isFinishing },
+                )
+                contentResolver.openOutputStream(out)!!.use { it.write(BuildFingerprint.format(r, BuildConfig.VERSION_NAME).toByteArray()) }
+            }
+            runOnUiThread {
+                report.isEnabled = true
+                progress.visibility = View.GONE
+                message.text = result.fold({ getString(R.string.build_report_saved) }, { getString(R.string.import_failed, it.message) })
+            }
+        }
+    }
+
+    /** Если в сборке несколько подтверждённых вариантов (Gold: «Ночь Ворона» и классика) — спросить. */
+    private fun chooseVariantThenStart(build: SupportedBuild) {
+        val variants = build.definedVariants()
+        if (variants.size < 2) {
+            app.settings.variantId = variants.firstOrNull()?.id
+            startGame()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.variant_choose_title)
+            .setItems(variants.map { it.title }.toTypedArray()) { _, i ->
+                app.settings.variantId = variants[i].id
+                Toast.makeText(this, R.string.variant_change_hint, Toast.LENGTH_LONG).show()
+                startGame()
+            }
+            .setCancelable(false)
             .show()
     }
 

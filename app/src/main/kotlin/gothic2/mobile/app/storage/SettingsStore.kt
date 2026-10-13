@@ -14,6 +14,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_BUILD, null)
         set(v) = prefs.edit { putString(KEY_BUILD, v) }
 
+    /** Выбранный вариант запуска (например, «Ночь Ворона» или классическая игра). */
+    var variantId: String?
+        get() = prefs.getString(KEY_VARIANT, null)
+        set(v) = prefs.edit { putString(KEY_VARIANT, v) }
+
     var importedExeSha256: String?
         get() = prefs.getString(KEY_EXE, null)
         set(v) = prefs.edit { putString(KEY_EXE, v) }
@@ -52,6 +57,7 @@ class SettingsStore(context: Context) {
     private companion object {
         const val KEY_BUILD = "imported_build_id"
         const val KEY_EXE = "imported_exe_sha256"
+        const val KEY_VARIANT = "game_variant"
         const val KEY_DEV = "dev_mode"
         const val KEY_LAYOUT = "layout_overrides"
     }

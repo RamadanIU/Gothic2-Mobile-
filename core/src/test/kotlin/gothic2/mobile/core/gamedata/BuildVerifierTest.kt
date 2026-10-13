@@ -44,13 +44,15 @@ class BuildVerifierTest {
     }
 
     @Test
-    fun `unknown exe with addon files hints at gold`() {
+    fun `unknown exe with addon files suggests sending build report`() {
         install(addon = true)
         val v = BuildVerifier(SupportedBuild.parseAll(manifest("a".repeat(64))))
         val r = v.verify(PathGameTree(root))
         assertIs<BuildVerifier.Result.UnknownExe>(r)
         assertTrue(r.addonFilesPresent)
-        assertTrue("Ночь Ворона" in BuildVerifier.describe(r))
+        val text = BuildVerifier.describe(r)
+        assertTrue("Gold" in text)
+        assertTrue("отчёт о сборке" in text)
     }
 
     @Test
