@@ -23,7 +23,7 @@ class RuntimeTest {
     @Test
     fun `dxvk chain overrides wrapper and d3d9 and writes conf`() {
         val profile = DeviceProfiles.KNOWN.first { it.renderer == RendererChain.D3D7_TO_D3D9_DXVK }
-        val spec = LaunchSpecBuilder.build(build, profile, paths, GothicIniWriter.dxvkConf(profile.graphics))
+        val spec = LaunchSpecBuilder.build(build, build.variants.single(), profile, paths, GothicIniWriter.dxvkConf(profile.graphics))
         assertEquals("C:\\Gothic2\\System\\Gothic2.exe", spec.windowsExePath)
         assertEquals("C:\\Gothic2\\System", spec.workingDir)
         assertEquals("ddraw=n,b;d3d9=n,b", spec.env["WINEDLLOVERRIDES"])
@@ -34,14 +34,14 @@ class RuntimeTest {
 
     @Test
     fun `bridge endpoint is passed to adapter via environment`() {
-        val spec = LaunchSpecBuilder.build(build, DeviceProfiles.FALLBACK, paths, null, BridgeEndpoint("/data/bridge.sock", "ab".repeat(16)))
+        val spec = LaunchSpecBuilder.build(build, build.variants.single(), DeviceProfiles.FALLBACK, paths, null, BridgeEndpoint("/data/bridge.sock", "ab".repeat(16)))
         assertEquals("/data/bridge.sock", spec.env["G2M_BRIDGE_SOCKET"])
         assertEquals("ab".repeat(16), spec.env["G2M_BRIDGE_TOKEN"])
     }
 
     @Test
     fun `wined3d chain uses builtin libraries`() {
-        val spec = LaunchSpecBuilder.build(build, DeviceProfiles.FALLBACK, paths, null)
+        val spec = LaunchSpecBuilder.build(build, build.variants.single(), DeviceProfiles.FALLBACK, paths, null)
         assertEquals("ddraw=b;d3d9=b", spec.env["WINEDLLOVERRIDES"])
         assertTrue(spec.generatedFiles.isEmpty())
     }

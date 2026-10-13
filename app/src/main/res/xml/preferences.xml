@@ -2,6 +2,13 @@
 <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
+    <PreferenceCategory app:title="Игра">
+        <ListPreference
+            app:key="game_variant"
+            app:title="Вариант игры"
+            app:useSimpleSummaryProvider="true" />
+    </PreferenceCategory>
+
     <PreferenceCategory app:title="Изображение">
         <ListPreference
             app:key="quality"
@@ -71,6 +78,7 @@
     </PreferenceCategory>
 
     <PreferenceCategory app:title="Обслуживание">
+        <Preference app:key="build_report" app:title="Отчёт о сборке игры" app:summary="Контрольные суммы файлов вашей копии — для закрепления сборки. Без игровых файлов и личных данных" />
         <Preference app:key="export_diagnostics" app:title="Экспортировать журнал диагностики" app:summary="Без персональных данных: только события среды и ошибки" />
         <Preference app:key="reimport_game" app:title="Импортировать файлы игры заново" />
         <SwitchPreferenceCompat app:key="dev_mode" app:title="Режим разработчика" app:summary="Разрешает запуск незакреплённых сборок" />

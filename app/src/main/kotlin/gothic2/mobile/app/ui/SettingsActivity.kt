@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.SwitchPreferenceCompat
@@ -13,6 +14,9 @@ import gothic2.mobile.app.BuildConfig
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
 import gothic2.mobile.core.config.UserSettings
+import gothic2.mobile.core.gamedata.BuildFingerprint
+import gothic2.mobile.core.gamedata.PathGameTree
+import gothic2.mobile.core.saves.SaveManager
 
 /** Только понятные игровые параметры; технические настройки среды игроку не показываются. */
 class SettingsActivity : AppCompatActivity() {
@@ -26,21 +30,47 @@ class SettingsActivity : AppCompatActivity() {
     class SettingsFragment : PreferenceFragmentCompat() {
         private var before: UserSettings? = null
 
+        /** Сохранения выбранного варианта игры; null — игра ещё не импортирована. */
+        private fun currentSaves(): SaveManager? {
+            val app = requireContext().app
+            val build = app.importedBuild() ?: return null
+            val variant = app.selectedVariant(build) ?: return null
+            return app.saveManager(build, variant)
+        }
+
         private val exportSaves = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
-            val build = requireContext().app.importedBuild() ?: return@registerForActivityResult
+            val saves = currentSaves() ?: return@registerForActivityResult
             if (uri == null) return@registerForActivityResult
+            val resolver = requireContext().contentResolver
             runIo({
-                requireContext().contentResolver.openOutputStream(uri)!!.use { requireContext().app.saveManager(build).exportZip(it) }
+                resolver.openOutputStream(uri)!!.use { saves.exportZip(it) }
                 getString(R.string.saves_exported)
             })
         }
 
         private val importSaves = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            val build = requireContext().app.importedBuild() ?: return@registerForActivityResult
+            val saves = currentSaves() ?: return@registerForActivityResult
             if (uri == null) return@registerForActivityResult
+            val resolver = requireContext().contentResolver
             runIo({
-                val slots = requireContext().contentResolver.openInputStream(uri)!!.use { requireContext().app.saveManager(build).importZip(it) }
+                val slots = resolver.openInputStream(uri)!!.use { saves.importZip(it) }
                 getString(R.string.saves_imported, slots.size)
+            })
+        }
+
+        private val exportBuildReport = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+            if (uri == null) return@registerForActivityResult
+            val app = requireContext().app
+            val resolver = requireContext().contentResolver
+            val build = app.importedBuild()
+            runIo({
+                val report = BuildFingerprint.collect(
+                    PathGameTree(app.paths.gameRoot),
+                    app.verifier,
+                    savesDirs = build?.allSavesDirs() ?: listOf("Saves"),
+                )
+                resolver.openOutputStream(uri)!!.use { it.write(BuildFingerprint.format(report, BuildConfig.VERSION_NAME).toByteArray()) }
+                getString(R.string.build_report_saved)
             })
         }
 
@@ -63,6 +93,8 @@ class SettingsActivity : AppCompatActivity() {
             click("export_saves") { exportSaves.launch("gothic2-saves.zip") }
             click("import_saves") { importSaves.launch(arrayOf("application/zip")) }
             click("restore_backup") { showBackups() }
+            click("build_report") { exportBuildReport.launch("gothic2-build-report.txt") }
+            setupVariantPreference()
             click("reset_layout") {
                 app.settings.layoutOverrides = emptyMap()
                 Toast.makeText(requireContext(), R.string.layout_reset_done, Toast.LENGTH_SHORT).show()
@@ -82,10 +114,24 @@ class SettingsActivity : AppCompatActivity() {
             before = now
         }
 
+        /** Список вариантов запуска берётся из манифеста сборки, а не задаётся в XML. */
+        private fun setupVariantPreference() {
+            val app = requireContext().app
+            val pref = findPreference<ListPreference>("game_variant") ?: return
+            val build = app.importedBuild()
+            val variants = build?.definedVariants().orEmpty()
+            if (build == null || variants.size < 2) {
+                pref.isVisible = false
+                return
+            }
+            pref.entries = variants.map { it.title }.toTypedArray()
+            pref.entryValues = variants.map { it.id }.toTypedArray()
+            pref.value = app.selectedVariant(build)?.id
+        }
+
         private fun showBackups() {
             val app = requireContext().app
-            val build = app.importedBuild() ?: return
-            val saves = app.saveManager(build)
+            val saves = currentSaves() ?: return
             val all = saves.slots().union(app.paths.backups.toFile().list().orEmpty().toList())
                 .flatMap { saves.listBackups(it) }
                 .sortedByDescending { it.id }

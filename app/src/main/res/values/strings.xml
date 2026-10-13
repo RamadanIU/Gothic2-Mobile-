@@ -32,4 +32,9 @@
     <string name="recovery_continue">Продолжить</string>
     <string name="recovery_restore">Резервные копии</string>
     <string name="layout_reset_done">Расположение кнопок сброшено.</string>
+    <string name="build_report_saved">Отчёт о сборке сохранён.</string>
+    <string name="build_report_button">Сохранить отчёт о сборке</string>
+    <string name="build_report_progress">Подсчёт контрольных сумм: %1$d%%</string>
+    <string name="variant_choose_title">Во что играем?</string>
+    <string name="variant_change_hint">Вариант можно поменять в настройках.</string>
 </resources>

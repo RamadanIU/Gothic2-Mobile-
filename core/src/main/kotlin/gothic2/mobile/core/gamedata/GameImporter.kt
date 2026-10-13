@@ -11,7 +11,7 @@ import kotlin.io.path.exists
  *
  * Импорт идёт во временный каталог и становится видимым только после полной копии и
  * повторной проверки EXE (атомарное переименование). Прерванный импорт не оставляет
- * «полуустановленную» игру. Каталог сохранений не копируется поверх существующих
+ * «полуустановленную» игру. Каталоги сохранений не копируются поверх существующих
  * сохранений приложения — их импорт выполняет [gothic2.mobile.core.saves.SaveManager].
  */
 class GameImporter(private val target: Path) {
@@ -29,9 +29,9 @@ class GameImporter(private val target: Path) {
         progress: Progress = Progress { _, _, _ -> },
         isCancelled: () -> Boolean = { false },
     ) {
-        val savesPrefix = build.savesDir.lowercase().trimEnd('/') + "/"
+        val savesPrefixes = build.allSavesDirs().map { it.lowercase().trimEnd('/') + "/" }
         val files = source.walkFiles()
-            .filterNot { (p, _) -> p.lowercase().startsWith(savesPrefix) }
+            .filterNot { (p, _) -> savesPrefixes.any { p.lowercase().startsWith(it) } }
             .toList()
         for ((p, _) in files) require(FileOps.isSafeRelative(p)) { "Недопустимый путь: $p" }
         val total = files.sumOf { it.second }

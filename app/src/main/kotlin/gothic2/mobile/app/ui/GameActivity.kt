@@ -49,6 +49,7 @@ import gothic2.mobile.core.config.UserSettings
 import gothic2.mobile.core.config.ViewportFit
 import gothic2.mobile.core.diagnostics.SessionJournal
 import gothic2.mobile.core.diagnostics.TimedInputSink
+import gothic2.mobile.core.gamedata.GameVariant
 import gothic2.mobile.core.input.CameraMapper
 import gothic2.mobile.core.input.ControlMode
 import gothic2.mobile.core.input.GameKey
@@ -85,6 +86,7 @@ class GameActivity : AppCompatActivity() {
     private lateinit var editorModeButton: Button
     private lateinit var journal: SessionJournal
     private var bridge: BridgeServer? = null
+    private lateinit var variant: GameVariant
     private var graphics: GraphicsPreset? = null
     private var audioFocus: AudioFocusRequest? = null
     private var thermalWarned = false
@@ -131,6 +133,8 @@ class GameActivity : AppCompatActivity() {
         // поэтому показываем экран восстановления, а не делаем вид, что ничего не случилось.
         if (savedInstanceState != null) return finishToLauncher()
         val build = app.importedBuild() ?: return finishToLauncher()
+        val variant = app.selectedVariant(build) ?: return finishToLauncher()
+        this.variant = variant
         settings = app.settings.userSettings()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterImmersive()
@@ -212,7 +216,7 @@ class GameActivity : AppCompatActivity() {
             journal.begin()
             val profile = DeviceProfiles.select(GpuInfo.rendererName())
             app.diagnostics.log("game", "profile ${profile.id} verified=${profile.verified}")
-            runCatching { GameLauncher(app, backend).prepareAndLaunch(build, profile, endpoint) }
+            runCatching { GameLauncher(app, backend).prepareAndLaunch(build, variant, profile, endpoint) }
                 .onSuccess { launched -> main.post { graphics = launched.graphics; applyViewport() } }
                 .onFailure { e -> main.post { showFatal(e.message ?: e.toString()) } }
         }
@@ -241,7 +245,7 @@ class GameActivity : AppCompatActivity() {
                 override fun onSaveDone(slot: String) {
                     val build = app.importedBuild() ?: return
                     app.background.execute {
-                        runCatching { SaveBackupPolicy(app.saveManager(build)).onSaveCompleted(slot) }
+                        runCatching { SaveBackupPolicy(app.saveManager(build, variant)).onSaveCompleted(slot) }
                             .onFailure { app.diagnostics.log("saves", "backup after save failed: $it") }
                     }
                 }
@@ -288,7 +292,7 @@ class GameActivity : AppCompatActivity() {
                 // Запись сохранений гарантированно окончена — резервируем изменившиеся слоты.
                 val build = app.importedBuild()
                 if (build != null) app.background.execute {
-                    runCatching { SaveBackupPolicy(app.saveManager(build)).onGameExited() }
+                    runCatching { SaveBackupPolicy(app.saveManager(build, variant)).onGameExited() }
                         .onFailure { app.diagnostics.log("saves", "backup failed: $it") }
                 }
                 finish()
