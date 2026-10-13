@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Gothic II</string>
+    <string name="settings_title">Настройки</string>
+    <string name="import_intro">Для игры нужна ваша легально установленная копия Gothic II Classic. Выберите корневую папку игры (в ней есть папки System и Data). Файлы будут скопированы во внутреннее хранилище приложения.</string>
+    <string name="import_choose">Выбрать папку игры</string>
+    <string name="import_checking">Проверка файлов игры…</string>
+    <string name="import_copying">Копирование: %1$d%%</string>
+    <string name="import_start">Импортировать и играть</string>
+    <string name="import_failed">Ошибка импорта: %1$s</string>
+    <string name="dev_unpinned_warning">Режим разработчика: сборка не закреплена, запуск не гарантирован.</string>
+    <string name="runtime_stub">Среда исполнения ещё не подключена (этап 2 плана). Управление и сохранения работают в тестовом режиме: нажатия записываются в журнал диагностики.</string>
+    <string name="runtime_stub_echo">%1$s\n\n%2$s</string>
+    <string name="quickload_confirm">Загрузить быстрое сохранение? Несохранённый прогресс будет потерян.</string>
+    <string name="quit_confirm">Выйти из игры? Несохранённый прогресс будет потерян.</string>
+    <string name="yes">Да</string>
+    <string name="no">Нет</string>
+    <string name="restart_required">Изменение применится после перезапуска игры.</string>
+    <string name="saves_exported">Сохранения экспортированы.</string>
+    <string name="saves_imported">Импортировано слотов: %1$d</string>
+    <string name="saves_error">Ошибка: %1$s</string>
+    <string name="no_backups">Резервных копий пока нет.</string>
+    <string name="restore_done">Сохранение восстановлено.</string>
+    <string name="uninstall_warning">Удаление приложения удалит внутренние данные, включая сохранения. Регулярно экспортируйте их.</string>
+</resources>

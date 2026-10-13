@@ -1,0 +1,19 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+*.jks
+# Игровые файлы никогда не попадают в репозиторий (см. docs/LEGAL.md).
+/game-data/
+*.vdf
+*.VDF
+*.mod
+*.MOD
