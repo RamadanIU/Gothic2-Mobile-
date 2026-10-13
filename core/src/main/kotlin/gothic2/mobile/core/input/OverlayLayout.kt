@@ -18,8 +18,14 @@ sealed interface TouchCommand {
     /** Ручная смена панели (уровень 1, без игрового адаптера). */
     data class SwitchMode(val mode: ControlMode) : TouchCommand
 
-    /** Раскрывающееся меню редких действий и быстрых слотов — обрабатывает приложение. */
+    /** Раскрывающееся меню редких действий — обрабатывает приложение. */
     data object QuickMenu : TouchCommand
+
+    /** Радиальное меню быстрых слотов: выбор направлением пальца, отпускание — применение. */
+    data object QuickSlots : TouchCommand
+
+    /** Повторить последний выбранный быстрый слот (например, последнее заклинание). */
+    data object LastSlot : TouchCommand
 }
 
 /** Прямоугольник в нормированных координатах безопасной области (0..1). */
@@ -112,6 +118,10 @@ data class OverlayLayout(
             c += ControlSpec("context", "Действие", 0.88f, 0.72f, 40f, world, TouchCommand.ContextAction)
             c += ControlSpec("jump", "Прыжок", 0.76f, 0.86f, 32f, world + combat, TouchCommand.Hold(GameKey.JUMP))
             c += ControlSpec("weapon", "Оружие", 0.94f, 0.32f, 30f, WORLD_ALL, TouchCommand.Tap(GameKey.WEAPON))
+
+            // Быстрые слоты: радиальное меню и повтор последнего выбора.
+            c += ControlSpec("slots", "Слоты", 0.62f, 0.88f, 30f, WORLD_ALL, TouchCommand.QuickSlots)
+            c += ControlSpec("last_slot", "Посл.", 0.66f, 0.70f, 28f, WORLD_ALL, TouchCommand.LastSlot)
 
             // Ближний бой: ромб «вперёд / влево / вправо / блок».
             c += ControlSpec("atk_fwd", "Удар", 0.86f, 0.52f, 34f, combat, TouchCommand.Attack(AttackDirection.FORWARD))

@@ -19,3 +19,8 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(kotlin("test-junit"))
 }
+
+tasks.test {
+    // Имена файлов в архивах и сохранениях бывают нелатинскими; на Android кодировка путей — UTF-8.
+    environment("LC_ALL", "C.UTF-8")
+}

@@ -36,11 +36,27 @@ class TouchRouter(
     /** Дополнительный запас к радиусу кнопки, dp: касание краем пальца засчитывается. */
     var hitSlopDp: Float = 8f
 
+    /** Типы содержимого быстрых слотов от адаптера (номер → тип); пусто — только номера. */
+    var slotKinds: Map<Int, String> = emptyMap()
+
+    /** Последний выбранный быстрый слот — для кнопки «Посл.». */
+    var lastSlot: GameKey? = null
+        private set
+
+    /** Вызывается при нажатии любой кнопки — для тактильного отклика. */
+    var onButtonPressed: (ControlSpec) -> Unit = {}
+
     sealed interface Owner {
         data class Joystick(val originX: Float, val originY: Float) : Owner
         data class Camera(var lastX: Float, var lastY: Float) : Owner
         data class Button(val spec: ControlSpec) : Owner
+        data class Radial(val spec: ControlSpec, val originX: Float, val originY: Float, var x: Float, var y: Float) : Owner {
+            val dx get() = x - originX
+            val dy get() = y - originY
+        }
     }
+
+    fun radialMenu(): RadialMenu = RadialMenu.quickSlots(RADIAL_DEAD_ZONE_DP * viewport.density, slotKinds)
 
     private val pointers = HashMap<Int, Owner>()
 
@@ -50,7 +66,9 @@ class TouchRouter(
 
     fun onPointerDown(pointerId: Int, x: Float, y: Float) {
         pointers.remove(pointerId)?.let { end(pointerId, it) }
-        val owner = hitButton(x, y)?.let { Owner.Button(it) }
+        val owner = hitButton(x, y)?.let { spec ->
+            if (spec.command == TouchCommand.QuickSlots) Owner.Radial(spec, x, y, x, y) else Owner.Button(spec)
+        }
             ?: run {
                 val nx = viewport.toNormX(x)
                 val ny = viewport.toNormY(y)
@@ -62,7 +80,14 @@ class TouchRouter(
                 }
             } ?: return
         pointers[pointerId] = owner
-        if (owner is Owner.Button) begin(pointerId, owner.spec)
+        when (owner) {
+            is Owner.Button -> {
+                begin(pointerId, owner.spec)
+                onButtonPressed(owner.spec)
+            }
+            is Owner.Radial -> onButtonPressed(owner.spec)
+            else -> Unit
+        }
     }
 
     fun onPointerMove(pointerId: Int, x: Float, y: Float) {
@@ -79,6 +104,10 @@ class TouchRouter(
                 arbiter.onCameraDelta(x - owner.lastX, y - owner.lastY)
                 owner.lastX = x
                 owner.lastY = y
+            }
+            is Owner.Radial -> {
+                owner.x = x
+                owner.y = y
             }
             is Owner.Button, null -> Unit
         }
@@ -99,8 +128,10 @@ class TouchRouter(
         val visible = visibleControls().map { it.id }.toSet()
         pointers.entries.removeAll { (id, o) ->
             val stale = o is Owner.Button && o.spec.id !in visible ||
+                o is Owner.Radial && o.spec.id !in visible ||
                 !arbiter.mode.isInWorld && (o is Owner.Joystick || o is Owner.Camera)
-            if (stale) end(id, o)
+            // Радиальное меню при смене панели отменяется без выбора слота.
+            if (stale && o !is Owner.Radial) end(id, o)
             stale
         }
     }
@@ -125,6 +156,8 @@ class TouchRouter(
             is TouchCommand.Attack -> arbiter.requestAttack(cmd.direction)
             TouchCommand.Block -> arbiter.setBlock(true)
             TouchCommand.ContextAction -> arbiter.setContextAction(true)
+            TouchCommand.LastSlot -> lastSlot?.let(arbiter::tap)
+            TouchCommand.QuickSlots -> Unit // обрабатывается как Owner.Radial
             is TouchCommand.SwitchMode, TouchCommand.QuickMenu -> onUiCommand(cmd)
         }
     }
@@ -133,6 +166,14 @@ class TouchRouter(
         when (owner) {
             is Owner.Joystick -> arbiter.onJoystickReleased()
             is Owner.Camera -> Unit
+            is Owner.Radial -> {
+                val menu = radialMenu()
+                menu.select(owner.dx, owner.dy)?.let { i ->
+                    val key = menu.items[i].key
+                    lastSlot = key
+                    arbiter.tap(key)
+                }
+            }
             is Owner.Button -> when (owner.spec.command) {
                 is TouchCommand.Hold -> arbiter.onHoldEnd(holderId(pointerId))
                 TouchCommand.Block -> arbiter.setBlock(false)
@@ -140,5 +181,9 @@ class TouchRouter(
                 else -> Unit
             }
         }
+    }
+
+    private companion object {
+        const val RADIAL_DEAD_ZONE_DP = 28f
     }
 }

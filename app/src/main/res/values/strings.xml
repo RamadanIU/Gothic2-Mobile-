@@ -22,4 +22,14 @@
     <string name="no_backups">Резервных копий пока нет.</string>
     <string name="restore_done">Сохранение восстановлено.</string>
     <string name="uninstall_warning">Удаление приложения удалит внутренние данные, включая сохранения. Регулярно экспортируйте их.</string>
+    <string name="thermal_warning">Телефон сильно нагрелся. Снизьте качество или дальность видимости в настройках.</string>
+    <string name="latency_line">Задержка ввода: p50 %1$d мс, p95 %2$d мс</string>
+    <string name="editor_mode">Панель: %1$s</string>
+    <string name="editor_reset">Сбросить</string>
+    <string name="editor_done">Готово</string>
+    <string name="recovery_title">Игра была прервана</string>
+    <string name="recovery_message">Прошлый сеанс завершился без выхода из игры: Android выгрузил её из памяти, игра закрылась из списка задач или произошёл сбой. Прогресс после последнего сохранения мог быть потерян. Сохранения не тронуты — загрузите нужное из главного меню.</string>
+    <string name="recovery_continue">Продолжить</string>
+    <string name="recovery_restore">Резервные копии</string>
+    <string name="layout_reset_done">Расположение кнопок сброшено.</string>
 </resources>

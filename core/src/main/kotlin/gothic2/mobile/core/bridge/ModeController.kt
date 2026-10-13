@@ -29,6 +29,8 @@ class ModeController(
     }
 
     override fun onClosed(reason: String) {
+        // Соединение без рукопожатия не меняет режим, выбранный игроком вручную.
+        if (!adapterActive) return
         adapterActive = false
         set(ControlMode.WORLD)
     }

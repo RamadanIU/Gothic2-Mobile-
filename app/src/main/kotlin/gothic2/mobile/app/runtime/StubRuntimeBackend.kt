@@ -14,7 +14,10 @@ import gothic2.mobile.core.runtime.RuntimeState
  * Позволяет на реальном телефоне проверять оверлей, арбитр ввода, жизненный цикл и
  * сохранения: все события ввода пишутся в журнал диагностики и в [onInputEcho].
  */
-class StubRuntimeBackend(private val diagnostics: Diagnostics) : RuntimeBackend {
+class StubRuntimeBackend(
+    private val diagnostics: Diagnostics,
+    private val preparer: RuntimePreparer? = null,
+) : RuntimeBackend {
     override val name = "stub"
     private val main = Handler(Looper.getMainLooper())
     private val listeners = mutableListOf<(RuntimeState) -> Unit>()
@@ -32,7 +35,9 @@ class StubRuntimeBackend(private val diagnostics: Diagnostics) : RuntimeBackend 
     override fun prepare(components: RuntimeComponents) {
         val unpinned = components.unpinned().map { it.id }
         diagnostics.log("runtime", "stub prepare; unpinned components: $unpinned")
-        emit(RuntimeState.Preparing("stub", 1f))
+        // Установка компонентов проходит по-настоящему, даже если запуск пока заглушка.
+        val report = preparer?.prepare(components)
+        emit(RuntimeState.Preparing("components: ${report?.installed.orEmpty()} missing: ${report?.missing.orEmpty()}", 1f))
     }
 
     override fun launch(spec: LaunchSpec) {

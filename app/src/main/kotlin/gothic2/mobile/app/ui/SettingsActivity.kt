@@ -63,6 +63,10 @@ class SettingsActivity : AppCompatActivity() {
             click("export_saves") { exportSaves.launch("gothic2-saves.zip") }
             click("import_saves") { importSaves.launch(arrayOf("application/zip")) }
             click("restore_backup") { showBackups() }
+            click("reset_layout") {
+                app.settings.layoutOverrides = emptyMap()
+                Toast.makeText(requireContext(), R.string.layout_reset_done, Toast.LENGTH_SHORT).show()
+            }
             click("export_diagnostics") { exportLog.launch("gothic2-diagnostics.txt") }
             click("reimport_game") {
                 startActivity(Intent(requireContext(), LauncherActivity::class.java).putExtra(LauncherActivity.EXTRA_REIMPORT, true))

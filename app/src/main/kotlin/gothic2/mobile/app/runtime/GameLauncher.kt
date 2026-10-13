@@ -3,10 +3,12 @@ package gothic2.mobile.app.runtime
 import gothic2.mobile.app.GothicApplication
 import gothic2.mobile.core.config.DeviceProfile
 import gothic2.mobile.core.config.GothicIniWriter
+import gothic2.mobile.core.config.GraphicsPreset
 import gothic2.mobile.core.config.IniFile
 import gothic2.mobile.core.config.RendererChain
 import gothic2.mobile.core.gamedata.PathGameTree
 import gothic2.mobile.core.gamedata.SupportedBuild
+import gothic2.mobile.core.runtime.BridgeEndpoint
 import gothic2.mobile.core.runtime.LaunchSpec
 import gothic2.mobile.core.runtime.LaunchSpecBuilder
 import gothic2.mobile.core.runtime.RuntimeBackend
@@ -21,7 +23,9 @@ import kotlin.io.path.writeText
  */
 class GameLauncher(private val app: GothicApplication, private val backend: RuntimeBackend) {
 
-    fun prepareAndLaunch(build: SupportedBuild, profile: DeviceProfile): LaunchSpec {
+    data class Launched(val spec: LaunchSpec, val graphics: GraphicsPreset)
+
+    fun prepareAndLaunch(build: SupportedBuild, profile: DeviceProfile, bridge: BridgeEndpoint?): Launched {
         val graphics = app.settings.userSettings().effectiveGraphics(profile)
         val root = app.paths.gameRoot
         val tree = PathGameTree(root)
@@ -43,6 +47,7 @@ class GameLauncher(private val app: GothicApplication, private val backend: Runt
                 cacheDir = app.paths.shaderCache.toString(),
             ),
             dxvk,
+            bridge,
         )
         for ((rel, content) in spec.generatedFiles) {
             val p = root.resolve(rel)
@@ -52,6 +57,6 @@ class GameLauncher(private val app: GothicApplication, private val backend: Runt
         app.diagnostics.log("launch", "profile=${profile.id} renderer=${profile.renderer} ${graphics.width}x${graphics.height}@${graphics.fpsLimit}")
         backend.prepare(app.components)
         backend.launch(spec)
-        return spec
+        return Launched(spec, graphics)
     }
 }

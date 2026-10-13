@@ -12,11 +12,14 @@ Android-приложение (app)
 
 core (без Android, покрыт тестами)
 ├── input     InputArbiter ← TouchRouter ← OverlayLayout; KeyStateTracker → InputSink
-├── bridge    BridgeSession (рукопожатие, токен, таймаут) → ModeController → InputArbiter.setMode
+├── bridge    BridgeSession (рукопожатие, токен, таймаут) → ModeController → InputArbiter.setMode;
+│             BoundedLineReader — чтение строк с ограничением длины
+├── diagnostics LatencyStats, TimedInputSink (задержка ввода), SessionJournal (нештатное завершение)
 ├── saves     SaveManager (копии, восстановление, ZIP), SaveBackupPolicy (когда копировать)
 ├── gamedata  GameTree, SupportedBuild, BuildVerifier, GameImporter
 ├── config    IniFile, GothicIniWriter, DeviceProfile(s), UserSettings
-└── runtime   RuntimeComponents, LaunchSpecBuilder, RuntimeBackend, SessionController
+└── runtime   RuntimeComponents, ComponentInstaller + TarExtractor, LaunchSpecBuilder, RuntimeBackend,
+              SessionController
 ```
 
 Соответствие модулям раздела 4 плана:
@@ -53,6 +56,14 @@ core (без Android, покрыт тестами)
 Любая ошибка протокола, неверный токен, чужой EXE или молчание > 3 с закрывают сеанс и
 возвращают универсальную панель.
 
+## Мост с адаптером: транспорт
+
+`app/bridge/BridgeServer` создаёт Unix-сокет `files/bridge/adapter.sock` (FILESYSTEM namespace —
+недоступен другим приложениям, в отличие от абстрактного) и передаёт путь и одноразовый токен
+игре через `G2M_BRIDGE_SOCKET` / `G2M_BRIDGE_TOKEN`. Каждое подключение — новый `BridgeSession`;
+приложение раз в секунду шлёт `PING` и закрывает сеанс, если адаптер молчит дольше 3 с.
+Что адаптер внутри Wine подключается к Unix-сокету (AF_UNIX в winsock Wine) — проверяется на этапе 4.
+
 ## Хранение
 
 | Каталог | Содержимое |
@@ -60,6 +71,8 @@ core (без Android, покрыт тестами)
 | `files/game` | импортированная игра, включая `Saves` |
 | `files/save-backups/<слот>/<время>` | поколения копий с манифестом SHA-256 |
 | `files/runtime/prefix` | префикс Wine |
+| `files/runtime/components/<id>` | распакованные компоненты среды с маркером версии |
+| `files/session.marker` | отметка запущенного сеанса (нештатное завершение) |
 | `files/logs` | журнал диагностики с ротацией |
 | `cache/shaders` | кэш шейдеров DXVK (можно удалять) |
 
