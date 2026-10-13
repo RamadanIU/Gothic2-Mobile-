@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory app:title="Изображение">
+        <ListPreference
+            app:key="quality"
+            app:title="Качество изображения"
+            app:entries="@array/quality_entries"
+            app:entryValues="@array/quality_values"
+            app:defaultValue="AUTO"
+            app:useSimpleSummaryProvider="true" />
+        <SeekBarPreference
+            app:key="view_distance"
+            app:title="Дальность видимости (относительно профиля)"
+            app:min="-3"
+            android:max="3"
+            app:defaultValue="0"
+            app:showSeekBarValue="true" />
+        <ListPreference
+            app:key="fps_limit"
+            app:title="Ограничение FPS"
+            app:entries="@array/fps_entries"
+            app:entryValues="@array/fps_values"
+            app:defaultValue="auto"
+            app:useSimpleSummaryProvider="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Управление">
+        <SeekBarPreference
+            app:key="camera_sensitivity"
+            app:title="Чувствительность камеры, %"
+            app:min="10"
+            android:max="300"
+            app:defaultValue="100"
+            app:showSeekBarValue="true" />
+        <SwitchPreferenceCompat app:key="invert_y" app:title="Инвертировать вертикаль" app:defaultValue="false" />
+        <SwitchPreferenceCompat app:key="left_handed" app:title="Раскладка для левши" app:defaultValue="false" />
+        <SeekBarPreference
+            app:key="button_scale"
+            app:title="Размер кнопок, %"
+            app:min="50"
+            android:max="250"
+            app:defaultValue="100"
+            app:showSeekBarValue="true" />
+        <SeekBarPreference
+            app:key="overlay_opacity"
+            app:title="Непрозрачность кнопок, %"
+            app:min="10"
+            android:max="100"
+            app:defaultValue="60"
+            app:showSeekBarValue="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Звук">
+        <SeekBarPreference
+            app:key="volume"
+            app:title="Громкость, %"
+            app:min="0"
+            android:max="100"
+            app:defaultValue="100"
+            app:showSeekBarValue="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Сохранения">
+        <Preference app:key="export_saves" app:title="Экспортировать сохранения" app:summary="@string/uninstall_warning" />
+        <Preference app:key="import_saves" app:title="Импортировать сохранения" app:summary="Текущие слоты будут предварительно зарезервированы" />
+        <Preference app:key="restore_backup" app:title="Восстановить из резервной копии" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Обслуживание">
+        <Preference app:key="export_diagnostics" app:title="Экспортировать журнал диагностики" app:summary="Без персональных данных: только события среды и ошибки" />
+        <Preference app:key="reimport_game" app:title="Импортировать файлы игры заново" />
+        <SwitchPreferenceCompat app:key="dev_mode" app:title="Режим разработчика" app:summary="Разрешает запуск незакреплённых сборок" />
+    </PreferenceCategory>
+</PreferenceScreen>

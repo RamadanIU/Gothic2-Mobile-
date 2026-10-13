@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="quality_entries">
+        <item>Автоматически (профиль устройства)</item>
+        <item>Совместимость — 800×600</item>
+        <item>Основной — 960×540</item>
+        <item>Качество — 1280×720</item>
+    </string-array>
+    <string-array name="quality_values">
+        <item>AUTO</item>
+        <item>COMPATIBILITY</item>
+        <item>BALANCED</item>
+        <item>QUALITY</item>
+    </string-array>
+    <string-array name="fps_entries">
+        <item>Как в профиле</item>
+        <item>30</item>
+        <item>45</item>
+        <item>60</item>
+    </string-array>
+    <string-array name="fps_values">
+        <item>auto</item>
+        <item>30</item>
+        <item>45</item>
+        <item>60</item>
+    </string-array>
+</resources>
