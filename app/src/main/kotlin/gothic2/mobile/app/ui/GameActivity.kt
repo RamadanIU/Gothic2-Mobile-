@@ -27,6 +27,7 @@ import android.widget.PopupMenu
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import com.winlator.XServerDisplayActivity
+import com.winlator.core.GPUHelper
 import com.winlator.core.ProcessHelper
 import com.winlator.xserver.Window
 import com.winlator.xserver.WindowManager
@@ -36,6 +37,7 @@ import gothic2.mobile.app.bridge.BridgeServer
 import gothic2.mobile.app.input.GamepadMapper
 import gothic2.mobile.app.runtime.CpuInfo
 import gothic2.mobile.app.runtime.GameLauncher
+import gothic2.mobile.app.runtime.GraphicsMode
 import gothic2.mobile.app.runtime.WinlatorBackend
 import gothic2.mobile.app.runtime.XServerInputSink
 import gothic2.mobile.core.bridge.BridgeProtocol
@@ -217,7 +219,8 @@ class GameActivity : XServerDisplayActivity() {
         // объект-событие («Can not create Event object»). Gothic лёгкая, синхронизация через
         // wineserver на скорости почти не сказывается.
         env.put("WINEESYNC", "0")
-        if (app.settings.graphicsMode.isD7VK) {
+        val mode = app.settings.graphicsMode
+        if (mode.isD7VK) {
             // Профиль D7VK для Gothic II привязан к Gothic2.exe; классика — Gothic2c.exe, поэтому
             // его настройку forceLegacyPresent (2D-вывод на основную поверхность — в теневую) задаём
             // сами. Strict: с Auto D7VK после Lock/Unlock, GetDC/ReleaseDC и Blt по основной
@@ -227,6 +230,12 @@ class GameActivity : XServerDisplayActivity() {
             // перебираемых D3DX7 устройствах, поэтому только предупреждения и ошибки.
             env.put("DXVK_CONFIG", "ddraw.forceLegacyPresent = True; ddraw.legacyPresentGuard = Strict")
             env.put("D7VK_LOG_LEVEL", "warn")
+        }
+        if (mode.usesTurnip) {
+            // Ставим сами: Winlator 11.2 теряет sysmem для Adreno 7xx (см. GraphicsMode.turnipDebug).
+            val tuDebug = GraphicsMode.turnipDebug(GPUHelper.getAdrenoModelId(this).toInt())
+            env.put("TU_DEBUG", tuDebug)
+            diagnostics.log("launch", "TU_DEBUG=$tuDebug")
         }
         val args = intent.getStringArrayExtra(EXTRA_ARGS).orEmpty()
         if (args.isNotEmpty()) env.put("EXTRA_EXEC_ARGS", args.joinToString(" "))
