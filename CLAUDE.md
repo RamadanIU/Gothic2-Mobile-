@@ -111,7 +111,9 @@ tools/fetch-winlator.sh   # клонирует закреплённый комм
 
 - `core` — чистый Kotlin/JVM, но работает **на Android (minSdk 29)**: не использовать API Java 11+
   (`Files.readString/writeString`, `InputStream.transferTo`, `Path.of`). Вместо них — `kotlin.io.path`
-  (`readText`, `writeText`, `appendText`). Lint проверяет и `core` (`checkDependencies = true`).
+  (`readText`, `writeText`). **`appendText` не создаёт файл** (только APPEND) — для дописывания
+  `Files.write(path, bytes, CREATE, APPEND)`; из-за этого журнал диагностики долго был пустым.
+  Lint проверяет и `core` (`checkDependencies = true`).
 - Внутри `View.apply { }` имя `overlay` перекрывается `View.getOverlay()` — поле оверлея в
   `GameActivity` называется `touchOverlay`; не называть поля именами свойств `View`.
 - Тесты `core` запускаются с `LC_ALL=C.UTF-8` (нелатинские имена файлов) — уже в `core/build.gradle.kts`.

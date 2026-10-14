@@ -2,11 +2,11 @@ package gothic2.mobile.app.storage
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
-import kotlin.io.path.appendText
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 
@@ -30,7 +30,7 @@ class Diagnostics(private val dir: Path, private val maxBytes: Long = 1_000_000)
                     Files.deleteIfExists(previous)
                     Files.move(current, previous)
                 }
-                current.appendText(line)
+                append(current, line)
             }
         }
     }
@@ -53,7 +53,7 @@ class Diagnostics(private val dir: Path, private val maxBytes: Long = 1_000_000)
         if (wineBytes > maxWineBytes) return@execute
         val text = if (wineBytes + line.length >= maxWineBytes) "… журнал Wine обрезан\n" else line + "\n"
         wineBytes += text.length
-        runCatching { wineLog.appendText(text) }
+        runCatching { append(wineLog, text) }
     }
 
     /** Склеенный текст журнала для экспорта. */
@@ -73,4 +73,12 @@ class Diagnostics(private val dir: Path, private val maxBytes: Long = 1_000_000)
     }
 
     private val maxWineBytes get() = maxBytes * 2
+
+    /**
+     * Дописать в конец файла, создав его при необходимости. kotlin.io.path.appendText файл не создаёт
+     * (только APPEND без CREATE) — из-за этого журнал всегда оставался пустым.
+     */
+    private fun append(file: Path, text: String) {
+        Files.write(file, text.toByteArray(), StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+    }
 }
