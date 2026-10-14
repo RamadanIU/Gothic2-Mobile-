@@ -149,3 +149,9 @@
   дал рабочего 3D-устройства Direct3D 7. Добавлен выбор режима графики (`GraphicsMode`: D7VK,
   WineD3D+Zink, WineD3D+Gladio), по умолчанию D7VK; на экране неудачного запуска — кнопка
   «Играть с графикой: <следующий режим>».
+- **Gothic II запустилась на телефоне** (главное меню, загрузка мира) в режиме WineD3D + Zink; D7VK и
+  WineD3D + Gladio дают «maximum texture size is lower than 32». Zink стал режимом по умолчанию.
+  После вступительного ролика (классика) — вылет, причина пока неизвестна.
+- Журнал диагностики был пустым всегда: `kotlin.io.path.appendText` не создаёт файл (APPEND без
+  CREATE), ошибка глоталась `runCatching`. Исправлено (`Files.write(..., CREATE, APPEND)`), тест
+  `DiagnosticsTest` в `app`.
