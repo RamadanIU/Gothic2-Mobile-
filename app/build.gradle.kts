@@ -10,10 +10,12 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "gothic2.mobile"
-        // Android 10+: scoped storage и современные правила исполнения нативного кода.
+        applicationId = providers.gradleProperty("gothic2.applicationId").get()
+        // Android 10+: scoped storage.
         minSdk = 29
-        targetSdk = 35
+        // Как у Winlator: Wine, Box64 и их библиотеки исполняются из каталога данных приложения,
+        // а Android запрещает это приложениям с targetSdk 29+. Приложение ставится не из Google Play.
+        targetSdk = 28
         versionCode = 1
         versionName = "0.1.0-dev"
         ndk {
@@ -22,9 +24,20 @@ android {
         }
     }
 
+    signingConfigs {
+        // Общий для всех сборок debug-ключ (стандартный, не секретный): новый APK ставится
+        // поверх старого, и импортированная игра с сохранениями остаётся на телефоне.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         debug {
-            applicationIdSuffix = ".dev"
+            applicationIdSuffix = providers.gradleProperty("gothic2.debugIdSuffix").get()
             buildConfigField("boolean", "DEV_MODE_DEFAULT", "true")
         }
         release {
@@ -38,8 +51,8 @@ android {
     }
 
     packaging {
-        // Несжатые и выровненные .so — требование устройств с 16 КБ страницами.
-        jniLibs.useLegacyPackaging = false
+        // Winlator запускает часть .so как программы (PulseAudio), поэтому они распаковываются на диск.
+        jniLibs.useLegacyPackaging = true
     }
 
     compileOptions {
@@ -56,10 +69,13 @@ kotlin {
 
 dependencies {
     implementation(project(":core"))
+    implementation(project(":winlator"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.preference.ktx)
+    testImplementation(libs.junit)
+    testImplementation(kotlin("test-junit"))
 }
 
 android.lint {
@@ -67,4 +83,6 @@ android.lint {
     checkDependencies = true
     abortOnError = true
     warningsAsErrors = false
+    // Код Winlator (third_party) не проверяется; targetSdk 28 — осознанное решение (см. выше).
+    lintConfig = file("lint.xml")
 }

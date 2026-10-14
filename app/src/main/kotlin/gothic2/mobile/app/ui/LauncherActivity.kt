@@ -16,6 +16,7 @@ import androidx.appcompat.app.AppCompatActivity
 import gothic2.mobile.app.BuildConfig
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
+import gothic2.mobile.app.runtime.GameLauncher
 import gothic2.mobile.app.storage.DocumentExport
 import gothic2.mobile.app.storage.SafGameTree
 import gothic2.mobile.core.diagnostics.SessionJournal
@@ -25,6 +26,7 @@ import gothic2.mobile.core.gamedata.BuildVerifier.Result
 import gothic2.mobile.core.gamedata.GameImporter
 import gothic2.mobile.core.gamedata.PathGameTree
 import gothic2.mobile.core.gamedata.SupportedBuild
+import gothic2.mobile.core.gamedata.VariantLayout
 
 /**
  * Первый запуск: импорт легальной копии игры. При каждом следующем запуске экран
@@ -238,9 +240,58 @@ class LauncherActivity : AppCompatActivity() {
             .show()
     }
 
+    /** Подготовка среды (при первом запуске — установка Wine) с прогрессом, затем экран игры. */
     private fun startGame() {
-        startActivity(Intent(this, GameActivity::class.java))
-        finish()
+        val build = app.importedBuild()
+        val variant = build?.let { app.selectedVariant(it) }
+        if (build == null || variant == null) return buildUi()
+        val pad = (24 * resources.displayMetrics.density).toInt()
+        val status = TextView(this).apply {
+            setTextColor(0xFFE8DCC0.toInt())
+            textSize = 16f
+            gravity = Gravity.CENTER
+            text = getString(R.string.launch_preparing)
+        }
+        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; isIndeterminate = true }
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(pad, pad, pad, pad)
+            addView(status)
+            addView(bar)
+        })
+        app.background.execute {
+            val result = runCatching {
+                GameLauncher(app).prepare(build, variant) { step, percent ->
+                    runOnUiThread {
+                        status.text = if (percent == null) step else "$step $percent%"
+                        bar.isIndeterminate = percent == null
+                        if (percent != null) bar.progress = percent
+                    }
+                }
+            }
+            runOnUiThread {
+                result.onSuccess { prepared ->
+                    startActivity(GameActivity.intent(this, prepared))
+                    finish()
+                }
+                result.onFailure { e ->
+                    app.diagnostics.log("launch", "prepare failed: $e")
+                    // Файлы варианта не должны остаться спрятанными, если запуск не состоялся.
+                    runCatching { VariantLayout(app.paths.gameRoot).restore(build) }
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.launch_failed_title)
+                        .setMessage(getString(R.string.launch_failed_message, e.message ?: e.toString()))
+                        .setPositiveButton(R.string.launch_retry) { _, _ -> startGame() }
+                        .setNeutralButton(R.string.settings_title) { _, _ ->
+                            startActivity(Intent(this, SettingsActivity::class.java))
+                            finish()
+                        }
+                        .setOnCancelListener { finish() }
+                        .show()
+                }
+            }
+        }
     }
 
     companion object {

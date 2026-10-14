@@ -30,33 +30,39 @@ docs/SUPPORTED_BUILDS.md). Язык — русский. Включены оба 
 подменяет `Paths.d` — ключ `rename=` и `VariantLayout` с откатом после сбоя; сохранения — `Saves_GII`).
 
 
-Готово и покрыто тестами (97 тестов в `core`), lint без ошибок, debug/release APK собираются:
+**Среда исполнения — Winlator 11.2, встроенный в приложение** (модуль `:winlator`, docs/ARCHITECTURE.md,
+раздел «Среда исполнения»). «Играть» → при первом запуске установка Wine (1–3 мин) → контейнер
+«Gothic II» с диском D: = папка игры → экран игры (наследник `XServerDisplayActivity`) с нашим
+сенсорным управлением поверх. На телефоне ещё не запускалось — ждём результат от пользователя.
+
+Готово и покрыто тестами (97 тестов в `core`, 3 в `app`), lint без ошибок, debug/release APK собираются:
 - ввод: единый арбитр (`InputArbiter`), джойстик с гистерезисом, камера, направленные удары и блок,
   распределение пальцев (`TouchRouter`), раскладка и её редактор, радиальное меню слотов, геймпад;
 - сохранения: поколения копий с SHA-256, восстановление, ZIP импорт/экспорт, копия только после
   подтверждённого завершения записи; раздельно по вариантам игры;
 - игра: проверка сборки по SHA-256 EXE (`BuildVerifier`), атомарный импорт с откатом (`GameImporter`),
   варианты запуска (`GameVariant`), **отчёт о сборке** (`BuildFingerprint`);
-- среда: установщик компонентов с безопасной распаковкой tar (`ComponentInstaller`, `TarExtractor`),
-  описание запуска Wine/DXVK (`LaunchSpecBuilder`), профили устройств, `GOTHIC.INI`;
+- среда: Winlator (`GameLauncher`, `GameActivity`, `XServerInputSink`, `WinlatorBackend`), замена пути
+  rootfs при распаковке (`PathRelocator`), профили устройств → WineD3D или D7VK, `GOTHIC.INI`;
+  журнал Wine/Box64 (`files/logs/wine.log`) входит в экспорт диагностики;
 - мост с игровым адаптером: протокол, рукопожатие с токеном, Unix-сокет в приватном каталоге;
 - Android: импорт через SAF, экран игры, вывод 4:3 с полями, экран восстановления, перегрев, настройки.
 
 **Не готово (главное):**
-1. **Среда исполнения — заглушка** `StubRuntimeBackend`: игра ещё ни разу не запускалась.
-2. Все эталонные значения помечены `PENDING`: SHA-256 EXE/архивов (`app/src/main/assets/supported_builds.ini`),
-   компоненты среды (`runtime_components.ini`), длительности ударов (`CombatTiming`). Клавиши (`KeyBindings`)
-   и ключи `GothicIniWriter.Keys` сверены с `Gothic.ini` сборки, но в игре не проверены.
+1. **Игра ещё ни разу не запускалась на телефоне** — первый APK со встроенным Winlator отправлен пользователю.
+2. Не подтверждены в игре: клавиши (`KeyBindings`), ключи `GothicIniWriter.Keys`, доставка мыши
+   (`injectPointerMoveDelta`), длительности ударов (`CombatTiming`), выбор графики (WineD3D/D7VK).
 3. Игровой адаптер внутри процесса Gothic (C++) не написан.
-4. Распаковщика `.tzst` (формат архивов Winlator) нет — либо добавить zstd, либо перепаковать в `.tar.gz`.
+4. `runtime_components.ini`, `ComponentInstaller`, `LaunchSpecBuilder`, `RendererSetup` в `core` остались от
+   прежней схемы и при запуске не используются — убрать или переиспользовать после первого запуска.
 
 ## Следующие действия (по порядку)
 
-1. **Этап 1 на телефоне пользователя:** подобрать основу класса Winlator, проверить WoW64+Box64 и обе
-   графические цепочки (WineD3D и D3D7→D3D9→DXVK), подтвердить клавиши, ключи INI, тайминги ударов.
-   Критерий — 30–60 минут игры с сохранением и загрузкой (docs/ROADMAP.md, docs/TEST_PLAN.md).
-2. **Реализовать настоящий `RuntimeBackend`** вместо заглушки (что именно — docs/ARCHITECTURE.md,
-   раздел «Подключение реальной среды исполнения»), закрепить компоненты в `runtime_components.ini`.
+1. **Первый запуск на телефоне пользователя.** Пользователь не настраивает Winlator сам: ставит APK,
+   жмёт «Играть», при проблеме — Настройки → экспорт журнала диагностики (в нём и вывод Wine).
+   По журналу чинить: путь rootfs, драйвер (Vortek/Turnip), ddraw (WineD3D/D7VK), звук, ввод.
+2. После запуска — этап 1 по docs/TEST_PLAN.md: клавиши, мышь-камера, удары, сохранение/загрузка,
+   классика; 30–60 минут игры.
 3. Игровой адаптер (этап 4) и стабилизация (этап 5).
 
 Без телефона и игры можно продолжать только то, что не требует запуска: тесты, UI, документацию.
@@ -73,11 +79,25 @@ yes | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=/opt/andro
 echo "sdk.dir=/opt/android-sdk" > local.properties   # файл в .gitignore
 ```
 
+Ещё нужны NDK и CMake (нативный код Winlator) и исходники Winlator:
+
+```bash
+yes | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=/opt/android-sdk "ndk;24.0.8215888" "cmake;3.22.1" >/dev/null
+tools/fetch-winlator.sh   # клонирует закреплённый коммит в third_party/winlator-app и накладывает патч
+```
+
 Проверка перед каждым пушем:
 
 ```bash
-./gradlew :core:test :app:lintDebug :app:assembleDebug :app:assembleRelease
+./gradlew :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease
 ```
+
+- Правки Winlator делаются в `third_party/winlator-app`, затем сохраняются в патч (иначе пропадут):
+  `cd third_party/winlator-app && git add -A -N && git diff --binary > ../winlator.patch`.
+  Каждую правку помечать комментарием «Gothic II Mobile:».
+- `.claude/settings.json` разрешает `./gradlew` и `tools/fetch-winlator.sh` без вопросов.
+- APK ≈ 170 МБ (rootfs Wine внутри). Debug подписывается общим ключом `app/debug.keystore` —
+  новый APK ставится поверх старого без удаления игры.
 
 - Maven Central иногда отвечает **429** — просто повторить команду через 15–30 с.
 - Эмулятор в контейнере не работает (нет KVM) — на устройстве проверяет только пользователь.
@@ -97,6 +117,8 @@ echo "sdk.dir=/opt/android-sdk" > local.properties   # файл в .gitignore
 - Любой внешний ввод (архивы, ZIP сохранений, строки моста, папка игры) считается недоверенным:
   проверка путей (`FileOps.isSafeRelative`), лимиты размеров, атомарная запись через временный каталог.
 - Никаких игровых файлов в репозитории (`.gitignore` исключает `*.vdf`, `*.mod`, `game-data/`).
+- Имя пакета приложения (`gradle.properties`, `gothic2.applicationId` + суффикс debug) не длиннее
+  23 символов: из него строится путь rootfs той же длины, что у Winlator.
 
 ## Git и PR
 

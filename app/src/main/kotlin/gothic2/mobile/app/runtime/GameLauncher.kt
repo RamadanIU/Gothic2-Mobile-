@@ -1,7 +1,13 @@
 package gothic2.mobile.app.runtime
 
+import com.winlator.container.Container
+import com.winlator.container.ContainerManager
+import com.winlator.container.DXWrappers
+import com.winlator.xenvironment.RootFS
+import com.winlator.xenvironment.RootFSInstaller
 import gothic2.mobile.app.GothicApplication
 import gothic2.mobile.core.config.DeviceProfile
+import gothic2.mobile.core.config.DeviceProfiles
 import gothic2.mobile.core.config.GothicIniWriter
 import gothic2.mobile.core.config.GraphicsPreset
 import gothic2.mobile.core.config.IniFile
@@ -10,40 +16,43 @@ import gothic2.mobile.core.gamedata.GameVariant
 import gothic2.mobile.core.gamedata.PathGameTree
 import gothic2.mobile.core.gamedata.SupportedBuild
 import gothic2.mobile.core.gamedata.VariantLayout
-import gothic2.mobile.core.runtime.BridgeEndpoint
-import gothic2.mobile.core.runtime.LaunchSpec
-import gothic2.mobile.core.runtime.LaunchSpecBuilder
-import gothic2.mobile.core.runtime.RendererSetup
-import gothic2.mobile.core.runtime.RuntimeBackend
-import gothic2.mobile.core.runtime.RuntimePaths
+import org.json.JSONObject
 import java.nio.file.Files
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 
 /**
- * Подготовка и запуск закреплённой конфигурации: настройки пишутся в GOTHIC.INI до старта,
- * игра запускается напрямую по [LaunchSpec] — без рабочего стола и выбора EXE.
+ * Подготовка запуска закреплённой конфигурации в среде Winlator: системные файлы Wine,
+ * контейнер (префикс Wine) с диском D: = папка игры, настройки в GOTHIC.INI, файлы варианта.
+ * Сам запуск делает [gothic2.mobile.app.ui.GameActivity] — без рабочего стола и выбора EXE.
  */
-class GameLauncher(private val app: GothicApplication, private val backend: RuntimeBackend) {
+class GameLauncher(private val app: GothicApplication) {
 
-    data class Launched(val spec: LaunchSpec, val graphics: GraphicsPreset)
+    /** Всё, что нужно экрану игры: контейнер, EXE (путь Linux) и его аргументы. */
+    data class Prepared(
+        val containerId: Int,
+        val exePath: String,
+        val args: List<String>,
+        val graphics: GraphicsPreset,
+        val profile: DeviceProfile,
+    )
 
-    fun prepareAndLaunch(build: SupportedBuild, variant: GameVariant, requested: DeviceProfile, bridge: BridgeEndpoint?): Launched {
+    /** @param onStep текст шага и прогресс 0..100 (null — без процента) */
+    fun prepare(build: SupportedBuild, variant: GameVariant, onStep: (String, Int?) -> Unit): Prepared {
         val root = app.paths.gameRoot
         val tree = PathGameTree(root)
+        val args = variant.args ?: error("Вариант ${variant.id} ещё не подтверждён: нет аргументов запуска")
 
-        // Графические DLL рядом с EXE: сторонний ddraw.dll (GD3D11 в GOG-издании) не включается.
-        // Пока обёртка D3D7→D3D9 не входит в компоненты, цепочка DXVK недоступна — берём WineD3D.
-        val exeDir = build.exeOf(variant).substringBeforeLast('/', "")
-        val wrapper = app.paths.components.resolve("d3d7-wrapper/${LaunchSpecBuilder.WRAPPER_DLL}.dll")
-        val profile = try {
-            RendererSetup.prepare(root, exeDir, requested.renderer, wrapper)
-                .forEach { app.diagnostics.log("launch", "renderer files: $it") }
-            requested
-        } catch (e: RendererSetup.MissingWrapperException) {
-            app.diagnostics.log("launch", "wrapper missing, fallback to WINED3D")
-            requested.copy(renderer = RendererChain.WINED3D)
+        RootFS.find(app)
+        if (RootFSInstaller.isInstallNeeded(app)) {
+            app.diagnostics.log("launch", "installing rootfs")
+            onStep(INSTALL_STEP, 0)
+            val ok = RootFSInstaller.installBlocking(app) { p -> onStep(INSTALL_STEP, p) }
+            check(ok) { "Не удалось установить системные файлы Wine" }
         }
+
+        onStep("Подготовка игры…", null)
+        val profile = DeviceProfiles.select(GpuInfo.rendererName())
         val graphics = app.settings.userSettings().effectiveGraphics(profile)
 
         val iniRel = tree.resolve(build.iniPath) ?: build.iniPath
@@ -53,36 +62,53 @@ class GameLauncher(private val app: GothicApplication, private val backend: Runt
         Files.createDirectories(iniPath.parent)
         iniPath.writeText(ini.toString(), Charsets.ISO_8859_1)
 
-        val dxvk = if (profile.renderer == RendererChain.D3D7_TO_D3D9_DXVK) GothicIniWriter.dxvkConf(graphics) else null
-        val spec = LaunchSpecBuilder.build(
-            build,
-            variant,
-            profile,
-            RuntimePaths(
-                wineprefix = app.paths.wineprefix.toString(),
-                gameRoot = root.toString(),
-                cacheDir = app.paths.shaderCache.toString(),
-            ),
-            dxvk,
-            bridge,
+        val container = ensureContainer(profile, graphics)
+        val exeRel = tree.resolve(build.exeOf(variant)) ?: error("В папке игры нет ${build.exeOf(variant)}")
+        // Файлы варианта (классика прячет архивы аддона) — последним шагом; обратно их
+        // возвращает экран игры после выхода, а после сбоя — следующий запуск приложения.
+        VariantLayout(root).apply(build, variant)
+
+        app.diagnostics.log(
+            "launch",
+            "variant=${variant.id} profile=${profile.id} renderer=${profile.renderer} ${graphics.width}x${graphics.height} container=${container.id}",
         )
-        for ((rel, content) in spec.generatedFiles) {
-            val p = root.resolve(rel)
-            Files.createDirectories(p.parent)
-            p.writeText(content)
+        return Prepared(container.id, root.resolve(exeRel).toString(), args, graphics, profile)
+    }
+
+    /** Контейнер Wine для игры: создаётся один раз, настройки обновляются при каждом запуске. */
+    private fun ensureContainer(profile: DeviceProfile, graphics: GraphicsPreset): Container {
+        val manager = ContainerManager(app)
+        val container = manager.containers.firstOrNull { it.name == CONTAINER_NAME }
+            ?: manager.createContainer(
+                JSONObject()
+                    .put("name", CONTAINER_NAME)
+                    .put("wincomponents", Container.DEFAULT_WINCOMPONENTS)
+                    .put("drives", drives()),
+            ) ?: error("Не удалось создать контейнер Wine")
+
+        // Только папка игры, без доступа ко всему накопителю.
+        container.drives = drives()
+        container.screenSize = "${graphics.width}x${graphics.height}"
+        when (profile.renderer) {
+            // Gothic рисует через Direct3D 7 (ddraw): встроенный WineD3D поверх OpenGL.
+            RendererChain.WINED3D -> {
+                container.dxWrapper = DXWrappers.WINED3D
+                container.dxWrapperConfig = ""
+            }
+            // D7VK переводит Direct3D 7 сразу в Vulkan.
+            RendererChain.D3D7_TO_D3D9_DXVK -> {
+                container.dxWrapper = DXWrappers.DXVK
+                container.dxWrapperConfig = "ddrawWrapper=${DXWrappers.D7VK}"
+            }
         }
-        app.diagnostics.log("launch", "variant=${variant.id} profile=${profile.id} renderer=${profile.renderer} ${graphics.width}x${graphics.height}@${graphics.fpsLimit}")
-        backend.prepare(app.components)
-        // Файлы варианта (классика прячет архивы аддона) — непосредственно перед стартом;
-        // обратно их возвращает GameActivity после выхода игры.
-        val layout = VariantLayout(root)
-        try {
-            layout.apply(build, variant)
-            backend.launch(spec)
-        } catch (e: Exception) {
-            runCatching { layout.restore(build) }
-            throw e
-        }
-        return Launched(spec, graphics)
+        container.saveData()
+        return container
+    }
+
+    private fun drives(): String = "D:" + app.paths.gameRoot.toString()
+
+    private companion object {
+        const val CONTAINER_NAME = "Gothic II"
+        const val INSTALL_STEP = "Первый запуск: установка Wine (один раз, 1–3 минуты)…"
     }
 }

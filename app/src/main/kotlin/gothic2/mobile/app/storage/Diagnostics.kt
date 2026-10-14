@@ -34,8 +34,28 @@ class Diagnostics(private val dir: Path, private val maxBytes: Long = 1_000_000)
         }
     }
 
+    /** Вывод Wine и Box64 последнего запуска игры (ошибки, причины падения). */
+    val wineLog: Path get() = dir.resolve("wine.log")
+    private var wineBytes = 0L
+
+    /** Новый запуск — новый журнал Wine: прошлый не нужен, а размер ограничен. */
+    fun beginWineLog() = executor.execute {
+        wineBytes = 0
+        runCatching { Files.deleteIfExists(wineLog) }
+    }
+
+    fun wine(line: String) = executor.execute {
+        if (wineBytes > maxWineBytes) return@execute
+        val text = if (wineBytes + line.length >= maxWineBytes) "… журнал Wine обрезан\n" else line + "\n"
+        wineBytes += text.length
+        runCatching { wineLog.appendText(text) }
+    }
+
     /** Склеенный текст журнала для экспорта. */
     fun snapshot(): String = buildString {
         for (p in listOf(previous, current)) if (Files.exists(p)) append(p.readText())
+        if (Files.exists(wineLog)) append("\n===== Wine / Box64 (последний запуск) =====\n").append(wineLog.readText())
     }
+
+    private val maxWineBytes get() = maxBytes * 2
 }
