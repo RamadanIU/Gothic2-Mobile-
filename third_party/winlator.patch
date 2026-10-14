@@ -834,6 +834,33 @@ index add450f..469b8e9 100644
                          }
                      }
                  }
+diff --git a/app/src/main/java/com/winlator/renderer/Texture.java b/app/src/main/java/com/winlator/renderer/Texture.java
+index fb0252f..f74d752 100644
+--- a/app/src/main/java/com/winlator/renderer/Texture.java
++++ b/app/src/main/java/com/winlator/renderer/Texture.java
+@@ -146,9 +146,21 @@ public class Texture {
+             this.textureId, GLES20.GL_TEXTURE_2D, 0, 0, 0, 0,
+             source.owner.width, source.owner.height, 1
+         );
+-        GLES20.glFlush();
++        // Gothic II Mobile: дождаться конца копирования. После glFlush экран (другой поток и
++        // контекст) мог взять недокопированную текстуру, а игра — получить IdleNotify и начать
++        // рисовать следующий кадр в тот же источник: на Adreno это сетка чёрных блоков и
++        // целиком чёрные кадры. Ожидание ограничено, чтобы зависание GPU не остановило X-сервер.
++        long sync = GLES32.glFenceSync(GLES32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
++        if (sync != 0) {
++            GLES32.glClientWaitSync(sync, GLES32.GL_SYNC_FLUSH_COMMANDS_BIT, COPY_WAIT_NANOS);
++            GLES32.glDeleteSync(sync);
++        }
++        else GLES20.glFinish();
+     }
+ 
++    /** Gothic II Mobile: предел ожидания копии кадра (100 мс). */
++    private static final long COPY_WAIT_NANOS = 100_000_000L;
++
+     public void copyFromReadBuffer(short width, short height) {
+         if (!isAllocated()) allocateTexture(width, height, null);
+         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId);
 diff --git a/app/src/main/java/com/winlator/widget/LogView.java b/app/src/main/java/com/winlator/widget/LogView.java
 index 6343202..a19eae1 100644
 --- a/app/src/main/java/com/winlator/widget/LogView.java

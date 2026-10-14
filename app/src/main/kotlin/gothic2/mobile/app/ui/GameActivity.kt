@@ -219,9 +219,11 @@ class GameActivity : XServerDisplayActivity() {
         env.put("WINEESYNC", "0")
         if (app.settings.graphicsMode.isD7VK) {
             // Профиль D7VK для Gothic II привязан к Gothic2.exe; классика — Gothic2c.exe, поэтому
-            // его настройку задаём сами: без неё нет фона экранов загрузки. Свой журнал D7VK
-            // (D7VK_LOG_LEVEL, по умолчанию info) и так пишет в вывод Wine, без файлов у игры.
+            // его настройку задаём сами: без неё нет фона экранов загрузки. Журнал D7VK пишет в
+            // вывод Wine (без файлов у игры); на уровне info — ~5000 строк о перебираемых D3DX7
+            // устройствах, поэтому только предупреждения и ошибки.
             env.put("DXVK_CONFIG", "ddraw.forceLegacyPresent = True")
+            env.put("D7VK_LOG_LEVEL", "warn")
         }
         val args = intent.getStringArrayExtra(EXTRA_ARGS).orEmpty()
         if (args.isNotEmpty()) env.put("EXTRA_EXEC_ARGS", args.joinToString(" "))
