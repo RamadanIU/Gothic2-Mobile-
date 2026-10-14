@@ -834,6 +834,55 @@ index add450f..469b8e9 100644
                          }
                      }
                  }
+diff --git a/app/src/main/java/com/winlator/renderer/GLRenderer.java b/app/src/main/java/com/winlator/renderer/GLRenderer.java
+index 48a8344..3ac0ef6 100644
+--- a/app/src/main/java/com/winlator/renderer/GLRenderer.java
++++ b/app/src/main/java/com/winlator/renderer/GLRenderer.java
+@@ -55,6 +55,8 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+     private boolean toggleFullscreen = false;
+     protected boolean viewportNeedsUpdate = true;
+     private boolean cursorVisible = true;
++    /** Gothic II Mobile: в последнем кадре экрана нарисован курсор. */
++    private volatile boolean cursorDrawn = false;
+     private float cursorScale = 1.0f;
+     private int cursorBackColor = 0xffffff;
+     private int cursorForeColor = 0x000000;
+@@ -148,6 +150,7 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+ 
+         renderWindows();
+         if (cursorVisible) renderCursor();
++        else cursorDrawn = false;
+     }
+ 
+     @Override
+@@ -189,7 +192,18 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+ 
+     @Override
+     public void onPointerMove(short x, short y) {
+-        xServerView.requestRender();
++        // Gothic II Mobile: перерисовка ради курсора — только когда он виден или его надо стереть.
++        // Игра курсор прячет, а камера — это непрерывное движение мыши: экран перерисовывался
++        // с частотой касаний между кадрами игры и показывал недорисованный кадр (белое мерцание
++        // при повороте камеры). Новые кадры игры перерисовку запрашивают сами.
++        if (cursorDrawn || (cursorVisible && isPointerCursorVisible())) xServerView.requestRender();
++    }
++
++    /** Gothic II Mobile: тот же выбор курсора, что в {@link #renderCursor()}. */
++    private boolean isPointerCursorVisible() {
++        Window pointWindow = xServer.inputDeviceManager.getPointWindow();
++        Cursor cursor = pointWindow != null ? pointWindow.attributes.getCursor() : null;
++        return cursor == null || cursor.isVisible();
+     }
+ 
+     private void renderCursorDrawable(Drawable drawable, int x, int y) {
+@@ -266,6 +280,7 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+                 if (cursor.isVisible()) renderCursorDrawable(cursor.cursorImage, x - cursor.hotSpotX, y - cursor.hotSpotY);
+             }
+             else renderCursorDrawable(rootCursorDrawable, x, y);
++            cursorDrawn = cursor == null || cursor.isVisible();
+         }
+ 
+         quadVertices.disable();
 diff --git a/app/src/main/java/com/winlator/renderer/Texture.java b/app/src/main/java/com/winlator/renderer/Texture.java
 index fb0252f..f74d752 100644
 --- a/app/src/main/java/com/winlator/renderer/Texture.java
