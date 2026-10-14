@@ -55,16 +55,20 @@ class GameImporter(private val target: Path) {
             val exe = PathGameTree(staging).resolve(build.exePath)
                 ?: error("После копирования не найден ${build.exePath}")
             check(Hashing.sha256(staging.resolve(exe)) == expectedExeSha256) { "EXE изменился при копировании" }
-            Files.createDirectories(staging.resolve(build.savesDir))
+            // Каталоги сохранений всех вариантов (у классики — Saves_GII): Gothic сама их не создаёт.
+            val savesDirs = build.allSavesDirs()
+            for (dir in savesDirs) Files.createDirectories(staging.resolve(dir))
 
             val old = oldDir()
             FileOps.deleteTree(old)
             if (target.exists()) FileOps.moveAtomic(target, old)
-            val newSaves = staging.resolve(build.savesDir)
-            val oldSaves = if (old.exists()) PathGameTree(old).resolve(build.savesDir)?.let(old::resolve) else null
+            // Пары «прежний каталог сохранений → каталог в новой установке».
+            val moves = if (!old.exists()) emptyList() else savesDirs.mapNotNull { dir ->
+                PathGameTree(old).resolve(dir)?.let { old.resolve(it) to staging.resolve(dir) }
+            }
             try {
                 // Сохранения пользователя переносятся в новую установку, а не копируются заново.
-                if (oldSaves != null) {
+                for ((oldSaves, newSaves) in moves) {
                     FileOps.deleteTree(newSaves)
                     FileOps.moveAtomic(oldSaves, newSaves)
                 }
@@ -72,7 +76,9 @@ class GameImporter(private val target: Path) {
             } catch (e: Exception) {
                 // Откат: сохранения и прежняя установка возвращаются на место.
                 if (!target.exists()) {
-                    if (oldSaves != null && !oldSaves.exists() && newSaves.exists()) FileOps.moveAtomic(newSaves, oldSaves)
+                    for ((oldSaves, newSaves) in moves) {
+                        if (!oldSaves.exists() && newSaves.exists()) FileOps.moveAtomic(newSaves, oldSaves)
+                    }
                     if (old.exists()) FileOps.moveAtomic(old, target)
                 }
                 throw e
@@ -92,14 +98,17 @@ class GameImporter(private val target: Path) {
     fun recoverInterrupted(build: SupportedBuild) {
         val old = oldDir()
         val staging = stagingDir()
+        val savesDirs = build.allSavesDirs()
         if (!target.exists() && old.exists()) {
-            val stagingSaves = staging.resolve(build.savesDir)
-            if (PathGameTree(old).resolve(build.savesDir) == null && stagingSaves.exists()) {
-                FileOps.moveAtomic(stagingSaves, old.resolve(build.savesDir))
+            for (dir in savesDirs) {
+                val stagingSaves = staging.resolve(dir)
+                if (PathGameTree(old).resolve(dir) == null && stagingSaves.exists()) {
+                    FileOps.moveAtomic(stagingSaves, old.resolve(dir))
+                }
             }
             FileOps.moveAtomic(old, target)
         }
-        if (old.exists() && PathGameTree(old).resolve(build.savesDir) != null) {
+        if (old.exists() && savesDirs.any { PathGameTree(old).resolve(it) != null }) {
             // Не удаляем каталог, в котором ещё лежат сохранения, — оставляем для ручного разбора.
             FileOps.moveAtomic(old, old.resolveSibling("${old.fileName}-${System.currentTimeMillis()}"))
         }

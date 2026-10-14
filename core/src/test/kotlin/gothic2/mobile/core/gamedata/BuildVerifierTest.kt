@@ -120,4 +120,36 @@ class BuildVerifierTest {
         GameImporter(target).recoverInterrupted(build)
         assertEquals("mine", target.resolve("Saves/savegame4/SAVEDAT.SAV").readText())
     }
+
+    @Test
+    fun `saves dirs of all variants are created and survive reimport`() {
+        install()
+        val gold = manifest(exeSha) + """
+
+            variants=notr,classic
+
+            [variant:test/notr]
+            title=Ночь Ворона
+            args=
+
+            [variant:test/classic]
+            title=Классика
+            args=
+            saves=Saves_GII
+        """.trimIndent()
+        val build = SupportedBuild.parseAll(gold).single()
+        assertEquals(listOf("Saves", "Saves_GII"), build.allSavesDirs())
+        Files.createDirectories(root.resolve("Saves_GII/savegame2")).resolve("SAVEDAT.SAV").writeText("src")
+        val target = Files.createTempDirectory("g2target").resolve("game")
+        val importer = GameImporter(target)
+        importer.import(PathGameTree(root), build, exeSha)
+        assertTrue(Files.isDirectory(target.resolve("Saves_GII")), "каталог сохранений классики создан")
+        assertTrue(!target.resolve("Saves_GII/savegame2").exists(), "сохранения источника не копируются")
+
+        Files.createDirectories(target.resolve("Saves_GII/savegame3")).resolve("SAVEDAT.SAV").writeText("classic")
+        Files.createDirectories(target.resolve("Saves/savegame4")).resolve("SAVEDAT.SAV").writeText("notr")
+        importer.import(PathGameTree(root), build, exeSha)
+        assertEquals("classic", target.resolve("Saves_GII/savegame3/SAVEDAT.SAV").readText())
+        assertEquals("notr", target.resolve("Saves/savegame4/SAVEDAT.SAV").readText())
+    }
 }
