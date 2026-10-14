@@ -8,6 +8,7 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.io.path.appendText
 import kotlin.io.path.readText
+import kotlin.io.path.writeText
 
 /**
  * Журнал диагностики для воспроизведения проблем. Пишет только технические события
@@ -36,12 +37,16 @@ class Diagnostics(private val dir: Path, private val maxBytes: Long = 1_000_000)
 
     /** Вывод Wine и Box64 последнего запуска игры (ошибки, причины падения). */
     val wineLog: Path get() = dir.resolve("wine.log")
+    val previousWineLog: Path get() = dir.resolve("wine.1.log")
     private var wineBytes = 0L
 
-    /** Новый запуск — новый журнал Wine: прошлый не нужен, а размер ограничен. */
+    /** Новый запуск — новый журнал Wine; журнал прошлого запуска сохраняется рядом. */
     fun beginWineLog() = executor.execute {
         wineBytes = 0
-        runCatching { Files.deleteIfExists(wineLog) }
+        runCatching {
+            Files.deleteIfExists(previousWineLog)
+            if (Files.exists(wineLog)) Files.move(wineLog, previousWineLog)
+        }
     }
 
     fun wine(line: String) = executor.execute {
@@ -54,7 +59,17 @@ class Diagnostics(private val dir: Path, private val maxBytes: Long = 1_000_000)
     /** Склеенный текст журнала для экспорта. */
     fun snapshot(): String = buildString {
         for (p in listOf(previous, current)) if (Files.exists(p)) append(p.readText())
+        if (Files.exists(previousWineLog)) append("\n===== Wine / Box64 (предыдущий запуск) =====\n").append(previousWineLog.readText())
         if (Files.exists(wineLog)) append("\n===== Wine / Box64 (последний запуск) =====\n").append(wineLog.readText())
+    }
+
+    /** Файл с журналом для отправки (через «Поделиться»); вызывать не из UI-потока. */
+    fun exportToFile(target: Path): Path {
+        // Дождаться записи строк, поставленных в очередь до этого момента.
+        executor.submit {}.get()
+        Files.createDirectories(target.parent)
+        target.writeText(snapshot().ifEmpty { "(журнал пуст)\n" })
+        return target
     }
 
     private val maxWineBytes get() = maxBytes * 2

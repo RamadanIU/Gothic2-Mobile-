@@ -13,6 +13,9 @@
     <string name="launch_failed_title">Не удалось запустить игру</string>
     <string name="launch_failed_message">%1$s\n\nЖурнал диагностики можно сохранить в настройках и прислать разработчику.</string>
     <string name="launch_retry">Повторить</string>
+    <string name="failed_launch_message">Прошлый запуск игры закончился почти сразу — похоже, что-то пошло не так. Отправьте журнал разработчику: в нём видна причина.</string>
+    <string name="failed_launch_send">Отправить журнал</string>
+    <string name="failed_launch_retry">Играть снова</string>
     <string name="quickload_confirm">Загрузить быстрое сохранение? Несохранённый прогресс будет потерян.</string>
     <string name="quit_confirm">Выйти из игры? Несохранённый прогресс будет потерян.</string>
     <string name="yes">Да</string>

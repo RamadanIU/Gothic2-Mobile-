@@ -17,6 +17,7 @@ import gothic2.mobile.app.BuildConfig
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
 import gothic2.mobile.app.runtime.GameLauncher
+import gothic2.mobile.app.storage.DiagnosticsShare
 import gothic2.mobile.app.storage.DocumentExport
 import gothic2.mobile.app.storage.SafGameTree
 import gothic2.mobile.core.diagnostics.SessionJournal
@@ -54,7 +55,9 @@ class LauncherActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         if (intent.getBooleanExtra(EXTRA_REIMPORT, false).not() && isGameReady()) {
             val interrupted = SessionJournal(app.paths.sessionMarker).takeInterrupted()
-            if (interrupted == null) {
+            if (interrupted == null && app.settings.lastSessionFailed) {
+                showFailedLaunch()
+            } else if (interrupted == null) {
                 startGame()
             } else {
                 app.diagnostics.log("session", "interrupted: started=${interrupted.startedAt} last=${interrupted.lastHeartbeat}")
@@ -177,6 +180,32 @@ class LauncherActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /** Прошлая игра закрылась сразу после запуска: не запускать снова молча, а предложить журнал. */
+    private fun showFailedLaunch() {
+        val pad = (24 * resources.displayMetrics.density).toInt()
+        fun button(text: Int, action: () -> Unit) = Button(this).apply {
+            setText(text)
+            setOnClickListener { action() }
+        }
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(pad, pad, pad, pad)
+            addView(TextView(this@LauncherActivity).apply {
+                setTextColor(0xFFE8DCC0.toInt())
+                textSize = 16f
+                gravity = Gravity.CENTER
+                setText(R.string.failed_launch_message)
+            })
+            addView(button(R.string.failed_launch_send) { DiagnosticsShare.share(this@LauncherActivity) })
+            addView(button(R.string.failed_launch_retry) {
+                app.settings.lastSessionFailed = false
+                startGame()
+            })
+            addView(button(R.string.settings_title) { startActivity(Intent(this@LauncherActivity, SettingsActivity::class.java)) })
+        })
     }
 
     /** Экран восстановления после нештатного завершения (раздел 17 плана). */

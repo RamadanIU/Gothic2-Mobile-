@@ -1,5 +1,8 @@
 package gothic2.mobile.app.runtime
 
+import android.os.SystemClock
+import android.system.OsConstants
+import com.winlator.core.ProcessHelper
 import gothic2.mobile.core.input.InputSink
 import gothic2.mobile.core.runtime.LaunchSpec
 import gothic2.mobile.core.runtime.RuntimeBackend
@@ -51,9 +54,18 @@ class WinlatorBackend(
          */
         fun killWineProcesses(): Int {
             val self = android.os.Process.myPid()
-            val children = com.winlator.core.ProcessHelper.getChildProcesses().filter { it.pid != self }
-            children.forEach { com.winlator.core.ProcessHelper.killProcess(it.pid) }
-            return children.size
+            fun children() = ProcessHelper.getChildProcesses().filter { it.pid != self && it.state != ProcessHelper.PState.ZOMBIE }
+            val initial = children()
+            if (initial.isEmpty()) return 0
+            // Сначала SIGTERM: wineserver по нему сохраняет реестр (иначе настройки, которые игра
+            // записала при первом запуске, пропадут), затем SIGKILL тем, кто не завершился.
+            initial.forEach { android.os.Process.sendSignal(it.pid, OsConstants.SIGTERM) }
+            val deadline = SystemClock.uptimeMillis() + TERM_WAIT_MS
+            while (children().isNotEmpty() && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(100)
+            children().forEach { ProcessHelper.killProcess(it.pid) }
+            return initial.size
         }
+
+        private const val TERM_WAIT_MS = 3000L
     }
 }
