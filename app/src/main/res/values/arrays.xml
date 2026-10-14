@@ -12,6 +12,17 @@
         <item>BALANCED</item>
         <item>QUALITY</item>
     </string-array>
+    <!-- Порядок и значения — как в GraphicsMode. -->
+    <string-array name="graphics_mode_entries">
+        <item>D7VK (Direct3D 7 → Vulkan)</item>
+        <item>WineD3D + Zink (OpenGL поверх Vulkan)</item>
+        <item>WineD3D + Gladio (OpenGL)</item>
+    </string-array>
+    <string-array name="graphics_mode_values">
+        <item>d7vk</item>
+        <item>wined3d_zink</item>
+        <item>wined3d</item>
+    </string-array>
     <string-array name="fps_entries">
         <item>Как в профиле</item>
         <item>30</item>

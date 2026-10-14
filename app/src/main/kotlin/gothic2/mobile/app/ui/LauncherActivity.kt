@@ -197,12 +197,23 @@ class LauncherActivity : AppCompatActivity() {
                 setTextColor(0xFFE8DCC0.toInt())
                 textSize = 16f
                 gravity = Gravity.CENTER
-                setText(R.string.failed_launch_message)
+                text = getString(R.string.failed_launch_message, app.settings.graphicsMode.title)
             })
             addView(button(R.string.failed_launch_send) { DiagnosticsShare.share(this@LauncherActivity) })
             addView(button(R.string.failed_launch_retry) {
                 app.settings.lastSessionFailed = false
                 startGame()
+            })
+            // Самая частая причина — графика: следующий режим из GraphicsMode.
+            val next = app.settings.graphicsMode.next()
+            addView(Button(this@LauncherActivity).apply {
+                text = getString(R.string.failed_launch_other_graphics, next.title)
+                setOnClickListener {
+                    app.settings.graphicsMode = next
+                    app.settings.lastSessionFailed = false
+                    app.diagnostics.log("launch", "graphics mode -> ${next.id}")
+                    startGame()
+                }
             })
             addView(button(R.string.settings_title) { startActivity(Intent(this@LauncherActivity, SettingsActivity::class.java)) })
         })
