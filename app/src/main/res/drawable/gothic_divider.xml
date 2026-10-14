@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Разделитель списков: бронзовая линия, гаснущая к краям. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient
+        android:angle="0"
+        android:centerColor="#807D5C33"
+        android:endColor="#007D5C33"
+        android:startColor="#007D5C33" />
+    <size android:height="1dp" />
+</shape>

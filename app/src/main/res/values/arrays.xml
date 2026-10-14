@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string-array name="quality_entries">
-        <item>Автоматически (профиль устройства)</item>
+        <item>Автоматически (по телефону)</item>
         <item>Совместимость — 800×600</item>
         <item>Основной — 960×540</item>
         <item>Качество — 1280×720</item>
@@ -12,13 +12,13 @@
         <item>BALANCED</item>
         <item>QUALITY</item>
     </string-array>
-    <!-- Порядок и значения — как в GraphicsMode. -->
+    <!-- Порядок и значения — как в GraphicsMode (проверяет GraphicsModeTest). -->
     <string-array name="graphics_mode_entries">
-        <item>D7VK + Turnip (Adreno)</item>
-        <item>WineD3D + Zink (Turnip, Adreno)</item>
-        <item>WineD3D + Zink (Vortek)</item>
-        <item>D7VK + Vortek</item>
-        <item>WineD3D + Gladio (OpenGL)</item>
+        <item>Vulkan · Adreno — быстрый</item>
+        <item>OpenGL · Adreno — совместимый</item>
+        <item>OpenGL — совместимый</item>
+        <item>Vulkan — быстрый</item>
+        <item>OpenGL — запасной</item>
     </string-array>
     <string-array name="graphics_mode_values">
         <item>d7vk_turnip</item>
@@ -28,7 +28,7 @@
         <item>wined3d</item>
     </string-array>
     <string-array name="fps_entries">
-        <item>Как в профиле</item>
+        <item>Как в профиле телефона</item>
         <item>30</item>
         <item>45</item>
         <item>60</item>
@@ -38,5 +38,20 @@
         <item>30</item>
         <item>45</item>
         <item>60</item>
+    </string-array>
+
+    <!-- Советы на экране загрузки: только правда об управлении и немного Хориниса. -->
+    <string-array name="loading_tips">
+        <item>Левая часть экрана — ходьба: коснитесь и ведите палец в нужную сторону.</item>
+        <item>Правая часть экрана — обзор: проведите пальцем, чтобы осмотреться.</item>
+        <item>Кнопка «Ещё» — карта, журнал, быстрое сохранение и настройка кнопок.</item>
+        <item>«Назад» на телефоне — то же, что Esc: открывает меню игры.</item>
+        <item>Кнопки можно передвинуть под свою руку: «Ещё» → «Настроить кнопки».</item>
+        <item>В бою направление удара задают кнопки «Слева», «Удар» и «Справа».</item>
+        <item>«Слоты»: зажмите кнопку и потяните палец к нужной ячейке на колесе.</item>
+        <item>С геймпадом сенсорные кнопки прячутся сами — коснитесь экрана, чтобы вернуть их.</item>
+        <item>Сохраняйтесь почаще: в Хоринисе опасность ждёт за каждым поворотом.</item>
+        <item>Берегите сохранения: Настройки → «Экспортировать сохранения».</item>
+        <item>Телефон сильно греется? Снизьте качество изображения в настройках.</item>
     </string-array>
 </resources>

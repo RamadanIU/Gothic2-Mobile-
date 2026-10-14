@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Фон системного диалога: кожа с бронзовой и тонкой золотой каймой (как FrameDrawable). -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android" android:inset="16dp">
+    <layer-list>
+        <item>
+            <shape android:shape="rectangle">
+                <gradient android:angle="270" android:endColor="#F7160E09" android:startColor="#F72A1C12" />
+                <stroke android:width="1.5dp" android:color="@color/gothic_bronze" />
+                <corners android:radius="2dp" />
+            </shape>
+        </item>
+        <item android:bottom="5dp" android:left="5dp" android:right="5dp" android:top="5dp">
+            <shape android:shape="rectangle">
+                <stroke android:width="0.8dp" android:color="#73D9B566" />
+            </shape>
+        </item>
+    </layer-list>
+</inset>

@@ -9,8 +9,9 @@
     <application
         android:name=".GothicApplication"
         android:allowBackup="false"
-        android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
+        android:icon="@mipmap/gothic_icon"
+        android:roundIcon="@mipmap/gothic_icon_round"
+        android:label="@string/game_title"
         android:supportsRtl="false"
         android:theme="@style/Theme.Gothic2">
 
@@ -37,6 +38,12 @@
             android:name=".ui.SettingsActivity"
             android:exported="false"
             android:label="@string/settings_title"
+            android:screenOrientation="sensorLandscape" />
+
+        <activity
+            android:name=".ui.LicensesActivity"
+            android:exported="false"
+            android:label="@string/licenses_title"
             android:screenOrientation="sensorLandscape" />
     </application>
 </manifest>

@@ -910,6 +910,43 @@ index fb0252f..f74d752 100644
      public void copyFromReadBuffer(short width, short height) {
          if (!isAllocated()) allocateTexture(width, height, null);
          GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId);
+diff --git a/app/src/main/java/com/winlator/services/ForegroundService.java b/app/src/main/java/com/winlator/services/ForegroundService.java
+index 0940581..4614a13 100644
+--- a/app/src/main/java/com/winlator/services/ForegroundService.java
++++ b/app/src/main/java/com/winlator/services/ForegroundService.java
+@@ -279,7 +279,8 @@ public class ForegroundService extends Service {
+ 
+         Notification n = notificationUtils.createForegroundNotification(
+                 getNotificationContent(),
+-                "Winlator",
++                // Gothic II Mobile: название приложения вместо «Winlator».
++                getString(R.string.app_name),
+                 XServerDisplayActivity.class, // Service class for the 'Exit' action
+                 null, // Exit action here, not used because might cause issues
+                 targetActivity // Activity class for the 'Open' (notification tap) action
+@@ -371,7 +372,7 @@ public class ForegroundService extends Service {
+     @NonNull
+     private static String getNotificationContent() {
+         ForegroundService svc = instance;
+-        if (svc == null) return "Winlator is running in the background";
++        if (svc == null) return ""; // Gothic II Mobile: без названия среды
+ 
+         if (sessionActive.get()) {
+             return isSessionInBackground && (isDeviceLocked() || !isInPictureInPictureMode())
+diff --git a/app/src/main/java/com/winlator/services/NotificationUtils.java b/app/src/main/java/com/winlator/services/NotificationUtils.java
+index c3f422c..ebca4ca 100644
+--- a/app/src/main/java/com/winlator/services/NotificationUtils.java
++++ b/app/src/main/java/com/winlator/services/NotificationUtils.java
+@@ -13,7 +13,8 @@ import java.lang.ref.WeakReference;
+ 
+ public class NotificationUtils {
+     private static final String CHANNEL_ID = "winlator_foreground_service";
+-    private static final String CHANNEL_NAME = "Winlator Foreground Service";
++    // Gothic II Mobile: имя канала видно в настройках уведомлений Android — без названия среды.
++    private static final String CHANNEL_NAME = "Gothic II";
+ 
+     private final Context context;
+     private final NotificationManager notificationManager;
 diff --git a/app/src/main/java/com/winlator/widget/LogView.java b/app/src/main/java/com/winlator/widget/LogView.java
 index 6343202..a19eae1 100644
 --- a/app/src/main/java/com/winlator/widget/LogView.java
