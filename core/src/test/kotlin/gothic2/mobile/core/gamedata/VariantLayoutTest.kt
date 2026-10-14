@@ -4,6 +4,7 @@ import gothic2.mobile.core.util.FileOps
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.exists
+import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
@@ -31,6 +32,7 @@ class VariantLayoutTest {
         title=Классика
         exe=System/Gothic2c.exe
         args=
+        saves=Saves_GII
         rename=Data/Worlds_Addon.vdf>Data/Worlds_Addon.disabled,System/Paths.d>System/Paths.disabled,System/Paths_GII.d>System/Paths.d,System/SPLASH.BMP>System/SPLASH.disabled,System/SPLASH_GII.BMP>System/SPLASH.BMP
     """.trimIndent()
 
@@ -130,5 +132,18 @@ class VariantLayoutTest {
     fun `unsafe rename paths are rejected`() {
         val bad = manifest.replace("Data/Worlds_Addon.vdf>Data/Worlds_Addon.disabled", "Data/Worlds_Addon.vdf>../x")
         assertFailsWith<IllegalArgumentException> { SupportedBuild.parseAll(bad) }
+    }
+
+    @Test
+    fun `missing saves dir of the variant is created, existing one is kept`() {
+        assertEquals("Saves_GII", layout.ensureSavesDir(build, classic))
+        assertTrue(Files.isDirectory(root.resolve("Saves_GII")))
+        assertNull(layout.ensureSavesDir(build, classic))
+
+        // Каталог в другом регистре — тот же каталог, второй не создаётся.
+        Files.createDirectories(root.resolve("saves/savegame1")).resolve("SAVEDAT.SAV").writeText("s")
+        assertNull(layout.ensureSavesDir(build, notr))
+        assertFalse(root.listDirectoryEntries().any { it.fileName.toString() == "Saves" })
+        assertEquals("s", text("saves/savegame1/SAVEDAT.SAV"))
     }
 }

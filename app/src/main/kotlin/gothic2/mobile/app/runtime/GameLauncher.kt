@@ -83,6 +83,9 @@ class GameLauncher(private val app: GothicApplication) {
         // Файлы варианта (классика прячет архивы аддона) — последним шагом; обратно их
         // возвращает экран игры после выхода, а после сбоя — следующий запуск приложения.
         VariantLayout(root).apply(build, variant)
+        // Без каталога сохранений Gothic падает при первой записи; у игры, импортированной
+        // до исправления, Saves_GII классики нет — создаём при запуске, а не только при импорте.
+        VariantLayout(root).ensureSavesDir(build, variant)?.let { app.diagnostics.log("launch", "created saves dir $it") }
 
         app.diagnostics.log(
             "launch",
