@@ -14,14 +14,16 @@
     </string-array>
     <!-- Порядок и значения — как в GraphicsMode. -->
     <string-array name="graphics_mode_entries">
-        <item>WineD3D + Zink (Vortek)</item>
+        <item>D7VK + Turnip (Adreno)</item>
         <item>WineD3D + Zink (Turnip, Adreno)</item>
-        <item>D7VK (Direct3D 7 → Vulkan)</item>
+        <item>WineD3D + Zink (Vortek)</item>
+        <item>D7VK + Vortek</item>
         <item>WineD3D + Gladio (OpenGL)</item>
     </string-array>
     <string-array name="graphics_mode_values">
-        <item>wined3d_zink</item>
+        <item>d7vk_turnip</item>
         <item>wined3d_zink_turnip</item>
+        <item>wined3d_zink</item>
         <item>d7vk</item>
         <item>wined3d</item>
     </string-array>

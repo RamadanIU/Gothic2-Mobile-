@@ -1,0 +1,46 @@
+package gothic2.mobile.app.runtime
+
+import java.io.File
+import javax.xml.parsers.DocumentBuilderFactory
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+class GraphicsModeTest {
+    @Test
+    fun `adreno starts with D7VK and falls back to the working WineD3D mode`() {
+        assertEquals(GraphicsMode.D7VK_TURNIP, GraphicsMode.defaultFor("Adreno (TM) 740"))
+        assertEquals(GraphicsMode.WINED3D_ZINK, GraphicsMode.defaultFor("Mali-G715"))
+        assertEquals(GraphicsMode.WINED3D_ZINK, GraphicsMode.defaultFor(null))
+        // Кнопка «другой режим» после неудачи D7VK ведёт в режим, который уже работал на Adreno.
+        assertEquals(GraphicsMode.WINED3D_ZINK_TURNIP, GraphicsMode.D7VK_TURNIP.next())
+        // Выбор игрока важнее видеокарты; неизвестный id — режим по умолчанию.
+        assertEquals(GraphicsMode.WINED3D_ZINK_TURNIP, GraphicsMode.of("wined3d_zink_turnip", "Adreno (TM) 740"))
+        assertEquals(GraphicsMode.D7VK_TURNIP, GraphicsMode.of("removed", "Adreno (TM) 740"))
+    }
+
+    @Test
+    fun `D7VK modes never use Gladio for the DirectDraw part`() {
+        for (mode in GraphicsMode.entries.filter { it.isD7VK }) {
+            assertTrue(mode.graphicsDriver.endsWith(",zink"), mode.id)
+        }
+    }
+
+    @Test
+    fun `settings list matches the modes`() {
+        val doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(File("src/main/res/values/arrays.xml"))
+        val arrays = doc.getElementsByTagName("string-array")
+        fun items(name: String): List<String> {
+            for (i in 0 until arrays.length) {
+                val node = arrays.item(i) as org.w3c.dom.Element
+                if (node.getAttribute("name") == name) {
+                    val list = node.getElementsByTagName("item")
+                    return (0 until list.length).map { list.item(it).textContent }
+                }
+            }
+            error("нет $name")
+        }
+        assertEquals(GraphicsMode.entries.map { it.id }, items("graphics_mode_values"))
+        assertEquals(GraphicsMode.entries.map { it.title }, items("graphics_mode_entries"))
+    }
+}

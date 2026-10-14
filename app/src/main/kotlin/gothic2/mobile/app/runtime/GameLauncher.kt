@@ -85,7 +85,7 @@ class GameLauncher(private val app: GothicApplication) {
         app.diagnostics.log(
             "launch",
             "variant=${variant.id} gpu=$gpu profile=${profile.id} graphics=${mode.id} ${graphics.width}x${graphics.height} " +
-                "cpus=${CpuCores.format(cores)}/${CpuCores.format(CpuInfo.cpus)} container=${container.id}",
+                "fps=${if (mode.isD7VK) graphics.fpsLimit else "-"} cpus=${CpuCores.format(cores)}/${CpuCores.format(CpuInfo.cpus)} container=${container.id}",
         )
         return Prepared(container.id, root.resolve(exeRel).toString(), args, graphics, profile)
     }
@@ -147,12 +147,13 @@ class GameLauncher(private val app: GothicApplication) {
         }
         container.graphicsDriver = mode.graphicsDriver
         when (mode) {
-            // D7VK переводит Direct3D 7 (ddraw Gothic) сразу в Vulkan.
-            GraphicsMode.D7VK -> {
+            // D7VK переводит Direct3D 7 (ddraw Gothic) сразу в Vulkan. Ограничение FPS из настроек
+            // работает здесь (d3d9.maxFrameRate в dxvk.conf): меньше нагрев при той же плавности.
+            GraphicsMode.D7VK_TURNIP, GraphicsMode.D7VK -> {
                 container.dxWrapper = DXWrappers.DXVK
-                container.dxWrapperConfig = "ddrawWrapper=${DXWrappers.D7VK}"
+                container.dxWrapperConfig = "ddrawWrapper=${DXWrappers.D7VK},framerate=${graphics.fpsLimit}"
             }
-            // Встроенный ddraw Wine → WineD3D → OpenGL (Zink или Gladio).
+            // Встроенный ddraw Wine → WineD3D → OpenGL (Zink или Gladio). Ограничения FPS нет.
             GraphicsMode.WINED3D_ZINK, GraphicsMode.WINED3D_ZINK_TURNIP, GraphicsMode.WINED3D_GLADIO -> {
                 container.dxWrapper = DXWrappers.WINED3D
                 // Winlator по умолчанию ставит csmt=3: бит 0x2 заставляет WineD3D ждать выполнения
