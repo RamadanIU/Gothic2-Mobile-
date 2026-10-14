@@ -9,6 +9,7 @@ import gothic2.mobile.core.config.RendererChain
 import gothic2.mobile.core.gamedata.GameVariant
 import gothic2.mobile.core.gamedata.PathGameTree
 import gothic2.mobile.core.gamedata.SupportedBuild
+import gothic2.mobile.core.gamedata.VariantLayout
 import gothic2.mobile.core.runtime.BridgeEndpoint
 import gothic2.mobile.core.runtime.LaunchSpec
 import gothic2.mobile.core.runtime.LaunchSpecBuilder
@@ -72,7 +73,16 @@ class GameLauncher(private val app: GothicApplication, private val backend: Runt
         }
         app.diagnostics.log("launch", "variant=${variant.id} profile=${profile.id} renderer=${profile.renderer} ${graphics.width}x${graphics.height}@${graphics.fpsLimit}")
         backend.prepare(app.components)
-        backend.launch(spec)
+        // Файлы варианта (классика прячет архивы аддона) — непосредственно перед стартом;
+        // обратно их возвращает GameActivity после выхода игры.
+        val layout = VariantLayout(root)
+        try {
+            layout.apply(build, variant)
+            backend.launch(spec)
+        } catch (e: Exception) {
+            runCatching { layout.restore(build) }
+            throw e
+        }
         return Launched(spec, graphics)
     }
 }

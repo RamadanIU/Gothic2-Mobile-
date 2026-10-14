@@ -1,6 +1,7 @@
 package gothic2.mobile.core.gamedata
 
 import gothic2.mobile.core.config.IniFile
+import gothic2.mobile.core.util.FileOps
 import gothic2.mobile.core.util.Hashing
 
 /**
@@ -12,6 +13,8 @@ import gothic2.mobile.core.util.Hashing
  * @property args аргументы EXE (например, `-game:<файл>.ini`); null — ещё не
  *   подтверждены на реальной копии, вариант не предлагается игроку
  * @property savesDir собственный каталог сохранений варианта или null — общий каталог сборки
+ * @property renames переименования на время запуска (по порядку), откатываются после выхода —
+ *   см. [VariantLayout]
  */
 data class GameVariant(
     val id: String,
@@ -20,6 +23,7 @@ data class GameVariant(
     val args: List<String>?,
     val requiredFiles: List<String>,
     val savesDir: String?,
+    val renames: List<FileRename> = emptyList(),
 ) {
     val isDefined: Boolean get() = args != null
 }
@@ -120,6 +124,13 @@ data class SupportedBuild(
                 args = if (rawArgs.trim().equals(PENDING, ignoreCase = true)) null else rawArgs.split(' ').filter { it.isNotEmpty() },
                 requiredFiles = ini.get(section, "requires").orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() },
                 savesDir = ini.get(section, "saves"),
+                renames = ini.get(section, "rename").orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }.map {
+                    val parts = it.split('>')
+                    require(parts.size == 2 && parts.all { p -> FileOps.isSafeRelative(p.trim()) }) {
+                        "[$section]: неверное переименование «$it» (ожидается путь>путь)"
+                    }
+                    FileRename(parts[0].trim(), parts[1].trim())
+                },
             )
         }
     }

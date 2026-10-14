@@ -8,6 +8,7 @@ import gothic2.mobile.core.gamedata.BuildVerifier
 import gothic2.mobile.core.gamedata.GameImporter
 import gothic2.mobile.core.gamedata.GameVariant
 import gothic2.mobile.core.gamedata.SupportedBuild
+import gothic2.mobile.core.gamedata.VariantLayout
 import gothic2.mobile.core.runtime.RuntimeComponents
 import gothic2.mobile.core.saves.SaveManager
 import java.util.concurrent.ExecutorService
@@ -55,6 +56,9 @@ class GothicApplication : Application() {
         importedBuild()?.let { build ->
             runCatching { GameImporter(paths.gameRoot).recoverInterrupted(build) }
                 .onFailure { diagnostics.log("import", "recover failed: $it") }
+            // Игра прошлого процесса не вернула файлы варианта (например, классики) — вернуть.
+            runCatching { VariantLayout(paths.gameRoot).restore(build) }
+                .onFailure { diagnostics.log("launch", "variant restore failed: $it") }
         }
     }
 }
