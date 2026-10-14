@@ -10,7 +10,8 @@ package gothic2.mobile.app.runtime
  * В режимах D7VK трёхмерную часть рисует D7VK (Direct3D 7 → Vulkan), а DirectDraw без 3D Winlator
  * отдаёт встроенному ddraw Wine (`ddraw_.dll`), который работает через OpenGL второго драйвера. С
  * Gladio этот ddraw сообщал игре негодные возможности («maximum texture size is lower than 32» — так
- * же падал и WineD3D + Gladio), поэтому OpenGL в режимах D7VK — Zink.
+ * же падал и WineD3D + Gladio), поэтому OpenGL в режимах D7VK — Zink. С Zink игра доходила до ошибки
+ * в самом D7VK 1.11 (падение при запуске) — её исправляет BinaryFix.D7VK_1_11_HEL_CAPS.
  *
  * @property graphicsDriver драйверы Winlator «Vulkan,OpenGL»
  */

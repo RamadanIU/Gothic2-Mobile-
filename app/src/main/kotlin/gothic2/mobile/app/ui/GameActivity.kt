@@ -58,8 +58,10 @@ import gothic2.mobile.core.input.LayoutEditor
 import gothic2.mobile.core.input.OverlayLayout
 import gothic2.mobile.core.input.TouchCommand
 import gothic2.mobile.core.input.TouchRouter
+import gothic2.mobile.core.runtime.BinaryFix
 import gothic2.mobile.core.runtime.SessionController
 import gothic2.mobile.core.saves.SaveBackupPolicy
+import java.io.File
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -215,12 +217,27 @@ class GameActivity : XServerDisplayActivity() {
         // объект-событие («Can not create Event object»). Gothic лёгкая, синхронизация через
         // wineserver на скорости почти не сказывается.
         env.put("WINEESYNC", "0")
+        if (app.settings.graphicsMode.isD7VK) {
+            // Профиль D7VK для Gothic II привязан к Gothic2.exe; классика — Gothic2c.exe, поэтому
+            // его настройку задаём сами: без неё нет фона экранов загрузки. Свой журнал D7VK
+            // (D7VK_LOG_LEVEL, по умолчанию info) и так пишет в вывод Wine, без файлов у игры.
+            env.put("DXVK_CONFIG", "ddraw.forceLegacyPresent = True")
+        }
         val args = intent.getStringArrayExtra(EXTRA_ARGS).orEmpty()
         if (args.isNotEmpty()) env.put("EXTRA_EXEC_ARGS", args.joinToString(" "))
         startBridge()?.let { (socket, token) ->
             env.put(BridgeProtocol.SOCKET_ENV, socket)
             env.put(BridgeProtocol.TOKEN_ENV, token)
         }
+    }
+
+    /** Файлы контейнера распакованы, Wine ещё не запущен (фоновый поток Winlator). */
+    override fun onWineSystemFilesReady() {
+        val ddraw = File(container.rootDir, ".wine/drive_c/windows/syswow64/ddraw.dll").toPath()
+        val result = runCatching { BinaryFix.D7VK_1_11_HEL_CAPS.apply(ddraw) }
+            .onFailure { app.diagnostics.log("launch", "d7vk fix failed: $it") }
+            .getOrNull()
+        if (result == BinaryFix.Result.FIXED) app.diagnostics.log("launch", "d7vk: fixed GetCaps (HEL)")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

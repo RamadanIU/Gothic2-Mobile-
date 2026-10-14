@@ -344,7 +344,7 @@ index ca3c83b..76eeb83 100644
                          ContentDialog.confirm(context, R.string.do_you_want_to_remove_this_file, () -> {
                              shortcut.remove();
 diff --git a/app/src/main/java/com/winlator/XServerDisplayActivity.java b/app/src/main/java/com/winlator/XServerDisplayActivity.java
-index 667f1b3..4ae4212 100644
+index 667f1b3..d3449a6 100644
 --- a/app/src/main/java/com/winlator/XServerDisplayActivity.java
 +++ b/app/src/main/java/com/winlator/XServerDisplayActivity.java
 @@ -141,6 +141,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
@@ -363,7 +363,16 @@ index 667f1b3..4ae4212 100644
          boolean enableLogs = preferences.getBoolean("enable_wine_debug", false) || preferences.getInt("box64_logs", 0) >= 1;
          if (enableLogs) ProcessHelper.addDebugCallback(debugDialog = new DebugDialog(this));
          Menu menu = navigationView.getMenu();
-@@ -360,28 +362,28 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+@@ -272,6 +274,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+                 setupWineSystemFiles();
+                 extractGraphicsDriverFiles();
+                 changeWineAudioDriver();
++                // Gothic II Mobile: файлы распакованы, Wine ещё не запущен.
++                onWineSystemFilesReady();
+             }
+             setupXEnvironment();
+         });
+@@ -360,28 +364,28 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
      @Override
      public boolean onNavigationItemSelected(@NonNull MenuItem item) {
          final GLRenderer renderer = xServerView.getRenderer();
@@ -399,7 +408,7 @@ index 667f1b3..4ae4212 100644
                  if (magnifierView == null) {
                      final FrameLayout container = findViewById(R.id.FLXServerDisplay);
                      magnifierView = new MagnifierView(this);
-@@ -398,25 +400,25 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+@@ -398,25 +402,25 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                  }
                  drawerLayout.closeDrawers();
                  break;
@@ -430,7 +439,7 @@ index 667f1b3..4ae4212 100644
                  exit();
                  break;
          }
-@@ -427,7 +429,28 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
+@@ -427,7 +431,34 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
          return preferences;
      }
  
@@ -440,6 +449,12 @@ index 667f1b3..4ae4212 100644
 +     * свой журнал (ProcessHelper.addDebugCallback) и переменные окружения (getOverrideEnvVars).
 +     */
 +    protected void onSetupLogging() {}
++
++    /**
++     * Gothic II Mobile: вызывается в фоновом потоке, когда системные файлы контейнера (обёртки
++     * DirectX, драйверы) уже распакованы, а Wine ещё не запущен — наследник может их исправить.
++     */
++    protected void onWineSystemFilesReady() {}
 +
 +    /**
 +     * Gothic II Mobile: false — среда не запускается (например, Android пересоздал экран после
