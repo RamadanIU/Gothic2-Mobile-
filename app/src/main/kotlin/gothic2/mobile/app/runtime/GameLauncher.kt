@@ -12,7 +12,6 @@ import gothic2.mobile.core.config.DeviceProfiles
 import gothic2.mobile.core.config.GothicIniWriter
 import gothic2.mobile.core.config.GraphicsPreset
 import gothic2.mobile.core.config.IniFile
-import gothic2.mobile.core.config.RendererChain
 import gothic2.mobile.core.gamedata.GameVariant
 import gothic2.mobile.core.gamedata.PathGameTree
 import gothic2.mobile.core.gamedata.SupportedBuild
@@ -72,7 +71,8 @@ class GameLauncher(private val app: GothicApplication) {
         Files.createDirectories(iniPath.parent)
         iniPath.writeText(ini.toString(), Charsets.ISO_8859_1)
 
-        val container = ensureContainer(profile, graphics)
+        val mode = app.settings.graphicsMode
+        val container = ensureContainer(mode, graphics)
         val exeRel = tree.resolve(build.exeOf(variant)) ?: error("В папке игры нет ${build.exeOf(variant)}")
         // Файлы варианта (классика прячет архивы аддона) — последним шагом; обратно их
         // возвращает экран игры после выхода, а после сбоя — следующий запуск приложения.
@@ -80,7 +80,7 @@ class GameLauncher(private val app: GothicApplication) {
 
         app.diagnostics.log(
             "launch",
-            "variant=${variant.id} profile=${profile.id} renderer=${profile.renderer} ${graphics.width}x${graphics.height} container=${container.id}",
+            "variant=${variant.id} profile=${profile.id} graphics=${mode.id} ${graphics.width}x${graphics.height} container=${container.id}",
         )
         return Prepared(container.id, root.resolve(exeRel).toString(), args, graphics, profile)
     }
@@ -118,7 +118,7 @@ class GameLauncher(private val app: GothicApplication) {
     }
 
     /** Контейнер Wine для игры: создаётся один раз, настройки обновляются при каждом запуске. */
-    private fun ensureContainer(profile: DeviceProfile, graphics: GraphicsPreset): Container {
+    private fun ensureContainer(mode: GraphicsMode, graphics: GraphicsPreset): Container {
         val manager = ContainerManager(app)
         val container = manager.containers.firstOrNull { it.name == CONTAINER_NAME }
             ?: manager.createContainer(
@@ -133,16 +133,17 @@ class GameLauncher(private val app: GothicApplication) {
         // Из библиотек Windows Gothic нужны DirectSound и DirectMusic (музыка); остальное — встроенное Wine.
         container.winComponents = WIN_COMPONENTS
         container.screenSize = "${graphics.width}x${graphics.height}"
-        when (profile.renderer) {
-            // Gothic рисует через Direct3D 7 (ddraw): встроенный WineD3D поверх OpenGL.
-            RendererChain.WINED3D -> {
-                container.dxWrapper = DXWrappers.WINED3D
-                container.dxWrapperConfig = ""
-            }
-            // D7VK переводит Direct3D 7 сразу в Vulkan.
-            RendererChain.D3D7_TO_D3D9_DXVK -> {
+        container.graphicsDriver = mode.graphicsDriver
+        when (mode) {
+            // D7VK переводит Direct3D 7 (ddraw Gothic) сразу в Vulkan.
+            GraphicsMode.D7VK -> {
                 container.dxWrapper = DXWrappers.DXVK
                 container.dxWrapperConfig = "ddrawWrapper=${DXWrappers.D7VK}"
+            }
+            // Встроенный ddraw Wine → WineD3D → OpenGL (Zink или Gladio).
+            GraphicsMode.WINED3D_ZINK, GraphicsMode.WINED3D_GLADIO -> {
+                container.dxWrapper = DXWrappers.WINED3D
+                container.dxWrapperConfig = ""
             }
         }
         container.saveData()
@@ -162,7 +163,7 @@ class GameLauncher(private val app: GothicApplication) {
         val SKIPPED_ASSETS = listOf(
             "wincomponents/direct3d", "wincomponents/directshow", "wincomponents/directplay",
             "wincomponents/xaudio", "wincomponents/vcrun", "wincomponents/wmdecoder",
-            "graphics_driver/zink", "graphics_driver/virgl", "graphics_driver/turnip",
+            "graphics_driver/virgl", "graphics_driver/turnip",
             "dxwrapper/cnc-ddraw",
         )
     }

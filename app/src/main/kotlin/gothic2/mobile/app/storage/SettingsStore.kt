@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.core.content.edit
 import androidx.preference.PreferenceManager
 import gothic2.mobile.app.BuildConfig
+import gothic2.mobile.app.runtime.GraphicsMode
 import gothic2.mobile.core.config.UserSettings
 
 /** Хранение пользовательских настроек и состояния импорта. */
@@ -44,6 +45,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_FAILED, false)
         set(v) = prefs.edit { putBoolean(KEY_FAILED, v) }
 
+    /** Режим графики (D7VK или WineD3D с разными OpenGL). */
+    var graphicsMode: GraphicsMode
+        get() = GraphicsMode.of(prefs.getString(KEY_GRAPHICS, null))
+        set(v) = prefs.edit { putString(KEY_GRAPHICS, v.id) }
+
     fun userSettings(): UserSettings = runCatching {
         UserSettings(
             quality = UserSettings.Quality.valueOf(prefs.getString("quality", "AUTO")!!),
@@ -66,5 +72,6 @@ class SettingsStore(context: Context) {
         const val KEY_DEV = "dev_mode"
         const val KEY_LAYOUT = "layout_overrides"
         const val KEY_FAILED = "last_session_failed"
+        const val KEY_GRAPHICS = "graphics_mode"
     }
 }

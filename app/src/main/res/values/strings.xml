@@ -13,9 +13,10 @@
     <string name="launch_failed_title">Не удалось запустить игру</string>
     <string name="launch_failed_message">%1$s\n\nЖурнал диагностики можно сохранить в настройках и прислать разработчику.</string>
     <string name="launch_retry">Повторить</string>
-    <string name="failed_launch_message">Прошлый запуск игры закончился почти сразу — похоже, что-то пошло не так. Отправьте журнал разработчику: в нём видна причина.</string>
+    <string name="failed_launch_message">Прошлый запуск игры закончился почти сразу — похоже, что-то пошло не так. Отправьте журнал разработчику: в нём видна причина.\n\nРежим графики: %1$s</string>
     <string name="failed_launch_send">Отправить журнал</string>
     <string name="failed_launch_retry">Играть снова</string>
+    <string name="failed_launch_other_graphics">Играть с графикой: %1$s</string>
     <string name="quickload_confirm">Загрузить быстрое сохранение? Несохранённый прогресс будет потерян.</string>
     <string name="quit_confirm">Выйти из игры? Несохранённый прогресс будет потерян.</string>
     <string name="yes">Да</string>
@@ -28,7 +29,6 @@
     <string name="restore_done">Сохранение восстановлено.</string>
     <string name="uninstall_warning">Удаление приложения удалит внутренние данные, включая сохранения. Регулярно экспортируйте их.</string>
     <string name="thermal_warning">Телефон сильно нагрелся. Снизьте качество или дальность видимости в настройках.</string>
-    <string name="latency_line">Задержка ввода: p50 %1$d мс, p95 %2$d мс</string>
     <string name="editor_mode">Панель: %1$s</string>
     <string name="editor_reset">Сбросить</string>
     <string name="editor_done">Готово</string>

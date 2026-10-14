@@ -11,6 +11,13 @@
 
     <PreferenceCategory app:title="Изображение">
         <ListPreference
+            app:key="graphics_mode"
+            app:title="Режим графики"
+            app:entries="@array/graphics_mode_entries"
+            app:entryValues="@array/graphics_mode_values"
+            app:defaultValue="d7vk"
+            app:useSimpleSummaryProvider="true" />
+        <ListPreference
             app:key="quality"
             app:title="Качество изображения"
             app:entries="@array/quality_entries"
