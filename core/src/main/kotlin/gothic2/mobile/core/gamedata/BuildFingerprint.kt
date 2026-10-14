@@ -37,7 +37,7 @@ object BuildFingerprint {
         "Готовый dxvk.conf" to "System/dxvk.conf",
     )
 
-    private val CONFIG_EXTENSIONS = listOf(".ini", ".bat", ".cfg", ".conf")
+    private val CONFIG_EXTENSIONS = listOf(".ini", ".bat", ".cfg", ".conf", ".d")
     private const val MAX_CONFIG_BYTES = 32 * 1024
 
     /** Каталоги, файлы которых хэшируются целиком (движок, архивы, настройки, моды). */

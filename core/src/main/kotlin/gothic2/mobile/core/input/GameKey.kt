@@ -6,7 +6,7 @@ package gothic2.mobile.core.input
  */
 enum class GameKey {
     FORWARD, BACK, TURN_LEFT, TURN_RIGHT, STRAFE_LEFT, STRAFE_RIGHT,
-    ACTION, JUMP, WEAPON, SPEED_MODIFIER, SNEAK, LOOK_BACK,
+    ACTION, JUMP, WEAPON, SPEED_MODIFIER, SNEAK, FIRST_PERSON,
     INVENTORY, CHARACTER, LOG, MAP,
     MENU_UP, MENU_DOWN, MENU_LEFT, MENU_RIGHT, CONFIRM, ESCAPE,
     SLOT_1, SLOT_2, SLOT_3, SLOT_4, SLOT_5, SLOT_6, SLOT_7, SLOT_8, SLOT_9, SLOT_10,
@@ -23,17 +23,17 @@ object ScanCode {
     const val LCONTROL = 0x1D
     const val LSHIFT = 0x2A
     const val B = 0x30
+    const val F = 0x21
     const val L = 0x26
+    const val X = 0x2D
     const val M = 0x32
     const val LMENU = 0x38 // левый Alt
     const val SPACE = 0x39
     const val F5 = 0x3F
     const val F9 = 0x43
-    const val NUMPAD0 = 0x52
     const val UP = 0xC8
     const val LEFT = 0xCB
     const val RIGHT = 0xCD
-    const val END = 0xCF
     const val DOWN = 0xD0
     const val NEXT = 0xD1 // Page Down
     const val DELETE = 0xD3
@@ -42,9 +42,12 @@ object ScanCode {
 /**
  * Соответствие логических действий скан-кодам.
  *
- * Значения по умолчанию — стандартная клавиатурная раскладка Gothic II. Их ОБЯЗАТЕЛЬНО
- * перепроверить на закреплённой Classic-сборке (этап 1, docs/TEST_PLAN.md): клавиши
- * быстрого сохранения, взгляда назад и подкрадывания различаются между версиями.
+ * Значения по умолчанию сверены с разделом [KEYS] `System/Gothic.ini` закреплённой
+ * GOG-сборки (отчёт от 2026-10-14). В INI у действия две клавиши (по 2 байта, младший
+ * байт первым: `keyUp=c8001100` — «вверх» и W); здесь берётся та, что не требует мыши.
+ * Взгляда назад в Gothic II нет: `End` — это блок (keyParade), `Num0` — «осмотреться»
+ * (keyLook). Быстрые сохранение и загрузка (F5/F9) работают только при
+ * `useQuickSaveKeys=1` — его выставляет [gothic2.mobile.core.config.GothicIniWriter].
  */
 data class KeyBindings(val map: Map<GameKey, Int>) {
     init {
@@ -69,8 +72,8 @@ data class KeyBindings(val map: Map<GameKey, Int>) {
                 put(GameKey.JUMP, ScanCode.LMENU)
                 put(GameKey.WEAPON, ScanCode.SPACE)
                 put(GameKey.SPEED_MODIFIER, ScanCode.LSHIFT)
-                put(GameKey.SNEAK, ScanCode.NUMPAD0)
-                put(GameKey.LOOK_BACK, ScanCode.END)
+                put(GameKey.SNEAK, ScanCode.X)
+                put(GameKey.FIRST_PERSON, ScanCode.F)
                 put(GameKey.INVENTORY, ScanCode.TAB)
                 put(GameKey.CHARACTER, ScanCode.B)
                 put(GameKey.LOG, ScanCode.L)

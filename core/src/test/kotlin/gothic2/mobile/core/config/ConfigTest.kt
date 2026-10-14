@@ -29,6 +29,8 @@ class ConfigTest {
         assertEquals("960", ini.get("VIDEO", "zVidResFullscreenX"))
         assertEquals("1", ini.get("GAME", "enableMouse"))
         assertEquals("0", ini.get("GAME", "playLogoVideos"))
+        assertEquals("1", ini.get("GAME", "useGothic1Controls"))
+        assertEquals("1", ini.get("GAME", "useQuickSaveKeys"))
         assertTrue("d3d9.maxFrameRate = 30" in GothicIniWriter.dxvkConf(GraphicsPreset.BALANCED))
     }
 
