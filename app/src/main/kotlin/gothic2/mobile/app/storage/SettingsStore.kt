@@ -39,6 +39,11 @@ class SettingsStore(context: Context) {
         }.toMap()
         set(v) = prefs.edit { putString(KEY_LAYOUT, v.entries.joinToString(";") { "${it.key}:${it.value.first}:${it.value.second}" }) }
 
+    /** Прошлая игра закрылась сразу после запуска: лаунчер покажет экран с журналом. */
+    var lastSessionFailed: Boolean
+        get() = prefs.getBoolean(KEY_FAILED, false)
+        set(v) = prefs.edit { putBoolean(KEY_FAILED, v) }
+
     fun userSettings(): UserSettings = runCatching {
         UserSettings(
             quality = UserSettings.Quality.valueOf(prefs.getString("quality", "AUTO")!!),
@@ -60,5 +65,6 @@ class SettingsStore(context: Context) {
         const val KEY_VARIANT = "game_variant"
         const val KEY_DEV = "dev_mode"
         const val KEY_LAYOUT = "layout_overrides"
+        const val KEY_FAILED = "last_session_failed"
     }
 }

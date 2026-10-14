@@ -62,6 +62,7 @@ class GameActivity : XServerDisplayActivity() {
     private val main = Handler(Looper.getMainLooper())
     private var started = false
     private var exited = false
+    private var startedAt = 0L
 
     private lateinit var settings: UserSettings
     private lateinit var backend: WinlatorBackend
@@ -128,6 +129,7 @@ class GameActivity : XServerDisplayActivity() {
         }
         this.variant = variant
         started = true
+        WinlatorBackend.sessionActive = true
         return true
     }
 
@@ -139,6 +141,10 @@ class GameActivity : XServerDisplayActivity() {
         val env = overrideEnvVars
         // Ошибки Wine нужны для разбора проблем, отладочный шум — нет.
         env.put("WINEDEBUG", "err+all,fixme-all")
+        // ESync (события Windows на eventfd) выключен: с ним Union в GOG-сборке не создаёт свой
+        // объект-событие («Can not create Event object»). Gothic лёгкая, синхронизация через
+        // wineserver на скорости почти не сказывается.
+        env.put("WINEESYNC", "0")
         val args = intent.getStringArrayExtra(EXTRA_ARGS).orEmpty()
         if (args.isNotEmpty()) env.put("EXTRA_EXEC_ARGS", args.joinToString(" "))
         startBridge()?.let { (socket, token) ->
@@ -185,6 +191,7 @@ class GameActivity : XServerDisplayActivity() {
         getSystemService(InputManager::class.java).registerInputDeviceListener(deviceListener, main)
         updateGamepadState()
         app.background.execute { journal.begin() }
+        startedAt = SystemClock.uptimeMillis()
         app.diagnostics.log("game", "started variant=${variant.id}")
         main.postDelayed(periodic, PERIODIC_MS)
     }
@@ -240,16 +247,24 @@ class GameActivity : XServerDisplayActivity() {
     private fun onGameExited() {
         if (exited) return
         exited = true
-        app.diagnostics.log("game", "exited")
+        val seconds = (SystemClock.uptimeMillis() - startedAt) / 1000
+        app.diagnostics.log("game", "exited after ${seconds}s")
+        // Игра закрылась почти сразу — вероятно, ошибка: лаунчер покажет кнопку «Отправить журнал».
+        app.settings.lastSessionFailed = seconds < QUICK_EXIT_SECONDS
         afterGame()
         finish()
     }
 
-    /** Игра больше не работает: вернуть файлы варианта и сохранить копии изменившихся слотов. */
+    /**
+     * Игра больше не работает: завершить оставшиеся процессы Wine, вернуть файлы варианта и
+     * сохранить копии изменившихся слотов (в фоне, по порядку).
+     */
     private fun afterGame() {
         val app = app
         val build = app.importedBuild()
         app.background.execute {
+            val killed = WinlatorBackend.killWineProcesses()
+            if (killed > 0) app.diagnostics.log("game", "stopped $killed Wine processes")
             journal.end()
             if (build != null) {
                 restoreVariantFiles(build)
@@ -466,9 +481,11 @@ class GameActivity : XServerDisplayActivity() {
         }
         bridge?.stop()
         super.onDestroy() // Winlator останавливает Wine
+        if (started) WinlatorBackend.sessionActive = false
         if (started && isFinishing && !exited) {
             exited = true
             app.diagnostics.log("game", "closed by system")
+            app.settings.lastSessionFailed = (SystemClock.uptimeMillis() - startedAt) / 1000 < QUICK_EXIT_SECONDS
             afterGame()
         }
     }
@@ -501,6 +518,8 @@ class GameActivity : XServerDisplayActivity() {
         private const val EXTRA_EXEC_PATH = "exec_path"
         private const val EXTRA_ARGS = "gothic2_args"
         private const val PERIODIC_MS = 60_000L
+        /** Игра, закрывшаяся быстрее, считается неудачным запуском. */
+        private const val QUICK_EXIT_SECONDS = 180
         private val MODE_TITLES = mapOf(
             ControlMode.WORLD to "мир",
             ControlMode.COMBAT to "бой",

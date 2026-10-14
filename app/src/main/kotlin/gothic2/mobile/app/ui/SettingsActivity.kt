@@ -13,6 +13,7 @@ import androidx.preference.SwitchPreferenceCompat
 import gothic2.mobile.app.BuildConfig
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
+import gothic2.mobile.app.storage.DiagnosticsShare
 import gothic2.mobile.app.storage.DocumentExport
 import gothic2.mobile.core.config.UserSettings
 import gothic2.mobile.core.gamedata.BuildFingerprint
@@ -108,6 +109,7 @@ class SettingsActivity : AppCompatActivity() {
                 app.settings.layoutOverrides = emptyMap()
                 Toast.makeText(requireContext(), R.string.layout_reset_done, Toast.LENGTH_SHORT).show()
             }
+            click("send_diagnostics") { DiagnosticsShare.share(requireActivity()) }
             click("export_diagnostics") { exportLog.launch("gothic2-diagnostics.txt") }
             click("reimport_game") {
                 startActivity(Intent(requireContext(), LauncherActivity::class.java).putExtra(LauncherActivity.EXTRA_REIMPORT, true))
