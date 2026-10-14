@@ -9,8 +9,10 @@
     <string name="import_start">Импортировать и играть</string>
     <string name="import_failed">Ошибка импорта: %1$s</string>
     <string name="dev_unpinned_warning">Режим разработчика: сборка не закреплена, запуск не гарантирован.</string>
-    <string name="runtime_stub">Среда исполнения ещё не подключена (этап 2 плана). Управление и сохранения работают в тестовом режиме: нажатия записываются в журнал диагностики.</string>
-    <string name="runtime_stub_echo">%1$s\n\n%2$s</string>
+    <string name="launch_preparing">Подготовка к запуску…</string>
+    <string name="launch_failed_title">Не удалось запустить игру</string>
+    <string name="launch_failed_message">%1$s\n\nЖурнал диагностики можно сохранить в настройках и прислать разработчику.</string>
+    <string name="launch_retry">Повторить</string>
     <string name="quickload_confirm">Загрузить быстрое сохранение? Несохранённый прогресс будет потерян.</string>
     <string name="quit_confirm">Выйти из игры? Несохранённый прогресс будет потерян.</string>
     <string name="yes">Да</string>

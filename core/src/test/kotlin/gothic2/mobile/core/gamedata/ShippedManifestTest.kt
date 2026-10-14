@@ -29,6 +29,8 @@ class ShippedManifestTest {
         assertTrue(addon.isNotEmpty() && addon.all { renames[it] == it.removeSuffix(".vdf") + ".disabled" })
         assertEquals("System/Paths.d", renames["System/Paths_GII.d"])
         assertTrue("System/Paths_GII.d" in gog.requiredFiles)
+        // Графический мод GD3D11 (свой ddraw.dll) на время игры спрятан в обоих вариантах.
+        for (v in gog.definedVariants()) assertTrue(v.renames.any { it.from == "System/ddraw.dll" }, v.id)
         // Сохранения классики не смешиваются с «Ночью Ворона» (DIR_SAVEGAMES в Paths_GII.d).
         assertEquals("Saves_GII", gog.savesDirOf(classic))
         assertEquals("Saves", gog.savesDirOf(gog.variant("notr")!!))

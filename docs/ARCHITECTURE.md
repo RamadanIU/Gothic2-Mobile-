@@ -2,13 +2,19 @@
 
 ```text
 Android-приложение (app)
-├── LauncherActivity      первый запуск: SAF-выбор папки → BuildVerifier → GameImporter
-├── GameActivity          полноэкранный вывод + TouchOverlayView, жизненный цикл, геймпад
+├── LauncherActivity      первый запуск: SAF-выбор папки → BuildVerifier → GameImporter;
+│                         далее «Играть»: GameLauncher.prepare с прогрессом → GameActivity
+├── GameActivity          наследник XServerDisplayActivity (Winlator) + TouchOverlayView поверх
 │   ├── TouchOverlayView  рисует кнопки, передаёт касания в TouchRouter
 │   ├── GamepadMapper     геймпад → тот же InputArbiter
-│   └── GameLauncher      GOTHIC.INI + LaunchSpec → RuntimeBackend
-├── SettingsActivity      игровые настройки, сохранения, диагностика
-└── RuntimeBackend        граница со средой исполнения (сейчас StubRuntimeBackend)
+│   └── XServerInputSink  скан-коды DIK → коды X, мышь → injectPointerMoveDelta
+├── GameLauncher          установка Wine (rootfs), контейнер «Gothic II» (D: = папка игры),
+│                         GOTHIC.INI, файлы варианта (VariantLayout)
+├── SettingsActivity      игровые настройки, сохранения, диагностика (вместе с журналом Wine)
+└── WinlatorBackend       RuntimeBackend поверх Winlator (стоп, ввод)
+
+winlator (Winlator 11.2, LGPL-2.1; исходники — tools/fetch-winlator.sh + third_party/winlator.patch)
+└── X-сервер на Java, Wine WoW64 + Box64 (rootfs), Vortek/Turnip, DXVK/D7VK/WineD3D, ALSA/PulseAudio
 
 core (без Android, покрыт тестами)
 ├── input     InputArbiter ← TouchRouter ← OverlayLayout; KeyStateTracker → InputSink
@@ -27,7 +33,7 @@ core (без Android, покрыт тестами)
 | План | Реализация |
 |---|---|
 | `GameActivity` | `app/ui/GameActivity.kt` |
-| `RuntimeManager` | `core/runtime/*` + `app/runtime/GameLauncher.kt`; реальный backend — этап 2 |
+| `RuntimeManager` | `app/runtime/GameLauncher.kt` + модуль `:winlator`; `core/runtime/*` — общие типы |
 | `DeviceProfile` | `core/config/DeviceProfile.kt` |
 | `InputRouter` | `core/input/InputArbiter.kt`, `TouchRouter.kt`, `app/input/GamepadMapper.kt` |
 | `TouchOverlay` | `core/input/OverlayLayout.kt`, `app/ui/TouchOverlayView.kt` |
@@ -70,23 +76,46 @@ core (без Android, покрыт тестами)
 |---|---|
 | `files/game` | импортированная игра, включая `Saves` |
 | `files/save-backups/<слот>/<время>` | поколения копий с манифестом SHA-256 |
-| `files/runtime/prefix` | префикс Wine |
-| `files/runtime/components/<id>` | распакованные компоненты среды с маркером версии |
+| `<dataDir>/r` | rootfs Winlator: Wine, Box64, драйверы; `home/xuser-N/.wine` — префикс контейнера |
 | `files/session.marker` | отметка запущенного сеанса (нештатное завершение) |
-| `files/logs` | журнал диагностики с ротацией |
-| `cache/shaders` | кэш шейдеров DXVK (можно удалять) |
+| `files/logs` | журнал диагностики с ротацией; `wine.log` — вывод Wine/Box64 последнего запуска |
 
 Импорт игры и замена слотов идут через временный каталог и атомарное переименование;
 `GameImporter.recoverInterrupted` возвращает установку и сохранения, если процесс погиб посередине.
 
-## Подключение реальной среды исполнения (этап 2)
+## Среда исполнения: Winlator внутри приложения
 
-Нужно реализовать `RuntimeBackend` поверх выбранной основы класса Winlator:
+Основа — исходники Winlator 11.2 (`brunodev85/winlator-app`, коммит в `tools/fetch-winlator.sh`),
+собранные модулем-библиотекой `:winlator`. В репозитории хранится только наш патч
+`third_party/winlator.patch`; сами исходники (≈300 МБ вместе с rootfs) скачивает скрипт.
 
-1. `prepare` — распаковать закреплённые компоненты из `runtime_components.ini` с проверкой SHA-256,
-   создать префикс, выполнить `LaunchSpec.prefixSetup` (версия Windows).
-2. `launch` — запустить `LaunchSpec.windowsExePath` с `env`, без desktop shell.
-3. `attachSurface` — направить вывод X-сервера/графики на `Surface` из `GameActivity`.
-4. `inputSink` — доставлять скан-коды и относительную мышь тем путём, который реально получает
-   Gothic под Wine (проверяется на этапе 1).
-5. `pause/resume` — проверенный способ паузы; `Esc` для этого не используется.
+Что меняет патч:
+- **Путь rootfs.** Программы внутри rootfs (интерпретатор ELF, `ld.so.cache`, fontconfig, libxcb…)
+  собраны с путём `/data/data/com.winlator/files/rootfs` (36 символов). При распаковке любых
+  `.tzst` (`TarCompressorUtils` → `PathRelocator`) он заменяется строкой той же длины, ведущей
+  в `<dataDir>/r` нашего пакета: `/data/data/gothic2.mobile.dev//////r` (лишние «/» не меняют путь).
+  Поэтому имя пакета не длиннее 23 символов. Нативный код Winlator получает имя пакета через CMake
+  (`APP_PACKAGE_NAME`, из `gradle.properties`).
+- **Архивы среды не в APK.** Все `*.tzst` Winlator (≈140 МБ: rootfs, драйверы, DXVK…) исключены
+  из APK (`ignoreAssetsPattern` в `:app`), иначе APK (≈170 МБ) не передать пользователю. При сборке
+  `:winlator` пишет `assets/remote_assets.txt`: адрес raw.githubusercontent.com закреплённого коммита
+  и для каждого архива размер и SHA-256. `RemoteAssets` скачивает недостающее (проверка размера и
+  SHA-256, атомарная запись, 3 попытки) в `files/remote-assets`; `GameLauncher` заранее качает всё
+  нужное с общим прогрессом, остальное Winlator докачает сам при обращении. APK ≈ 24 МБ.
+- **Без интерфейса Winlator.** Нет значка лаунчера; `RootFSInstaller.installBlocking` ставит
+  системные файлы без его экранов; `ContainerManager.createContainer` открыт для фонового потока.
+- **Хуки активити.** `XServerDisplayActivity`: `onBeforeStart` (не запускать после выгрузки
+  процесса), `onSetupLogging` (журнал Wine, `WINEDEBUG`, аргументы EXE через `EXTRA_EXEC_ARGS`,
+  переменные моста), `exit()`/`stopEnvironment()` (возврат в наше приложение, а не в Winlator).
+- **Сборка как библиотеки:** `switch` по `R.id` переписаны на имена ресурсов (`ResNames`),
+  атрибуты тем — из `androidx.appcompat.R`/`material.R`, `FileProvider` — `${applicationId}`.
+
+Почему `targetSdk 28`: Wine, Box64 и их `.so` исполняются из каталога данных приложения, а для
+`targetSdk ≥ 29` Android это запрещает (так же сделано в Winlator и Termux). Приложение
+распространяется не через Google Play. `.so` распаковываются (`useLegacyPackaging`): PulseAudio
+запускается как программа.
+
+Запуск: `GameLauncher.prepare` (фоновый поток) → `GameActivity` с `container_id`, `exec_path`
+(Linux-путь EXE) и аргументами. Графика по профилю: `WINED3D` → `dxwrapper=wined3d`
+(ddraw Wine поверх OpenGL), `D3D7_TO_D3D9_DXVK` → DXVK с `ddrawWrapper=d7vk` (Direct3D 7 сразу
+в Vulkan). Графический драйвер — по умолчанию Winlator (Vortek + Gladio).
