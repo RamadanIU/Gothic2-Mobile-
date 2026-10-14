@@ -3,6 +3,7 @@ package gothic2.mobile.app
 import android.app.Application
 import com.winlator.xenvironment.RootFS
 import gothic2.mobile.app.storage.AppPaths
+import gothic2.mobile.app.storage.CrashRecorder
 import gothic2.mobile.app.storage.Diagnostics
 import gothic2.mobile.app.storage.SettingsStore
 import gothic2.mobile.core.gamedata.BuildVerifier
@@ -53,6 +54,7 @@ class GothicApplication : Application() {
         settings = SettingsStore(this)
         diagnostics = Diagnostics(paths.logs)
         diagnostics.log("app", "start ${BuildConfig.VERSION_NAME}")
+        CrashRecorder.install(this, diagnostics)
         // Среда Winlator: путь rootfs для распаковки должен быть известен до любых установок.
         RootFS.find(this)
         // Если процесс погиб посреди замены установки — вернуть игру и сохранения на место.

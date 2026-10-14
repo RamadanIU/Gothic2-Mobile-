@@ -35,6 +35,12 @@ class Diagnostics(private val dir: Path, private val maxBytes: Long = 1_000_000)
         }
     }
 
+    /** Запись сразу, в текущем потоке — для обработчика падений, после которого процесс умирает. */
+    @Synchronized
+    fun logNow(tag: String, message: String) {
+        append(current, "${format.format(Date())} [$tag] ${message.replace('\n', ' ')}\n")
+    }
+
     /** Вывод Wine и Box64 последнего запуска игры (ошибки, причины падения). */
     val wineLog: Path get() = dir.resolve("wine.log")
     val previousWineLog: Path get() = dir.resolve("wine.1.log")

@@ -55,13 +55,14 @@ class LauncherActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         if (intent.getBooleanExtra(EXTRA_REIMPORT, false).not() && isGameReady()) {
             val interrupted = SessionJournal(app.paths.sessionMarker).takeInterrupted()
-            if (interrupted == null && app.settings.lastSessionFailed) {
-                showFailedLaunch()
-            } else if (interrupted == null) {
-                startGame()
-            } else {
+            if (interrupted != null) {
+                // Процесс приложения погиб во время игры (вылет, нехватка памяти): вместе с ним погибла и игра.
                 app.diagnostics.log("session", "interrupted: started=${interrupted.startedAt} last=${interrupted.lastHeartbeat}")
-                showRecovery()
+                showFailedLaunch(R.string.recovery_message)
+            } else if (app.settings.lastSessionFailed) {
+                showFailedLaunch(R.string.failed_launch_message)
+            } else {
+                startGame()
             }
             return
         }
@@ -182,8 +183,11 @@ class LauncherActivity : AppCompatActivity() {
         }
     }
 
-    /** Прошлая игра закрылась сразу после запуска: не запускать снова молча, а предложить журнал. */
-    private fun showFailedLaunch() {
+    /**
+     * Прошлая игра закрылась сразу после запуска или была прервана: не запускать снова молча, а
+     * предложить журнал, другой режим графики и резервные копии сохранений (раздел 17 плана).
+     */
+    private fun showFailedLaunch(message: Int) {
         val pad = (24 * resources.displayMetrics.density).toInt()
         fun button(text: Int, action: () -> Unit) = Button(this).apply {
             setText(text)
@@ -197,7 +201,7 @@ class LauncherActivity : AppCompatActivity() {
                 setTextColor(0xFFE8DCC0.toInt())
                 textSize = 16f
                 gravity = Gravity.CENTER
-                text = getString(R.string.failed_launch_message, app.settings.graphicsMode.title)
+                text = getString(message) + "\n\n" + getString(R.string.failed_launch_graphics, app.settings.graphicsMode.title)
             })
             addView(button(R.string.failed_launch_send) { DiagnosticsShare.share(this@LauncherActivity) })
             addView(button(R.string.failed_launch_retry) {
@@ -219,19 +223,6 @@ class LauncherActivity : AppCompatActivity() {
         })
     }
 
-    /** Экран восстановления после нештатного завершения (раздел 17 плана). */
-    private fun showRecovery() {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.recovery_title)
-            .setMessage(R.string.recovery_message)
-            .setPositiveButton(R.string.recovery_continue) { _, _ -> startGame() }
-            .setNeutralButton(R.string.recovery_restore) { _, _ ->
-                startActivity(Intent(this, SettingsActivity::class.java))
-                finish()
-            }
-            .setOnCancelListener { finish() }
-            .show()
-    }
 
     /** Отчёт о сборке из выбранной папки — без копирования игры в приложение. */
     private fun writeReport(source: Uri, out: Uri) {

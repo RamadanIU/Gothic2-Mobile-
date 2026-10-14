@@ -1,0 +1,63 @@
+package gothic2.mobile.app.storage
+
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
+import android.content.Context
+import android.os.Build
+import androidx.core.content.edit
+import androidx.preference.PreferenceManager
+
+/**
+ * Почему завершился прошлый процесс приложения. Если вылетает всё приложение (а не только игра),
+ * в журнале Wine причины нет: процесс X-сервера и рендерера — наш. Android хранит причину сам
+ * (ApplicationExitInfo: падение Java или нативного кода, нехватка памяти, сигнал) — пишем её
+ * в журнал при следующем запуске. Плюс перехват необработанных исключений Java.
+ */
+object CrashRecorder {
+    private const val KEY_LAST_EXIT = "last_logged_exit_timestamp"
+
+    fun install(context: Context, diagnostics: Diagnostics) {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            // Синхронно: после обработчика процесс завершается и очередь журнала не допишется.
+            runCatching { diagnostics.logNow("crash", "uncaught in ${thread.name}: ${error.stackTraceToString().take(6000)}") }
+            previous?.uncaughtException(thread, error)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) logPreviousExits(context, diagnostics)
+    }
+
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.R)
+    private fun logPreviousExits(context: Context, diagnostics: Diagnostics) {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        val lastLogged = prefs.getLong(KEY_LAST_EXIT, 0)
+        val am = context.getSystemService(ActivityManager::class.java) ?: return
+        val exits = runCatching { am.getHistoricalProcessExitReasons(context.packageName, 0, 5) }.getOrNull().orEmpty()
+            .filter { it.timestamp > lastLogged }
+            .sortedBy { it.timestamp }
+        for (e in exits) {
+            diagnostics.log(
+                "exit",
+                "prev process: reason=${reasonName(e.reason)} status=${e.status} importance=${e.importance} " +
+                    "pss=${e.pss}kB rss=${e.rss}kB desc=${e.description}",
+            )
+        }
+        exits.maxOfOrNull { it.timestamp }?.let { ts -> prefs.edit { putLong(KEY_LAST_EXIT, ts) } }
+    }
+
+    private fun reasonName(reason: Int): String = when (reason) {
+        ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
+        ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"
+        ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
+        ApplicationExitInfo.REASON_CRASH -> "CRASH"
+        ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
+        ApplicationExitInfo.REASON_ANR -> "ANR"
+        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "INIT_FAILURE"
+        ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "PERMISSION_CHANGE"
+        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "EXCESSIVE_RESOURCE_USAGE"
+        ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
+        ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
+        ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
+        ApplicationExitInfo.REASON_OTHER -> "OTHER"
+        else -> "UNKNOWN($reason)"
+    }
+}

@@ -105,6 +105,7 @@ class SettingsActivity : AppCompatActivity() {
             click("restore_backup") { showBackups() }
             click("build_report") { exportBuildReport.launch("gothic2-build-report.txt") }
             setupVariantPreference()
+            setupGraphicsPreference()
             click("reset_layout") {
                 app.settings.layoutOverrides = emptyMap()
                 Toast.makeText(requireContext(), R.string.layout_reset_done, Toast.LENGTH_SHORT).show()
@@ -138,6 +139,14 @@ class SettingsActivity : AppCompatActivity() {
             pref.entries = variants.map { it.title }.toTypedArray()
             pref.entryValues = variants.map { it.id }.toTypedArray()
             pref.value = app.selectedVariant(build)?.id
+        }
+
+        /** Пока игрок не выбрал режим сам, показывается режим по видеокарте — без записи в настройки. */
+        private fun setupGraphicsPreference() {
+            val pref = findPreference<ListPreference>("graphics_mode") ?: return
+            pref.summaryProvider = Preference.SummaryProvider<ListPreference> { p ->
+                p.entry ?: requireContext().app.settings.graphicsMode.title
+            }
         }
 
         private fun showBackups() {

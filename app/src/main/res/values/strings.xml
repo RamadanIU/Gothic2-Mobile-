@@ -13,7 +13,8 @@
     <string name="launch_failed_title">Не удалось запустить игру</string>
     <string name="launch_failed_message">%1$s\n\nЖурнал диагностики можно сохранить в настройках и прислать разработчику.</string>
     <string name="launch_retry">Повторить</string>
-    <string name="failed_launch_message">Прошлый запуск игры закончился почти сразу — похоже, что-то пошло не так. Отправьте журнал разработчику: в нём видна причина.\n\nРежим графики: %1$s</string>
+    <string name="failed_launch_message">Прошлый запуск игры закончился почти сразу — похоже, что-то пошло не так. Отправьте журнал разработчику: в нём видна причина.</string>
+    <string name="failed_launch_graphics">Режим графики: %1$s</string>
     <string name="failed_launch_send">Отправить журнал</string>
     <string name="failed_launch_retry">Играть снова</string>
     <string name="failed_launch_other_graphics">Играть с графикой: %1$s</string>
@@ -32,10 +33,7 @@
     <string name="editor_mode">Панель: %1$s</string>
     <string name="editor_reset">Сбросить</string>
     <string name="editor_done">Готово</string>
-    <string name="recovery_title">Игра была прервана</string>
     <string name="recovery_message">Прошлый сеанс завершился без выхода из игры: Android выгрузил её из памяти, игра закрылась из списка задач или произошёл сбой. Прогресс после последнего сохранения мог быть потерян. Сохранения не тронуты — загрузите нужное из главного меню.</string>
-    <string name="recovery_continue">Продолжить</string>
-    <string name="recovery_restore">Резервные копии</string>
     <string name="layout_reset_done">Расположение кнопок сброшено.</string>
     <string name="build_report_saved">Отчёт о сборке сохранён.</string>
     <string name="build_report_button">Сохранить отчёт о сборке</string>

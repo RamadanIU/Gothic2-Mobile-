@@ -45,10 +45,15 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_FAILED, false)
         set(v) = prefs.edit { putBoolean(KEY_FAILED, v) }
 
-    /** Режим графики (D7VK или WineD3D с разными OpenGL). */
+    /** Режим графики; пока игрок не выбрал сам — по видеокарте (GraphicsMode.defaultFor). */
     var graphicsMode: GraphicsMode
-        get() = GraphicsMode.of(prefs.getString(KEY_GRAPHICS, null))
+        get() = GraphicsMode.of(prefs.getString(KEY_GRAPHICS, null), gpuName)
         set(v) = prefs.edit { putString(KEY_GRAPHICS, v.id) }
+
+    /** Имя GPU (GL_RENDERER), запомненное при подготовке запуска. */
+    var gpuName: String?
+        get() = prefs.getString(KEY_GPU, null)
+        set(v) = prefs.edit { putString(KEY_GPU, v) }
 
     fun userSettings(): UserSettings = runCatching {
         UserSettings(
@@ -73,5 +78,6 @@ class SettingsStore(context: Context) {
         const val KEY_LAYOUT = "layout_overrides"
         const val KEY_FAILED = "last_session_failed"
         const val KEY_GRAPHICS = "graphics_mode"
+        const val KEY_GPU = "gpu_name"
     }
 }
