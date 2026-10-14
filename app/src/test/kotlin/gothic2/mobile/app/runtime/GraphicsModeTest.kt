@@ -53,4 +53,11 @@ class GraphicsModeTest {
         assertEquals(GraphicsMode.entries.map { it.id }, items("graphics_mode_values"))
         assertEquals(GraphicsMode.entries.map { it.title }, items("graphics_mode_entries"))
     }
+
+    @Test
+    fun `titles name no runtime libraries`() {
+        // Игрок видит «быстрый/совместимый», а не устройство среды исполнения.
+        val technical = Regex("wine|d7vk|dxvk|turnip|zink|vortek|gladio|winlator|box64", RegexOption.IGNORE_CASE)
+        for (mode in GraphicsMode.entries) assertTrue(!technical.containsMatchIn(mode.title), mode.title)
+    }
 }

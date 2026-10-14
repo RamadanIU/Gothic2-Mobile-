@@ -8,4 +8,9 @@
     <!-- targetSdk 28 нужен, чтобы Wine и Box64 исполнялись из каталога данных (как в Winlator). -->
     <issue id="ExpiredTargetSdkVersion" severity="ignore" />
     <issue id="OldTargetApi" severity="ignore" />
+    <!--
+        Приложение одноязычное: строки в values/ — русские (tools:locale="ru"). Папки values-ru и
+        values-pt есть только ради подмены строк Winlator (winlator_overrides.xml), а не перевода.
+    -->
+    <issue id="MissingTranslation" severity="ignore" />
 </lint>

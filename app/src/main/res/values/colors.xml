@@ -1,4 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="launcher_bg">#2B2118</color>
+    <!--
+        Палитра «Готики» для тем и разметки: тьма, кожа, бронза, золото, пергамент. Полная палитра с
+        теми же значениями — GothicPalette (Kotlin): экраны рисуются в коде.
+    -->
+    <color name="gothic_ink">#0B0705</color>
+    <color name="gothic_leather">#2A1C12</color>
+    <color name="gothic_bronze">#7D5C33</color>
+    <color name="gothic_gold">#D9B566</color>
+    <color name="gothic_gold_light">#F4DE9E</color>
+    <color name="gothic_parchment">#E8D9B8</color>
+    <color name="gothic_ash">#A6957C</color>
+    <color name="gothic_highlight">#33D9B566</color>
 </resources>

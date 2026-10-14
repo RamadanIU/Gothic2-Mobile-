@@ -13,6 +13,7 @@ package gothic2.mobile.app.runtime
  * же падал и WineD3D + Gladio), поэтому OpenGL в режимах D7VK — Zink. С Zink игра доходила до ошибки
  * в самом D7VK 1.11 (падение при запуске) — её исправляет BinaryFix.D7VK_1_11_HEL_CAPS.
  *
+ * @property title название в настройках — без названий библиотек: игрок выбирает «быстрый» или «совместимый»
  * @property graphicsDriver драйверы Winlator «Vulkan,OpenGL»
  */
 enum class GraphicsMode(val id: String, val title: String, val graphicsDriver: String) {
@@ -20,19 +21,19 @@ enum class GraphicsMode(val id: String, val title: String, val graphicsDriver: S
      * D7VK через Turnip (только Adreno). На первом телефоне WineD3D упирался в процессор: главный
      * поток Gothic вместе с эмулируемым WineD3D — 98 % ядра при ~10 FPS; D7VK намного легче.
      */
-    D7VK_TURNIP("d7vk_turnip", "D7VK + Turnip (Adreno)", "turnip,zink"),
+    D7VK_TURNIP("d7vk_turnip", "Vulkan · Adreno — быстрый", "turnip,zink"),
 
     /** WineD3D → OpenGL через Zink → Vulkan через Turnip. Работает на первом телефоне, ~10 FPS. */
-    WINED3D_ZINK_TURNIP("wined3d_zink_turnip", "WineD3D + Zink (Turnip, Adreno)", "turnip,zink"),
+    WINED3D_ZINK_TURNIP("wined3d_zink_turnip", "OpenGL · Adreno — совместимый", "turnip,zink"),
 
     /** То же через Vortek. Дошёл до меню на первом телефоне, но вылетал после ролика. */
-    WINED3D_ZINK("wined3d_zink", "WineD3D + Zink (Vortek)", "vortek,zink"),
+    WINED3D_ZINK("wined3d_zink", "OpenGL — совместимый", "vortek,zink"),
 
     /** D7VK через Vortek — для GPU не Adreno. */
-    D7VK("d7vk", "D7VK + Vortek", "vortek,zink"),
+    D7VK("d7vk", "Vulkan — быстрый", "vortek,zink"),
 
     /** WineD3D через Gladio — OpenGL Winlator по умолчанию. На первом телефоне не дал 3D-устройства. */
-    WINED3D_GLADIO("wined3d", "WineD3D + Gladio (OpenGL)", "vortek,gladio");
+    WINED3D_GLADIO("wined3d", "OpenGL — запасной", "vortek,gladio");
 
     val isD7VK: Boolean get() = this == D7VK_TURNIP || this == D7VK
 

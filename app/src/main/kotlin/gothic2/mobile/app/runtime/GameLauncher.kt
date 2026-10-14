@@ -7,6 +7,7 @@ import com.winlator.core.RemoteAssets
 import com.winlator.xenvironment.RootFS
 import com.winlator.xenvironment.RootFSInstaller
 import gothic2.mobile.app.GothicApplication
+import gothic2.mobile.app.R
 import gothic2.mobile.core.config.CpuCores
 import gothic2.mobile.core.config.DeviceProfile
 import gothic2.mobile.core.config.DeviceProfiles
@@ -54,14 +55,15 @@ class GameLauncher(private val app: GothicApplication) {
         download(installNeeded, onStep)
         if (installNeeded) {
             app.diagnostics.log("launch", "installing rootfs")
-            onStep(INSTALL_STEP, 0)
-            val ok = RootFSInstaller.installBlocking(app) { p -> onStep(INSTALL_STEP, p) }
-            check(ok) { "Не удалось установить системные файлы Wine" }
+            val installStep = app.getString(R.string.launch_step_install)
+            onStep(installStep, 0)
+            val ok = RootFSInstaller.installBlocking(app) { p -> onStep(installStep, p) }
+            check(ok) { "Не удалось установить компоненты игры" }
             // Архив rootfs (65 МБ) после установки не нужен; при обновлении Winlator скачается снова.
             RemoteAssets.find(app, RootFSInstaller.FILENAME)?.let { RemoteAssets.evict(app, it) }
         }
 
-        onStep("Подготовка игры…", null)
+        onStep(app.getString(R.string.launch_step_game), null)
         val gpu = GpuInfo.rendererName()
         app.settings.gpuName = gpu
         val profile = DeviceProfiles.select(gpu)
@@ -111,12 +113,12 @@ class GameLauncher(private val app: GothicApplication) {
                     val percent = ((before + done) * 100 / total).toInt()
                     if (percent != lastPercent) {
                         lastPercent = percent
-                        onStep(DOWNLOAD_STEP.format(total / 1_000_000), percent)
+                        onStep(app.getString(R.string.launch_step_download, total / 1_000_000), percent)
                     }
                 }
             } catch (e: java.io.IOException) {
                 app.diagnostics.log("launch", "download failed: ${entry.path}: $e")
-                throw IllegalStateException("Не удалось скачать файлы Wine (${e.message}). Нужен интернет — проверьте подключение и повторите.", e)
+                throw IllegalStateException("Не удалось загрузить компоненты игры (${e.message}). Нужен интернет — проверьте подключение и повторите.", e)
             }
             before += entry.size
         }
@@ -131,7 +133,7 @@ class GameLauncher(private val app: GothicApplication) {
                     .put("name", CONTAINER_NAME)
                     .put("wincomponents", Container.DEFAULT_WINCOMPONENTS)
                     .put("drives", drives()),
-            ) ?: error("Не удалось создать контейнер Wine")
+            ) ?: error("Не удалось подготовить игру к запуску")
 
         // Только папка игры, без доступа ко всему накопителю.
         container.drives = drives()
@@ -170,8 +172,6 @@ class GameLauncher(private val app: GothicApplication) {
 
     private companion object {
         const val CONTAINER_NAME = "Gothic II"
-        const val INSTALL_STEP = "Первый запуск: установка Wine (один раз, 1–3 минуты)…"
-        const val DOWNLOAD_STEP = "Первый запуск: загрузка файлов Wine (%d МБ, нужен интернет)…"
         const val WIN_COMPONENTS =
             "direct3d=0,directsound=1,directmusic=1,directshow=0,directplay=0,xaudio=0,vcrun2005=0,vcrun2010=0,wmdecoder=0"
 

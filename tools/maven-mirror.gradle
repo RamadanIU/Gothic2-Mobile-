@@ -1,0 +1,11 @@
+// Зеркало Maven Central от Google — первым в списке репозиториев. Для облачных сессий, где
+// repo.maven.apache.org подолгу отвечает 429 Too Many Requests. Сборку проекта не меняет:
+//   ./gradlew --init-script tools/maven-mirror.gradle <задачи>
+def mirror = 'https://maven-central.storage-download.googleapis.com/maven2/'
+settingsEvaluated { settings ->
+    [settings.dependencyResolutionManagement.repositories, settings.pluginManagement.repositories].each { repos ->
+        def m = repos.maven { url mirror }
+        repos.remove(m)
+        repos.addFirst(m)
+    }
+}

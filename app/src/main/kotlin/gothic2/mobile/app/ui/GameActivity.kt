@@ -20,12 +20,11 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.PopupMenu
-import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
+import androidx.core.view.isNotEmpty
 import com.winlator.XServerDisplayActivity
 import com.winlator.core.GPUHelper
 import com.winlator.core.ProcessHelper
@@ -40,6 +39,13 @@ import gothic2.mobile.app.runtime.GameLauncher
 import gothic2.mobile.app.runtime.GraphicsMode
 import gothic2.mobile.app.runtime.WinlatorBackend
 import gothic2.mobile.app.runtime.XServerInputSink
+import gothic2.mobile.app.ui.gothic.FrameDrawable
+import gothic2.mobile.app.ui.gothic.Gothic
+import gothic2.mobile.app.ui.gothic.Gothic.ButtonKind
+import gothic2.mobile.app.ui.gothic.GothicPanels
+import gothic2.mobile.app.ui.gothic.GothicScreens
+import gothic2.mobile.app.ui.gothic.OverlayHost
+import gothic2.mobile.app.ui.gothic.PanelButton
 import gothic2.mobile.core.bridge.BridgeProtocol
 import gothic2.mobile.core.bridge.BridgeSession
 import gothic2.mobile.core.bridge.ModeController
@@ -72,7 +78,9 @@ import java.util.concurrent.TimeUnit
 /**
  * Экран игры. Wine, X-сервер, звук и вывод изображения — от Winlator (XServerDisplayActivity),
  * поверх — наше сенсорное управление Gothic. Ни рабочего стола, ни окон Winlator: игра
- * запускается сразу из контейнера, подготовленного [GameLauncher].
+ * запускается сразу из контейнера, подготовленного [GameLauncher]. Пока не появилось окно игры,
+ * виден экран загрузки в стиле игры (тот же, что в лаунчере); меню и подтверждения — панели
+ * в том же стиле поверх игры.
  */
 class GameActivity : XServerDisplayActivity() {
     private val main = Handler(Looper.getMainLooper())
@@ -91,6 +99,14 @@ class GameActivity : XServerDisplayActivity() {
     private lateinit var gamepad: GamepadMapper
     private lateinit var editorBar: LinearLayout
     private lateinit var editorModeButton: Button
+    private lateinit var panels: OverlayHost
+
+    /** Экран загрузки поверх вывода игры; null — уже убран. */
+    private var cover: View? = null
+
+    /** Окно игры показало первый кадр (из потока X-сервера). */
+    @Volatile private var gameVisible = false
+    private val coverTimeout = Runnable { hideCover("timeout") }
     private lateinit var journal: SessionJournal
     private var bridge: BridgeServer? = null
     private lateinit var variant: GameVariant
@@ -109,7 +125,16 @@ class GameActivity : XServerDisplayActivity() {
     /** Плавность картинки: кадры окна игры приходят из потока X-сервера. */
     private val frames = FrameStats()
     private val frameListener = object : WindowManager.OnWindowModificationListener {
-        override fun onUpdateWindowContent(window: Window) = frames.onFrame(window.id, SystemClock.uptimeMillis())
+        override fun onUpdateWindowContent(window: Window) {
+            frames.onFrame(window.id, SystemClock.uptimeMillis())
+            // Первый кадр окна программы (не рабочего стола Wine) — экран загрузки больше не нужен.
+            // Так же Winlator решает, когда убрать свой: окно отображается и у него есть класс.
+            if (!gameVisible && window.isRenderable && !window.isDesktopWindow && window.className.isNotEmpty()) {
+                gameVisible = true
+                val cls = window.className
+                main.post { hideCover("window $cls") }
+            }
+        }
     }
 
     /** Загрузка процессора по потокам игры и среды: снимки в своём потоке, пока экран игры на виду. */
@@ -179,7 +204,7 @@ class GameActivity : XServerDisplayActivity() {
         // Разрешение на ходу не меняем — только предлагаем снизить нагрузку (раздел 19 плана).
         if (s >= PowerManager.THERMAL_STATUS_SEVERE && !thermalWarned) {
             thermalWarned = true
-            Toast.makeText(this, R.string.thermal_warning, Toast.LENGTH_LONG).show()
+            Gothic.toast(this, R.string.thermal_warning, long = true)
         }
     }
 
@@ -254,6 +279,9 @@ class GameActivity : XServerDisplayActivity() {
         if (result == BinaryFix.Result.FIXED) app.diagnostics.log("launch", "d7vk: fixed GetCaps (HEL)")
     }
 
+    /** Winlator ставит свою тему (AppUtils.setActivityTheme) — вместо неё наша, её наследница. */
+    override fun setTheme(resid: Int) = super.setTheme(R.style.Theme_Gothic2_Game)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (!started) return
@@ -280,13 +308,23 @@ class GameActivity : XServerDisplayActivity() {
         gamepad = GamepadMapper(arbiter)
 
         // Поверх изображения Winlator — наш оверлей: он забирает все касания, так что
-        // сенсорная панель-мышь Winlator игре не мешает.
-        touchOverlay = TouchOverlayView(this, router).apply { opacity = settings.overlayOpacity }
-        editorBar = buildEditorBar()
-        findViewById<FrameLayout>(com.winlator.R.id.FLXServerDisplay).apply {
-            addView(touchOverlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            addView(editorBar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        // сенсорная панель-мышь Winlator игре не мешает. До первого кадра игры его закрывает
+        // экран загрузки (он тоже забирает касания).
+        touchOverlay = TouchOverlayView(this, router).apply {
+            opacity = settings.overlayOpacity
+            visibility = View.INVISIBLE
         }
+        editorBar = buildEditorBar()
+        val display = findViewById<FrameLayout>(com.winlator.R.id.FLXServerDisplay)
+        display.addView(touchOverlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        display.addView(editorBar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+            topMargin = Gothic.dp(this@GameActivity, 8f)
+        })
+        cover = buildCover().also {
+            display.addView(it, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        }
+        panels = OverlayHost(display)
+        main.postDelayed(coverTimeout, COVER_TIMEOUT_MS)
 
         xServer.windowManager.addOnWindowModificationListener(frameListener)
         getSystemService(PowerManager::class.java).addThermalStatusListener(thermalListener)
@@ -296,6 +334,24 @@ class GameActivity : XServerDisplayActivity() {
         startedAt = SystemClock.uptimeMillis()
         app.diagnostics.log("game", "started variant=${variant.id}")
         main.postDelayed(periodic, PERIODIC_MS)
+    }
+
+    /** Экран загрузки — как в лаунчере, только искры реже: процессор нужен запуску игры. */
+    private fun buildCover(): View {
+        val loading = GothicScreens.loading(this, VariantText.title(this, variant), getString(R.string.launch_loading_world))
+        return GothicScreens.backdrop(this, emberFrameMs = 33).apply {
+            addView(loading.root, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            isClickable = true
+        }
+    }
+
+    private fun hideCover(reason: String) {
+        val c = cover ?: return
+        cover = null
+        main.removeCallbacks(coverTimeout)
+        app.diagnostics.log("game", "loading screen hidden ($reason) after ${(SystemClock.uptimeMillis() - startedAt) / 1000}s")
+        touchOverlay.visibility = View.VISIBLE
+        c.animate().alpha(0f).setDuration(450).withEndAction { (c.parent as? ViewGroup)?.removeView(c) }.start()
     }
 
     private fun currentLayout(): OverlayLayout = editorFor().layout()
@@ -395,54 +451,59 @@ class GameActivity : XServerDisplayActivity() {
     }
 
     private fun showQuickMenu() {
-        val anchor = View(this)
-        (touchOverlay.parent as FrameLayout).addView(anchor, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.END))
-        val menu = PopupMenu(this, anchor)
-        val items = linkedMapOf<String, () -> Unit>(
-            "Карта" to { arbiter.tap(GameKey.MAP) },
-            "Персонаж" to { arbiter.tap(GameKey.CHARACTER) },
-            "Журнал" to { arbiter.tap(GameKey.LOG) },
-            "Подкрасться" to { arbiter.tap(GameKey.SNEAK) },
-            "Вид от первого лица" to { arbiter.tap(GameKey.FIRST_PERSON) },
-            "Быстрое сохранение" to { arbiter.tap(GameKey.QUICKSAVE) },
-            "Быстрая загрузка…" to { confirm(R.string.quickload_confirm) { arbiter.tap(GameKey.QUICKLOAD) } },
-            "Настроить кнопки" to { startEditor() },
-            "Настройки" to { startActivity(Intent(this, SettingsActivity::class.java)) },
-            "Выйти из игры…" to { confirm(R.string.quit_confirm) { backend.stop() } },
-        )
-        items.keys.forEachIndexed { i, title -> menu.menu.add(0, i, i, title) }
-        menu.setOnMenuItemClickListener { item ->
-            items.values.elementAt(item.itemId).invoke()
-            scheduleTick()
-            true
-        }
-        menu.setOnDismissListener { (anchor.parent as? FrameLayout)?.removeView(anchor) }
         arbiter.releaseAll() // открытие меню не должно оставлять зажатых клавиш
-        menu.show()
+        fun tap(title: Int, key: GameKey) = PanelButton(getString(title)) { arbiter.tap(key); scheduleTick() }
+        GothicPanels.grid(
+            panels,
+            getString(R.string.menu_title),
+            listOf(
+                tap(R.string.menu_map, GameKey.MAP),
+                tap(R.string.menu_character, GameKey.CHARACTER),
+                tap(R.string.menu_log, GameKey.LOG),
+                tap(R.string.menu_sneak, GameKey.SNEAK),
+                tap(R.string.menu_first_person, GameKey.FIRST_PERSON),
+                tap(R.string.menu_quicksave, GameKey.QUICKSAVE),
+                PanelButton(getString(R.string.menu_quickload)) {
+                    confirm(R.string.quickload_title, R.string.quickload_confirm, R.string.quickload_action, ButtonKind.PRIMARY) {
+                        arbiter.tap(GameKey.QUICKLOAD)
+                    }
+                },
+                PanelButton(getString(R.string.menu_layout)) { startEditor() },
+                PanelButton(getString(R.string.settings_title)) { startActivity(Intent(this, SettingsActivity::class.java)) },
+            ),
+            columns = 3,
+            footer = listOf(
+                PanelButton(getString(R.string.menu_quit), ButtonKind.DANGER) {
+                    confirm(R.string.quit_title, R.string.quit_confirm, R.string.quit_action, ButtonKind.DANGER) { backend.stop() }
+                },
+                PanelButton(getString(R.string.menu_resume), ButtonKind.PRIMARY),
+            ),
+        )
     }
 
     // ---- редактор раскладки -------------------------------------------------------------
 
     private fun buildEditorBar(): LinearLayout {
-        editorModeButton = Button(this).apply {
-            setOnClickListener {
-                val editable = MODE_TITLES.keys.toList()
-                touchOverlay.editorMode = editable[(editable.indexOf(touchOverlay.editorMode) + 1) % editable.size]
-                showEditorMode()
-            }
+        editorModeButton = Gothic.button(this, "", textSizeSp = 16f, compact = true) {
+            val editable = MODE_TITLES.keys.toList()
+            touchOverlay.editorMode = editable[(editable.indexOf(touchOverlay.editorMode) + 1) % editable.size]
+            showEditorMode()
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xCC000000.toInt())
+            background = FrameDrawable(resources.displayMetrics.density, compact = true)
             visibility = View.GONE
-            addView(editorModeButton)
-            addView(Button(this@GameActivity).apply {
-                text = getString(R.string.editor_reset)
-                setOnClickListener { touchOverlay.editor?.reset(); touchOverlay.invalidate() }
+            val gap = Gothic.dp(this@GameActivity, 8f)
+            fun add(v: View) = addView(v, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                if (isNotEmpty()) leftMargin = gap
             })
-            addView(Button(this@GameActivity).apply {
-                text = getString(R.string.editor_done)
-                setOnClickListener { finishEditor(save = true) }
+            add(editorModeButton)
+            add(Gothic.button(this@GameActivity, getString(R.string.editor_reset), textSizeSp = 16f, compact = true) {
+                touchOverlay.editor?.reset()
+                touchOverlay.invalidate()
+            })
+            add(Gothic.button(this@GameActivity, getString(R.string.editor_done), ButtonKind.PRIMARY, textSizeSp = 16f, compact = true) {
+                finishEditor(save = true)
             })
         }
     }
@@ -471,12 +532,17 @@ class GameActivity : XServerDisplayActivity() {
 
     // ---- ввод --------------------------------------------------------------------------
 
-    private fun confirm(message: Int, action: () -> Unit) {
-        AlertDialog.Builder(this)
-            .setMessage(message)
-            .setPositiveButton(R.string.yes) { _, _ -> action(); scheduleTick() }
-            .setNegativeButton(R.string.no, null)
-            .show()
+    /** Подтверждение панелью поверх игры; слева — отказ, справа — действие. */
+    private fun confirm(title: Int, message: Int, action: Int, kind: ButtonKind, onConfirm: () -> Unit) {
+        GothicPanels.message(
+            panels,
+            getString(title),
+            getString(message),
+            listOf(
+                PanelButton(getString(if (kind == ButtonKind.DANGER) R.string.stay_action else R.string.no)),
+                PanelButton(getString(action), kind) { onConfirm(); scheduleTick() },
+            ),
+        )
     }
 
     private fun scheduleTick() {
@@ -490,6 +556,7 @@ class GameActivity : XServerDisplayActivity() {
     @Suppress("MissingSuperCall")
     override fun onBackPressed() {
         if (!started) return
+        if (GothicPanels.handleBack(panels)) return
         if (touchOverlay.editor != null) {
             finishEditor(save = false)
             return
@@ -631,6 +698,8 @@ class GameActivity : XServerDisplayActivity() {
         private const val CPU_SAMPLE_MS = 2_000L
         /** Игра, закрывшаяся быстрее, считается неудачным запуском. */
         private const val QUICK_EXIT_SECONDS = 180
+        /** Экран загрузки убирается и без окна игры: вдруг его не распознали, а игра уже идёт. */
+        private const val COVER_TIMEOUT_MS = 90_000L
         private val MODE_TITLES = mapOf(
             ControlMode.WORLD to "мир",
             ControlMode.COMBAT to "бой",
