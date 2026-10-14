@@ -37,4 +37,23 @@ class WinlatorBackend(
     override fun resume() = Unit
 
     override fun stop() = onStop()
+
+    companion object {
+        /** Экран игры открыт: процессы Wine принадлежат ему, трогать их нельзя. */
+        @Volatile
+        var sessionActive = false
+
+        /**
+         * Завершить все процессы Wine этого приложения (wineserver, игра, PulseAudio). Winlator при
+         * выходе перезапускает приложение целиком; мы остаёмся в процессе, поэтому без этого процессы
+         * прошлой игры живут дальше, и новый запуск Gothic натыкается на них (Union: «Can not create
+         * Event object»).
+         */
+        fun killWineProcesses(): Int {
+            val self = android.os.Process.myPid()
+            val children = com.winlator.core.ProcessHelper.getChildProcesses().filter { it.pid != self }
+            children.forEach { com.winlator.core.ProcessHelper.killProcess(it.pid) }
+            return children.size
+        }
+    }
 }

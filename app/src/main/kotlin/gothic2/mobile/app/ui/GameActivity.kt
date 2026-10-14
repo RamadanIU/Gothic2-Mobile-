@@ -128,6 +128,7 @@ class GameActivity : XServerDisplayActivity() {
         }
         this.variant = variant
         started = true
+        WinlatorBackend.sessionActive = true
         return true
     }
 
@@ -234,6 +235,8 @@ class GameActivity : XServerDisplayActivity() {
     /** Winlator вызывает при завершении процесса игры (из фонового потока) и при выходе из меню. */
     override fun exit() {
         stopEnvironment()
+        val killed = WinlatorBackend.killWineProcesses()
+        if (killed > 0) app.diagnostics.log("game", "killed $killed leftover Wine processes")
         runOnUiThread { onGameExited() }
     }
 
@@ -466,8 +469,10 @@ class GameActivity : XServerDisplayActivity() {
         }
         bridge?.stop()
         super.onDestroy() // Winlator останавливает Wine
+        if (started) WinlatorBackend.sessionActive = false
         if (started && isFinishing && !exited) {
             exited = true
+            WinlatorBackend.killWineProcesses()
             app.diagnostics.log("game", "closed by system")
             afterGame()
         }

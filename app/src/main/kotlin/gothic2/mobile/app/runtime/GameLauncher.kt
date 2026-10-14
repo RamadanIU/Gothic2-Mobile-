@@ -44,6 +44,11 @@ class GameLauncher(private val app: GothicApplication) {
         val tree = PathGameTree(root)
         val args = variant.args ?: error("Вариант ${variant.id} ещё не подтверждён: нет аргументов запуска")
 
+        // Остатки прошлой игры (если экран игры закрылся, а процесс приложения жив) мешают новой.
+        if (!WinlatorBackend.sessionActive) {
+            val killed = WinlatorBackend.killWineProcesses()
+            if (killed > 0) app.diagnostics.log("launch", "killed $killed leftover Wine processes")
+        }
         RootFS.find(app)
         val installNeeded = RootFSInstaller.isInstallNeeded(app)
         download(installNeeded, onStep)
