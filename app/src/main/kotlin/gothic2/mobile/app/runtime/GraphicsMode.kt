@@ -36,6 +36,9 @@ enum class GraphicsMode(val id: String, val title: String, val graphicsDriver: S
 
     val isD7VK: Boolean get() = this == D7VK_TURNIP || this == D7VK
 
+    /** Vulkan — Turnip (драйвер Mesa в процессе игры), а не Vortek. */
+    val usesTurnip: Boolean get() = graphicsDriver.startsWith("turnip,")
+
     fun next(): GraphicsMode = entries[(ordinal + 1) % entries.size]
 
     companion object {
@@ -44,5 +47,18 @@ enum class GraphicsMode(val id: String, val title: String, val graphicsDriver: S
             if (gpuName?.contains("Adreno", ignoreCase = true) == true) D7VK_TURNIP else WINED3D_ZINK
 
         fun of(id: String?, gpuName: String?): GraphicsMode = entries.firstOrNull { it.id == id } ?: defaultFor(gpuName)
+
+        /**
+         * Значение `TU_DEBUG` для Turnip на Adreno с номером [adrenoModel] (0 — не Adreno). Замысел
+         * Winlator 11.2 (`TurnipConfigDialog.setEnvVars`): на Adreno 7xx — рисование прямо в память
+         * (`sysmem`), на 710/720/732 — только через плиточную память GPU (`gmem`), и везде `deck_emu`.
+         * Но там последняя строка записывает `TU_DEBUG` заново из исходного значения, и остаётся один
+         * `deck_emu`: Adreno 740 рисовал через GMEM, а это сетка чёрных блоков и вспышки на кадре.
+         */
+        fun turnipDebug(adrenoModel: Int): String = when {
+            adrenoModel == 710 || adrenoModel == 720 || adrenoModel == 732 -> "gmem,deck_emu"
+            adrenoModel >= 700 -> "sysmem,deck_emu"
+            else -> "deck_emu"
+        }
     }
 }

@@ -27,6 +27,16 @@ class GraphicsModeTest {
     }
 
     @Test
+    fun `turnip on adreno 7xx renders without GMEM`() {
+        assertEquals("sysmem,deck_emu", GraphicsMode.turnipDebug(740))
+        assertEquals("sysmem,deck_emu", GraphicsMode.turnipDebug(750))
+        assertEquals("gmem,deck_emu", GraphicsMode.turnipDebug(732))
+        assertEquals("deck_emu", GraphicsMode.turnipDebug(660))
+        assertEquals("deck_emu", GraphicsMode.turnipDebug(0))
+        assertEquals(listOf(GraphicsMode.D7VK_TURNIP, GraphicsMode.WINED3D_ZINK_TURNIP), GraphicsMode.entries.filter { it.usesTurnip })
+    }
+
+    @Test
     fun `settings list matches the modes`() {
         val doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(File("src/main/res/values/arrays.xml"))
         val arrays = doc.getElementsByTagName("string-array")
