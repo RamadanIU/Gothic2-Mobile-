@@ -91,7 +91,7 @@ class SettingsActivity : AppCompatActivity() {
             Gothic.toast(requireContext(), R.string.build_report_wait, long = true)
             runIo({
                 val report = BuildFingerprint.collect(
-                    PathGameTree(app.paths.gameRoot),
+                    PathGameTree(app.gameRoot()),
                     app.verifier,
                     savesDirs = build?.allSavesDirs() ?: listOf("Saves"),
                 )

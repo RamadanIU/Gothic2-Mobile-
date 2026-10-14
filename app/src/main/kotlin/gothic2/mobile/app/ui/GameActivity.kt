@@ -53,6 +53,7 @@ import gothic2.mobile.core.config.CpuCores
 import gothic2.mobile.core.config.UserSettings
 import gothic2.mobile.core.diagnostics.CpuLoad
 import gothic2.mobile.core.diagnostics.FrameStats
+import gothic2.mobile.core.diagnostics.GameExit
 import gothic2.mobile.core.diagnostics.SessionJournal
 import gothic2.mobile.core.diagnostics.TimedInputSink
 import gothic2.mobile.core.gamedata.GameVariant
@@ -87,6 +88,12 @@ class GameActivity : XServerDisplayActivity() {
     private var started = false
     private var exited = false
     private var startedAt = 0L
+
+    /** Игрок сам выбрал «Выйти» — завершение игры не считается сбоем. */
+    @Volatile private var userQuit = false
+
+    /** Первая строка вывода Wine, похожая на сбой игры (GameExit.isCrashLine); пишется из потока Wine. */
+    @Volatile private var crashLine: String? = null
 
     private lateinit var settings: UserSettings
     private lateinit var backend: WinlatorBackend
@@ -222,12 +229,15 @@ class GameActivity : XServerDisplayActivity() {
     override fun onBeforeStart(savedInstanceState: Bundle?): Boolean {
         val build = app.importedBuild()
         val variant = build?.let { app.selectedVariant(it) }
-        if (savedInstanceState != null || variant == null || !intent.hasExtra(EXTRA_CONTAINER_ID)) {
+        // Вторая игра в одном процессе не запускается (см. GothicApplication.gameSessionUsed):
+        // лаунчер перезапустит процесс.
+        if (savedInstanceState != null || variant == null || !intent.hasExtra(EXTRA_CONTAINER_ID) || app.gameSessionUsed) {
             finishToLauncher()
             return false
         }
         this.variant = variant
         started = true
+        app.gameSessionUsed = true
         WinlatorBackend.sessionActive = true
         return true
     }
@@ -236,7 +246,10 @@ class GameActivity : XServerDisplayActivity() {
     override fun onSetupLogging() {
         val diagnostics = app.diagnostics
         diagnostics.beginWineLog()
-        ProcessHelper.addDebugCallback { line -> diagnostics.wine(line) }
+        ProcessHelper.addDebugCallback { line ->
+            diagnostics.wine(line)
+            if (crashLine == null && GameExit.isCrashLine(line)) crashLine = line
+        }
         val env = overrideEnvVars
         // Ошибки Wine нужны для разбора проблем, отладочный шум — нет.
         env.put("WINEDEBUG", "err+all,fixme-all")
@@ -402,22 +415,38 @@ class GameActivity : XServerDisplayActivity() {
         runOnUiThread { onGameExited() }
     }
 
+    /**
+     * Игра закончилась. Выход игрока (наше меню или меню Gothic) — штатный: приложение просто
+     * закрывается, и следующий запуск сразу открывает игру. Сбой — сразу экран «Игра закрылась»
+     * с журналом. В обоих случаях процесс после уборки завершается: вторую игру в том же
+     * процессе Winlator не выдерживает (GothicApplication.gameSessionUsed).
+     */
     private fun onGameExited() {
         if (exited) return
         exited = true
         val seconds = (SystemClock.uptimeMillis() - startedAt) / 1000
         logStats()
         stopCpuSampler()
-        app.diagnostics.log("game", "exited after ${seconds}s")
-        // Игра закрылась почти сразу — вероятно, ошибка: лаунчер покажет кнопку «Отправить журнал».
-        app.settings.lastSessionFailed = seconds < QUICK_EXIT_SECONDS
+        // Окно могли не распознать (экран загрузки тогда убирается по тайм-ауту), а игра шла:
+        // долгая игра без признаков сбоя — не «не запустилась».
+        val windowShown = gameVisible || seconds * 1000 >= COVER_TIMEOUT_MS
+        val outcome = GameExit.classify(userQuit, windowShown, crashLine)
+        app.diagnostics.log("game", "exited after ${seconds}s: ${outcome.name.lowercase()}" + crashLine?.let { " ($it)" }.orEmpty())
+        app.settings.lastSessionFailed = outcome.failed
         afterGame()
+        if (outcome.failed) {
+            // Лаунчер дождётся уборки, перезапустит процесс и покажет экран сбоя.
+            startActivity(Intent(this, LauncherActivity::class.java))
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
+        }
         finish()
     }
 
     /**
-     * Игра больше не работает: завершить оставшиеся процессы Wine, вернуть файлы варианта и
-     * сохранить копии изменившихся слотов (в фоне, по порядку).
+     * Игра больше не работает: завершить оставшиеся процессы Wine, вернуть файлы варианта,
+     * сохранить копии изменившихся слотов и завершить процесс (в фоне, по порядку). Отметка
+     * сеанса снимается до завершения процесса — иначе следующий запуск счёл бы игру прерванной.
      */
     private fun afterGame() {
         val app = app
@@ -431,11 +460,12 @@ class GameActivity : XServerDisplayActivity() {
                 runCatching { SaveBackupPolicy(app.saveManager(build, variant)).onGameExited() }
                     .onFailure { app.diagnostics.log("saves", "backup failed: $it") }
             }
+            app.endGameProcess()
         }
     }
 
     private fun restoreVariantFiles(build: SupportedBuild) {
-        runCatching { VariantLayout(app.paths.gameRoot).restore(build) }
+        runCatching { VariantLayout(app.gameRoot()).restore(build) }
             .onFailure { app.diagnostics.log("launch", "variant restore failed: $it") }
     }
 
@@ -474,7 +504,10 @@ class GameActivity : XServerDisplayActivity() {
             columns = 3,
             footer = listOf(
                 PanelButton(getString(R.string.menu_quit), ButtonKind.DANGER) {
-                    confirm(R.string.quit_title, R.string.quit_confirm, R.string.quit_action, ButtonKind.DANGER) { backend.stop() }
+                    confirm(R.string.quit_title, R.string.quit_confirm, R.string.quit_action, ButtonKind.DANGER) {
+                        userQuit = true
+                        backend.stop()
+                    }
                 },
                 PanelButton(getString(R.string.menu_resume), ButtonKind.PRIMARY),
             ),
@@ -660,8 +693,8 @@ class GameActivity : XServerDisplayActivity() {
         if (started) WinlatorBackend.sessionActive = false
         if (started && isFinishing && !exited) {
             exited = true
-            app.diagnostics.log("game", "closed by system")
-            app.settings.lastSessionFailed = (SystemClock.uptimeMillis() - startedAt) / 1000 < QUICK_EXIT_SECONDS
+            app.diagnostics.log("game", "closed by system" + crashLine?.let { " after crash ($it)" }.orEmpty())
+            app.settings.lastSessionFailed = crashLine != null
             afterGame()
         }
     }
@@ -696,8 +729,6 @@ class GameActivity : XServerDisplayActivity() {
         private const val PERIODIC_MS = 60_000L
         /** Снимок потоков: 2 с — достаточно, чтобы заметить, на каких ядрах работают потоки. */
         private const val CPU_SAMPLE_MS = 2_000L
-        /** Игра, закрывшаяся быстрее, считается неудачным запуском. */
-        private const val QUICK_EXIT_SECONDS = 180
         /** Экран загрузки убирается и без окна игры: вдруг его не распознали, а игра уже идёт. */
         private const val COVER_TIMEOUT_MS = 90_000L
         private val MODE_TITLES = mapOf(

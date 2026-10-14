@@ -2,8 +2,10 @@
 
 ```text
 Android-приложение (app)
-├── LauncherActivity      первый запуск: SAF-выбор папки → BuildVerifier → GameImporter;
-│                         далее «Играть»: GameLauncher.prepare с прогрессом → GameActivity
+├── LauncherActivity      первый запуск: SAF-выбор папки → BuildVerifier → игра прямо из папки
+│                         (StoragePaths → путь, разрешение «Файлы», GameFolder) или копия
+│                         (GameImporter); далее «Играть»: GameLauncher.prepare → GameActivity.
+│                         Одна игра на процесс: после игры процесс завершается/перезапускается
 ├── GameActivity          наследник XServerDisplayActivity (Winlator) + TouchOverlayView поверх
 │   ├── TouchOverlayView  рисует кнопки, передаёт касания в TouchRouter
 │   ├── GamepadMapper     геймпад → тот же InputArbiter
@@ -20,9 +22,10 @@ core (без Android, покрыт тестами)
 ├── input     InputArbiter ← TouchRouter ← OverlayLayout; KeyStateTracker → InputSink
 ├── bridge    BridgeSession (рукопожатие, токен, таймаут) → ModeController → InputArbiter.setMode;
 │             BoundedLineReader — чтение строк с ограничением длины
-├── diagnostics LatencyStats, TimedInputSink (задержка ввода), SessionJournal (нештатное завершение)
+├── diagnostics LatencyStats, TimedInputSink (задержка ввода), SessionJournal (нештатное завершение),
+│             GameExit (выход игрока или сбой — по выводу Wine)
 ├── saves     SaveManager (копии, восстановление, ZIP), SaveBackupPolicy (когда копировать)
-├── gamedata  GameTree, SupportedBuild, BuildVerifier, GameImporter
+├── gamedata  GameTree, SupportedBuild, BuildVerifier, GameImporter (копия), GameFolder (игра из папки)
 ├── config    IniFile, GothicIniWriter, DeviceProfile(s), UserSettings
 └── runtime   RuntimeComponents, ComponentInstaller + TarExtractor, LaunchSpecBuilder, RuntimeBackend,
               SessionController, RendererSetup (сторонний ddraw.dll/GD3D11 → обёртка или WineD3D)

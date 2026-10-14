@@ -25,7 +25,7 @@ import kotlin.io.path.writeText
 
 /**
  * Подготовка запуска закреплённой конфигурации в среде Winlator: системные файлы Wine,
- * контейнер (префикс Wine) с диском D: = папка игры, настройки в GOTHIC.INI, файлы варианта.
+ * контейнер (префикс Wine) с диском D: = папка игры (папка игрока или копия в приложении), настройки в GOTHIC.INI, файлы варианта.
  * Сам запуск делает [gothic2.mobile.app.ui.GameActivity] — без рабочего стола и выбора EXE.
  */
 class GameLauncher(private val app: GothicApplication) {
@@ -41,7 +41,7 @@ class GameLauncher(private val app: GothicApplication) {
 
     /** @param onStep текст шага и прогресс 0..100 (null — без процента) */
     fun prepare(build: SupportedBuild, variant: GameVariant, onStep: (String, Int?) -> Unit): Prepared {
-        val root = app.paths.gameRoot
+        val root = app.gameRoot()
         val tree = PathGameTree(root)
         val args = variant.args ?: error("Вариант ${variant.id} ещё не подтверждён: нет аргументов запуска")
 
@@ -171,7 +171,8 @@ class GameLauncher(private val app: GothicApplication) {
         return container
     }
 
-    private fun drives(): String = "D:" + app.paths.gameRoot.toString()
+    /** Диск D: — папка игры: папка игрока на накопителе или копия в приложении. */
+    private fun drives(): String = "D:" + app.gameRoot().toString()
 
     private companion object {
         const val CONTAINER_NAME = "Gothic II"
