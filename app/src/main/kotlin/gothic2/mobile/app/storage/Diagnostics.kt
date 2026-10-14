@@ -41,6 +41,11 @@ class Diagnostics(private val dir: Path, private val maxBytes: Long = 1_000_000)
         append(current, "${format.format(Date())} [$tag] ${message.replace('\n', ' ')}\n")
     }
 
+    /** Дождаться записи всех строк, поставленных в очередь, — перед завершением процесса. */
+    fun flush() {
+        executor.submit {}.get()
+    }
+
     /** Вывод Wine и Box64 последнего запуска игры (ошибки, причины падения). */
     val wineLog: Path get() = dir.resolve("wine.log")
     val previousWineLog: Path get() = dir.resolve("wine.1.log")
@@ -71,8 +76,7 @@ class Diagnostics(private val dir: Path, private val maxBytes: Long = 1_000_000)
 
     /** Файл с журналом для отправки (через «Поделиться»); вызывать не из UI-потока. */
     fun exportToFile(target: Path): Path {
-        // Дождаться записи строк, поставленных в очередь до этого момента.
-        executor.submit {}.get()
+        flush()
         Files.createDirectories(target.parent)
         target.writeText(snapshot().ifEmpty { "(журнал пуст)\n" })
         return target

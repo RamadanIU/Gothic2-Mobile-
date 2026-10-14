@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Сеть и доступ ко всему накопителю не нужны: игра импортируется через системный выбор папки. -->
+    <!-- Доступ к файлам: игра запускается прямо из папки игрока (Wine работает с путями, а не с
+         content://). При targetSdk 28 это обычное разрешение «Файлы», как у Winlator; без него
+         игру можно только скопировать в приложение через системный выбор папки. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen.multitouch.distinct" android:required="true" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
@@ -12,6 +17,7 @@
         android:icon="@mipmap/gothic_icon"
         android:roundIcon="@mipmap/gothic_icon_round"
         android:label="@string/game_title"
+        android:requestLegacyExternalStorage="true"
         android:supportsRtl="false"
         android:theme="@style/Theme.Gothic2">
 

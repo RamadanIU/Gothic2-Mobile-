@@ -45,6 +45,14 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_FAILED, false)
         set(v) = prefs.edit { putBoolean(KEY_FAILED, v) }
 
+    /**
+     * Папка игры на накопителе (путь файловой системы), из которой игра запускается напрямую;
+     * null — игра скопирована во внутреннее хранилище приложения.
+     */
+    var gameDir: String?
+        get() = prefs.getString(KEY_GAME_DIR, null)
+        set(v) = prefs.edit { putString(KEY_GAME_DIR, v) }
+
     /** Режим графики; пока игрок не выбрал сам — по видеокарте (GraphicsMode.defaultFor). */
     var graphicsMode: GraphicsMode
         get() = GraphicsMode.of(prefs.getString(KEY_GRAPHICS, null), gpuName)
@@ -79,5 +87,6 @@ class SettingsStore(context: Context) {
         const val KEY_FAILED = "last_session_failed"
         const val KEY_GRAPHICS = "graphics_mode"
         const val KEY_GPU = "gpu_name"
+        const val KEY_GAME_DIR = "game_dir"
     }
 }

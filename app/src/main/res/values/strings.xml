@@ -9,12 +9,23 @@
 
     <!-- Первый запуск: перенос игры -->
     <string name="import_title">Первый запуск</string>
-    <string name="import_intro">Для игры нужна ваша копия Gothic II: Золотое издание. Укажите папку игры — в ней лежат папки System и Data. Игра будет перенесена внутрь приложения, исходная папка не изменится.</string>
+    <string name="import_intro">Для игры нужна ваша копия Gothic II: Золотое издание. Укажите папку игры — в ней лежат папки System и Data. Игра запустится прямо из неё, ничего копировать не нужно.</string>
     <string name="import_choose">Указать папку игры</string>
     <string name="import_choose_other">Другая папка</string>
     <string name="import_checking">Проверяю файлы игры…</string>
     <string name="import_copying">Перенос игры: %1$d%%</string>
-    <string name="import_start">Перенести и начать</string>
+    <string name="import_copy">Скопировать в приложение</string>
+    <string name="link_play">Играть из этой папки</string>
+    <string name="link_hint">Игра будет запускаться прямо из этой папки: в ней же появятся сохранения и настройки, как на ПК. Понадобится разрешение на доступ к файлам.</string>
+    <string name="link_unavailable">Эта папка не во внутренней памяти телефона (карта памяти, облако или USB): играть прямо из неё Android не даст — игру можно только скопировать в приложение.</string>
+    <string name="link_permission_denied">Без разрешения на доступ к файлам игра не сможет работать с папкой. Разрешите доступ или скопируйте игру в приложение.</string>
+    <string name="link_mismatch">файлы в папке отличаются от проверенных — выберите папку снова</string>
+    <string name="link_folder_missing">Нет доступа к папке игры:\n%1$s\n\nПапку переместили или удалили, либо отозвано разрешение на доступ к файлам. Укажите папку игры снова.</string>
+    <string name="old_copy_title">Копия игры в приложении</string>
+    <string name="old_copy_message">Теперь игра запускается из вашей папки. Прежняя копия внутри приложения больше не нужна — удалить её и освободить место? Сохранения из неё перенесены в папку игры (%1$d).</string>
+    <string name="old_copy_kept_saves">Теперь игра запускается из вашей папки. Сохранения из прежней копии внутри приложения перенесены (%1$d), кроме %2$d — слоты с теми же номерами уже были в папке игры и оставлены как есть. Прежняя копия сохранена: её сохранения можно забрать позже.</string>
+    <string name="old_copy_delete">Удалить копию</string>
+    <string name="old_copy_keep">Оставить</string>
     <string name="import_found_title">Игра найдена</string>
     <string name="import_unknown_title">Игра не распознана</string>
     <string name="import_failed">Ошибка: %1$s</string>
@@ -42,7 +53,7 @@
     <string name="launch_failed_message">%1$s\n\nЖурнал диагностики можно сохранить в настройках и прислать разработчику.</string>
     <string name="launch_retry">Повторить</string>
     <string name="failed_launch_title">Игра закрылась</string>
-    <string name="failed_launch_message">Прошлый запуск закончился почти сразу — похоже, что-то пошло не так. Отправьте журнал разработчику: в нём видна причина.</string>
+    <string name="failed_launch_message">Игра закрылась из-за сбоя. Отправьте журнал разработчику: в нём видна причина.</string>
     <string name="failed_launch_graphics">Графика: %1$s</string>
     <string name="failed_launch_send">Отправить журнал</string>
     <string name="failed_launch_retry">Играть снова</string>

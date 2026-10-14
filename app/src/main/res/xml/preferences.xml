@@ -86,7 +86,7 @@
         <Preference app:iconSpaceReserved="false" app:key="build_report" app:title="Отчёт о сборке игры" app:summary="Контрольные суммы файлов вашей копии — для закрепления сборки. Без игровых файлов и личных данных" />
         <Preference app:iconSpaceReserved="false" app:key="send_diagnostics" app:title="Отправить журнал диагностики" app:summary="Через «Поделиться»: мессенджер, почта или файлы. Без персональных данных" />
         <Preference app:iconSpaceReserved="false" app:key="export_diagnostics" app:title="Сохранить журнал диагностики в файл" app:summary="Без персональных данных: только события запуска и ошибки" />
-        <Preference app:iconSpaceReserved="false" app:key="reimport_game" app:title="Импортировать файлы игры заново" />
+        <Preference app:iconSpaceReserved="false" app:key="reimport_game" app:title="Указать папку игры заново" />
         <SwitchPreferenceCompat app:iconSpaceReserved="false" app:key="dev_mode" app:title="Режим разработчика" app:summary="Разрешает запуск незакреплённых сборок" />
     </PreferenceCategory>
 
