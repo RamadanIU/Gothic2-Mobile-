@@ -49,7 +49,7 @@ object LaunchSpecBuilder {
         bridge: BridgeEndpoint? = null,
     ): LaunchSpec {
         val winGameDir = "${paths.gameDrive}:\\${paths.gameDirOnDrive.replace('/', '\\')}"
-        val exe = build.exePath.replace('/', '\\')
+        val exe = build.exeOf(variant).replace('/', '\\')
         val exeDir = exe.substringBeforeLast('\\', "")
         val env = linkedMapOf(
             "WINEPREFIX" to paths.wineprefix,
@@ -66,7 +66,7 @@ object LaunchSpecBuilder {
                 env["DXVK_LOG_LEVEL"] = "none"
                 env["DXVK_STATE_CACHE_PATH"] = "${paths.cacheDir}/dxvk"
                 if (dxvkConf != null) {
-                    val confRel = "${build.exePath.substringBeforeLast('/', "")}/dxvk.conf".trimStart('/')
+                    val confRel = "${build.exeOf(variant).substringBeforeLast('/', "")}/dxvk.conf".trimStart('/')
                     files[confRel] = dxvkConf
                     env["DXVK_CONFIG_FILE"] = "${paths.gameRoot}/$confRel"
                 }

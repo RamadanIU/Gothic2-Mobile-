@@ -90,5 +90,7 @@ class GoldEditionTest {
         assertTrue(";   System/Classic.ini" in text)
         assertFalse("private" in text)
         assertFalse(root.toString() in text, "в отчёте нет путей устройства")
+        assertTrue("## ----- System/Classic.ini -----" in text, "содержимое файлов настроек в отчёте")
+        assertTrue("[INFO]" in text)
     }
 }

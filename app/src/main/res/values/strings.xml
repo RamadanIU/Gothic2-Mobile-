@@ -37,4 +37,6 @@
     <string name="build_report_progress">Подсчёт контрольных сумм: %1$d%%</string>
     <string name="variant_choose_title">Во что играем?</string>
     <string name="variant_change_hint">Вариант можно поменять в настройках.</string>
+    <string name="build_report_wait">Считаю контрольные суммы файлов игры — это займёт несколько минут. Не закрывайте приложение.</string>
+    <string name="diagnostics_saved">Журнал диагностики сохранён.</string>
 </resources>

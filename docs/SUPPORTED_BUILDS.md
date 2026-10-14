@@ -7,8 +7,27 @@
 
 | Сборка | Варианты запуска | Статус |
 |---|---|---|
-| `g2-gold-ru` — Золотое издание | «Ночь Ворона»; классическая Gothic II без дополнения | основная цель, не закреплена |
-| `g2-classic-ru` — Classic с диска 2002–2003 гг. | один | дополнительная, не закреплена |
+| `g2-gold-gog` — GOG «Gothic II: Gold Classic» (THQ Nordic) | «Ночь Ворона» (`Gothic2.exe -game:GothicGame.ini`); классика (`Gothic2c.exe`, аргументы уточняются) | **закреплена** по отчёту 2026-10-14 |
+| `g2-gold-disc-ru` — Золотое издание с диска | «Ночь Ворона» | не закреплена |
+| `g2-classic-ru` — Classic с диска 2002–2003 гг. | один | не закреплена |
+
+### Что внутри GOG-издания (по отчёту)
+
+Около 4,1 ГБ, 1856 файлов. Кроме самой игры, GOG ставит:
+- **GD3D11** — графический мод D3D11 (`System/GD3D11/`, свой `System/ddraw.dll`, `d3dcompiler_47.dll`,
+  `GFSDK_SSAO`). По плану графические моды по умолчанию не включаются: цепочка WineD3D его не
+  загружает (`ddraw=b`), цепочка DXVK заменяет `ddraw.dll` обёрткой, а оригинал переименовывает
+  (`RendererSetup`).
+- **Union** (`System/Union.patch`, `Data/Union.vdf`, `Data/$Templates$/*.dll`) и **SystemPack**
+  (`System/SystemPack.ini`, `vdfs32g.dll`) — исправления движка и плагины; под Wine проверить.
+- **DSOAL** (`System/Autorun/dsound.dll`, `dsoal-aldrv.dll`) — звук через OpenAL; проверить под Wine.
+- **Отдельный `System/Gothic2c.exe`** + `Gothic2c.ini` + `Data/modvdf/Gothic2c.mod` + `Gothic2c.bat` —
+  классическая Gothic II. Ещё есть мод `g2_classic` (`System/g2_classic.ini`, `g2_classic(_ru).mod`).
+- Моды сообщества для GothicStarter: ScriptPatch v1/v32 (в т.ч. `_ru`, `_widescreen`), Gothic 2 Mod Fix.
+- `System/dxvk.conf` (заменяется настройками приложения при запуске).
+
+Язык поставки не определён: в `Data` есть английские `Speech_*_engl`, `Textures_Addon_Menu_English`,
+а в `modvdf` — русские `g2_classic_ru`, `scriptpatch_v32_ru`.
 
 Сборки различаются составом файлов: у Gold есть `Data/Worlds_Addon.vdf`, у отдельной Classic его
 быть не должно (`forbids=`). Окончательно сборка опознаётся по SHA-256 `System/Gothic2.exe`.
