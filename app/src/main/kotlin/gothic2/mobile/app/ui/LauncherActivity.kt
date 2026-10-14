@@ -16,6 +16,7 @@ import androidx.appcompat.app.AppCompatActivity
 import gothic2.mobile.app.BuildConfig
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
+import gothic2.mobile.app.storage.DocumentExport
 import gothic2.mobile.app.storage.SafGameTree
 import gothic2.mobile.core.diagnostics.SessionJournal
 import gothic2.mobile.core.gamedata.BuildFingerprint
@@ -208,7 +209,7 @@ class LauncherActivity : AppCompatActivity() {
                     },
                     isCancelled = { isFinishing },
                 )
-                contentResolver.openOutputStream(out)!!.use { it.write(BuildFingerprint.format(r, BuildConfig.VERSION_NAME).toByteArray()) }
+                DocumentExport.write(contentResolver, out, cacheDir) { it.write(BuildFingerprint.format(r, BuildConfig.VERSION_NAME).toByteArray()) }
             }
             runOnUiThread {
                 report.isEnabled = true

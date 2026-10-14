@@ -19,7 +19,7 @@ core (без Android, покрыт тестами)
 ├── gamedata  GameTree, SupportedBuild, BuildVerifier, GameImporter
 ├── config    IniFile, GothicIniWriter, DeviceProfile(s), UserSettings
 └── runtime   RuntimeComponents, ComponentInstaller + TarExtractor, LaunchSpecBuilder, RuntimeBackend,
-              SessionController
+              SessionController, RendererSetup (сторонний ddraw.dll/GD3D11 → обёртка или WineD3D)
 ```
 
 Соответствие модулям раздела 4 плана:

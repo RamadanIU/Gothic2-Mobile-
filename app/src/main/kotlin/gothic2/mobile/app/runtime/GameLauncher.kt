@@ -12,6 +12,7 @@ import gothic2.mobile.core.gamedata.SupportedBuild
 import gothic2.mobile.core.runtime.BridgeEndpoint
 import gothic2.mobile.core.runtime.LaunchSpec
 import gothic2.mobile.core.runtime.LaunchSpecBuilder
+import gothic2.mobile.core.runtime.RendererSetup
 import gothic2.mobile.core.runtime.RuntimeBackend
 import gothic2.mobile.core.runtime.RuntimePaths
 import java.nio.file.Files
@@ -26,10 +27,23 @@ class GameLauncher(private val app: GothicApplication, private val backend: Runt
 
     data class Launched(val spec: LaunchSpec, val graphics: GraphicsPreset)
 
-    fun prepareAndLaunch(build: SupportedBuild, variant: GameVariant, profile: DeviceProfile, bridge: BridgeEndpoint?): Launched {
-        val graphics = app.settings.userSettings().effectiveGraphics(profile)
+    fun prepareAndLaunch(build: SupportedBuild, variant: GameVariant, requested: DeviceProfile, bridge: BridgeEndpoint?): Launched {
         val root = app.paths.gameRoot
         val tree = PathGameTree(root)
+
+        // Графические DLL рядом с EXE: сторонний ddraw.dll (GD3D11 в GOG-издании) не включается.
+        // Пока обёртка D3D7→D3D9 не входит в компоненты, цепочка DXVK недоступна — берём WineD3D.
+        val exeDir = build.exeOf(variant).substringBeforeLast('/', "")
+        val wrapper = app.paths.components.resolve("d3d7-wrapper/${LaunchSpecBuilder.WRAPPER_DLL}.dll")
+        val profile = try {
+            RendererSetup.prepare(root, exeDir, requested.renderer, wrapper)
+                .forEach { app.diagnostics.log("launch", "renderer files: $it") }
+            requested
+        } catch (e: RendererSetup.MissingWrapperException) {
+            app.diagnostics.log("launch", "wrapper missing, fallback to WINED3D")
+            requested.copy(renderer = RendererChain.WINED3D)
+        }
+        val graphics = app.settings.userSettings().effectiveGraphics(profile)
 
         val iniRel = tree.resolve(build.iniPath) ?: build.iniPath
         val iniPath = root.resolve(iniRel)

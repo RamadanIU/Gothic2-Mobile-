@@ -13,6 +13,7 @@ import androidx.preference.SwitchPreferenceCompat
 import gothic2.mobile.app.BuildConfig
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
+import gothic2.mobile.app.storage.DocumentExport
 import gothic2.mobile.core.config.UserSettings
 import gothic2.mobile.core.gamedata.BuildFingerprint
 import gothic2.mobile.core.gamedata.PathGameTree
@@ -42,8 +43,9 @@ class SettingsActivity : AppCompatActivity() {
             val saves = currentSaves() ?: return@registerForActivityResult
             if (uri == null) return@registerForActivityResult
             val resolver = requireContext().contentResolver
+            val cache = requireContext().cacheDir
             runIo({
-                resolver.openOutputStream(uri)!!.use { saves.exportZip(it) }
+                DocumentExport.write(resolver, uri, cache) { saves.exportZip(it) }
                 getString(R.string.saves_exported)
             })
         }
@@ -62,23 +64,30 @@ class SettingsActivity : AppCompatActivity() {
             if (uri == null) return@registerForActivityResult
             val app = requireContext().app
             val resolver = requireContext().contentResolver
+            val cache = requireContext().cacheDir
             val build = app.importedBuild()
+            // Подсчёт хэшей нескольких гигабайт занимает минуты — предупреждаем, чтобы экран не закрыли.
+            Toast.makeText(requireContext(), R.string.build_report_wait, Toast.LENGTH_LONG).show()
             runIo({
                 val report = BuildFingerprint.collect(
                     PathGameTree(app.paths.gameRoot),
                     app.verifier,
                     savesDirs = build?.allSavesDirs() ?: listOf("Saves"),
                 )
-                resolver.openOutputStream(uri)!!.use { it.write(BuildFingerprint.format(report, BuildConfig.VERSION_NAME).toByteArray()) }
+                DocumentExport.write(resolver, uri, cache) { it.write(BuildFingerprint.format(report, BuildConfig.VERSION_NAME).toByteArray()) }
                 getString(R.string.build_report_saved)
             })
         }
 
         private val exportLog = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
             if (uri == null) return@registerForActivityResult
+            val resolver = requireContext().contentResolver
+            val cache = requireContext().cacheDir
+            val diagnostics = requireContext().app.diagnostics
             runIo({
-                requireContext().contentResolver.openOutputStream(uri)!!.use { it.write(requireContext().app.diagnostics.snapshot().toByteArray()) }
-                "OK"
+                val text = diagnostics.snapshot().ifEmpty { "(журнал пуст)\n" }
+                DocumentExport.write(resolver, uri, cache) { it.write(text.toByteArray()) }
+                getString(R.string.diagnostics_saved)
             })
         }
 

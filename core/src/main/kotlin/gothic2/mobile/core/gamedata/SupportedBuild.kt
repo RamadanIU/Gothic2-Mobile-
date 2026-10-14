@@ -7,13 +7,16 @@ import gothic2.mobile.core.util.Hashing
  * Вариант запуска внутри одной установки. Gothic II Gold содержит «Ночь Ворона» и может
  * запускать классическую Gothic II как отдельную игру — это разные варианты одной сборки.
  *
- * @property args аргументы Gothic2.exe (например, `-game:<файл>.ini`); null — ещё не
+ * @property exePath собственный исполняемый файл варианта (в GOG-издании классическая игра —
+ *   отдельный `System/Gothic2c.exe`) или null — EXE сборки
+ * @property args аргументы EXE (например, `-game:<файл>.ini`); null — ещё не
  *   подтверждены на реальной копии, вариант не предлагается игроку
  * @property savesDir собственный каталог сохранений варианта или null — общий каталог сборки
  */
 data class GameVariant(
     val id: String,
     val title: String,
+    val exePath: String?,
     val args: List<String>?,
     val requiredFiles: List<String>,
     val savesDir: String?,
@@ -62,6 +65,8 @@ data class SupportedBuild(
 
     fun savesDirOf(variant: GameVariant): String = variant.savesDir ?: savesDir
 
+    fun exeOf(variant: GameVariant): String = variant.exePath ?: exePath
+
     /** Все каталоги сохранений — при импорте игры они не копируются поверх пользовательских. */
     fun allSavesDirs(): List<String> = (listOf(savesDir) + variants.mapNotNull { it.savesDir }).distinct()
 
@@ -105,12 +110,13 @@ data class SupportedBuild(
         private fun parseVariant(ini: IniFile, section: String, id: String, buildSection: String): GameVariant {
             // Без отдельной секции вариант запускается без аргументов (обычный запуск сборки).
             if (section !in ini.sections()) {
-                return GameVariant(id, ini.get(buildSection, "title") ?: id, emptyList(), emptyList(), null)
+                return GameVariant(id, ini.get(buildSection, "title") ?: id, null, emptyList(), emptyList(), null)
             }
             val rawArgs = ini.get(section, "args").orEmpty()
             return GameVariant(
                 id = id,
                 title = ini.get(section, "title") ?: error("[$section]: нет ключа title"),
+                exePath = ini.get(section, "exe")?.takeIf { it.isNotBlank() },
                 args = if (rawArgs.trim().equals(PENDING, ignoreCase = true)) null else rawArgs.split(' ').filter { it.isNotEmpty() },
                 requiredFiles = ini.get(section, "requires").orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() },
                 savesDir = ini.get(section, "saves"),
