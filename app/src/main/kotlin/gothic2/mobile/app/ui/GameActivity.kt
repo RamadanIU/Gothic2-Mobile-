@@ -50,6 +50,8 @@ import gothic2.mobile.core.config.ViewportFit
 import gothic2.mobile.core.diagnostics.SessionJournal
 import gothic2.mobile.core.diagnostics.TimedInputSink
 import gothic2.mobile.core.gamedata.GameVariant
+import gothic2.mobile.core.gamedata.SupportedBuild
+import gothic2.mobile.core.gamedata.VariantLayout
 import gothic2.mobile.core.input.CameraMapper
 import gothic2.mobile.core.input.ControlMode
 import gothic2.mobile.core.input.GameKey
@@ -292,14 +294,24 @@ class GameActivity : AppCompatActivity() {
                 // Запись сохранений гарантированно окончена — резервируем изменившиеся слоты.
                 val build = app.importedBuild()
                 if (build != null) app.background.execute {
+                    restoreVariantFiles(build)
                     runCatching { SaveBackupPolicy(app.saveManager(build, variant)).onGameExited() }
                         .onFailure { app.diagnostics.log("saves", "backup failed: $it") }
                 }
                 finish()
             }
-            is RuntimeState.Failed -> showFatal("${state.reason}: ${state.details}")
+            is RuntimeState.Failed -> {
+                app.importedBuild()?.let { build -> app.background.execute { restoreVariantFiles(build) } }
+                showFatal("${state.reason}: ${state.details}")
+            }
             else -> Unit
         }
+    }
+
+    /** Игра больше не работает — вернуть файлы, которые вариант прятал на время запуска. */
+    private fun restoreVariantFiles(build: SupportedBuild) {
+        runCatching { VariantLayout(app.paths.gameRoot).restore(build) }
+            .onFailure { app.diagnostics.log("launch", "variant restore failed: $it") }
     }
 
     private fun onUiCommand(cmd: TouchCommand) {
@@ -320,7 +332,7 @@ class GameActivity : AppCompatActivity() {
             "Персонаж" to { arbiter.tap(GameKey.CHARACTER) },
             "Журнал" to { arbiter.tap(GameKey.LOG) },
             "Подкрасться" to { arbiter.tap(GameKey.SNEAK) },
-            "Посмотреть назад" to { arbiter.tap(GameKey.LOOK_BACK) },
+            "Вид от первого лица" to { arbiter.tap(GameKey.FIRST_PERSON) },
             "Быстрое сохранение" to { arbiter.tap(GameKey.QUICKSAVE) },
             "Быстрая загрузка…" to { confirm(R.string.quickload_confirm) { arbiter.tap(GameKey.QUICKLOAD) } },
             "Настроить кнопки" to { startEditor() },
