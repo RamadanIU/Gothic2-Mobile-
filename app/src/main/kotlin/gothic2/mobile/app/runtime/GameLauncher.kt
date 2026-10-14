@@ -145,7 +145,10 @@ class GameLauncher(private val app: GothicApplication) {
             // Встроенный ddraw Wine → WineD3D → OpenGL (Zink или Gladio).
             GraphicsMode.WINED3D_ZINK, GraphicsMode.WINED3D_ZINK_TURNIP, GraphicsMode.WINED3D_GLADIO -> {
                 container.dxWrapper = DXWrappers.WINED3D
-                container.dxWrapperConfig = ""
+                // Winlator по умолчанию ставит csmt=3: бит 0x2 заставляет WineD3D ждать выполнения
+                // каждой команды («Forcing serialization of all command streams» в журнале Wine) —
+                // игра и отрисовка идут по очереди. csmt=1 — обычный отдельный поток отрисовки.
+                container.dxWrapperConfig = "csmt=1"
             }
         }
         container.saveData()

@@ -26,6 +26,8 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import com.winlator.XServerDisplayActivity
 import com.winlator.core.ProcessHelper
+import com.winlator.xserver.Window
+import com.winlator.xserver.WindowManager
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
 import gothic2.mobile.app.bridge.BridgeServer
@@ -37,6 +39,7 @@ import gothic2.mobile.core.bridge.BridgeProtocol
 import gothic2.mobile.core.bridge.BridgeSession
 import gothic2.mobile.core.bridge.ModeController
 import gothic2.mobile.core.config.UserSettings
+import gothic2.mobile.core.diagnostics.FrameStats
 import gothic2.mobile.core.diagnostics.SessionJournal
 import gothic2.mobile.core.diagnostics.TimedInputSink
 import gothic2.mobile.core.gamedata.GameVariant
@@ -90,12 +93,25 @@ class GameActivity : XServerDisplayActivity() {
         }
     }
 
-    /** Раз в минуту: отметка «жив» и сводка задержки ввода в журнал диагностики. */
+    /** Плавность картинки: кадры окна игры приходят из потока X-сервера. */
+    private val frames = FrameStats()
+    private val frameListener = object : WindowManager.OnWindowModificationListener {
+        override fun onUpdateWindowContent(window: Window) = frames.onFrame(window.id, SystemClock.uptimeMillis())
+    }
+
+    /** Раз в минуту: отметка «жив», сводка задержки ввода и плавности картинки в журнал диагностики. */
     private val periodic = object : Runnable {
         override fun run() {
             app.background.execute { journal.heartbeat() }
             timedSink.keys.summary()?.let { app.diagnostics.log("latency", "keys p50=${it.p50} p95=${it.p95} max=${it.max} n=${it.count}") }
             timedSink.mouse.summary()?.let { app.diagnostics.log("latency", "mouse p50=${it.p50} p95=${it.p95} max=${it.max} n=${it.count}") }
+            frames.summaryAndReset()?.let {
+                app.diagnostics.log(
+                    "frames",
+                    "fps=${"%.1f".format(java.util.Locale.ROOT, it.fps)} ms p50=${it.p50} p95=${it.p95} p99=${it.p99} max=${it.max} " +
+                        "hitches=${it.hitches} pauses=${it.pauses} n=${it.frames}",
+                )
+            }
             main.postDelayed(this, PERIODIC_MS)
         }
     }
@@ -187,6 +203,7 @@ class GameActivity : XServerDisplayActivity() {
             addView(editorBar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
         }
 
+        xServer.windowManager.addOnWindowModificationListener(frameListener)
         getSystemService(PowerManager::class.java).addThermalStatusListener(thermalListener)
         getSystemService(InputManager::class.java).registerInputDeviceListener(deviceListener, main)
         updateGamepadState()
