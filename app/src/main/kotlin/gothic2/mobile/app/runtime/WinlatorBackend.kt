@@ -1,6 +1,7 @@
 package gothic2.mobile.app.runtime
 
 import android.os.SystemClock
+import android.system.Os
 import android.system.OsConstants
 import com.winlator.core.ProcessHelper
 import gothic2.mobile.core.input.InputSink
@@ -8,6 +9,7 @@ import gothic2.mobile.core.runtime.LaunchSpec
 import gothic2.mobile.core.runtime.RuntimeBackend
 import gothic2.mobile.core.runtime.RuntimeComponents
 import gothic2.mobile.core.runtime.RuntimeState
+import java.io.File
 
 /**
  * Среда исполнения Winlator, как её видит остальная часть приложения. Подготовку и запуск
@@ -53,18 +55,34 @@ class WinlatorBackend(
          * Event object»).
          */
         fun killWineProcesses(): Int {
-            val self = android.os.Process.myPid()
-            fun children() = ProcessHelper.getChildProcesses().filter { it.pid != self && it.state != ProcessHelper.PState.ZOMBIE }
-            val initial = children()
+            val initial = otherProcesses()
             if (initial.isEmpty()) return 0
             // Сначала SIGTERM: wineserver по нему сохраняет реестр (иначе настройки, которые игра
             // записала при первом запуске, пропадут), затем SIGKILL тем, кто не завершился.
-            initial.forEach { android.os.Process.sendSignal(it.pid, OsConstants.SIGTERM) }
+            initial.forEach { android.os.Process.sendSignal(it, OsConstants.SIGTERM) }
             val deadline = SystemClock.uptimeMillis() + TERM_WAIT_MS
-            while (children().isNotEmpty() && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(100)
-            children().forEach { ProcessHelper.killProcess(it.pid) }
+            while (otherProcesses().isNotEmpty() && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(100)
+            otherProcesses().forEach { ProcessHelper.killProcess(it) }
             return initial.size
         }
+
+        /**
+         * Живые процессы нашего UID, кроме самого приложения: своих процессов у него нет, значит,
+         * это Wine, wineserver, игра и PulseAudio. В том числе оставшиеся от прежнего процесса
+         * приложения (убитого системой или установкой обновления): у них номера меньше нашего,
+         * и правило Winlator (`getChildProcesses`: потомки или номер больше нашего) их не видит.
+         */
+        private fun otherProcesses(): List<Int> {
+            val self = android.os.Process.myPid()
+            val uid = Os.getuid()
+            return File("/proc").list().orEmpty().mapNotNull { it.toIntOrNull() }.filter { pid ->
+                pid != self && runCatching { Os.stat("/proc/$pid").st_uid }.getOrNull() == uid && !isZombie(pid)
+            }
+        }
+
+        /** Состояние — первое поле после имени в скобках (имя может содержать скобки и пробелы). */
+        private fun isZombie(pid: Int): Boolean =
+            runCatching { File("/proc/$pid/stat").readText().substringAfterLast(')').trim().startsWith("Z") }.getOrDefault(true)
 
         private const val TERM_WAIT_MS = 3000L
     }

@@ -219,10 +219,13 @@ class GameActivity : XServerDisplayActivity() {
         env.put("WINEESYNC", "0")
         if (app.settings.graphicsMode.isD7VK) {
             // Профиль D7VK для Gothic II привязан к Gothic2.exe; классика — Gothic2c.exe, поэтому
-            // его настройку задаём сами: без неё нет фона экранов загрузки. Журнал D7VK пишет в
-            // вывод Wine (без файлов у игры); на уровне info — ~5000 строк о перебираемых D3DX7
-            // устройствах, поэтому только предупреждения и ошибки.
-            env.put("DXVK_CONFIG", "ddraw.forceLegacyPresent = True")
+            // его настройку forceLegacyPresent (2D-вывод на основную поверхность — в теневую) задаём
+            // сами. Strict: с Auto D7VK после Lock/Unlock, GetDC/ReleaseDC и Blt по основной
+            // поверхности вне сцены сразу показывал её — а там не картинка игры, а остатки 2D:
+            // белые кадры при повороте камеры. Так же сделано в профиле D7VK для Arx Fatalis.
+            // Журнал D7VK пишет в вывод Wine (без файлов у игры); на уровне info — ~5000 строк о
+            // перебираемых D3DX7 устройствах, поэтому только предупреждения и ошибки.
+            env.put("DXVK_CONFIG", "ddraw.forceLegacyPresent = True; ddraw.legacyPresentGuard = Strict")
             env.put("D7VK_LOG_LEVEL", "warn")
         }
         val args = intent.getStringArrayExtra(EXTRA_ARGS).orEmpty()
