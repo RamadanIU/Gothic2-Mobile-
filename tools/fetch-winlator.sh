@@ -7,10 +7,11 @@
 set -euo pipefail
 
 WINLATOR_REPO="https://github.com/brunodev85/winlator-app.git"
-# Winlator 11.2 (2026-09-25).
-WINLATOR_COMMIT="3981d86efa4f333b2a34a7da8b6521476cd8c8b9"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Winlator 11.2 (2026-09-25); коммит задан в gradle.properties (winlator.commit).
+WINLATOR_COMMIT="$(sed -n 's/^winlator\.commit=//p' "$ROOT/gradle.properties")"
+[ -n "$WINLATOR_COMMIT" ] || { echo "Нет winlator.commit в gradle.properties" >&2; exit 1; }
 DEST="$ROOT/third_party/winlator-app"
 PATCH="$ROOT/third_party/winlator.patch"
 

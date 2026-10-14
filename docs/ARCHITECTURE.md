@@ -96,6 +96,12 @@ core (без Android, покрыт тестами)
   в `<dataDir>/r` нашего пакета: `/data/data/gothic2.mobile.dev//////r` (лишние «/» не меняют путь).
   Поэтому имя пакета не длиннее 23 символов. Нативный код Winlator получает имя пакета через CMake
   (`APP_PACKAGE_NAME`, из `gradle.properties`).
+- **Архивы среды не в APK.** Все `*.tzst` Winlator (≈140 МБ: rootfs, драйверы, DXVK…) исключены
+  из APK (`ignoreAssetsPattern` в `:app`), иначе APK (≈170 МБ) не передать пользователю. При сборке
+  `:winlator` пишет `assets/remote_assets.txt`: адрес raw.githubusercontent.com закреплённого коммита
+  и для каждого архива размер и SHA-256. `RemoteAssets` скачивает недостающее (проверка размера и
+  SHA-256, атомарная запись, 3 попытки) в `files/remote-assets`; `GameLauncher` заранее качает всё
+  нужное с общим прогрессом, остальное Winlator докачает сам при обращении. APK ≈ 24 МБ.
 - **Без интерфейса Winlator.** Нет значка лаунчера; `RootFSInstaller.installBlocking` ставит
   системные файлы без его экранов; `ContainerManager.createContainer` открыт для фонового потока.
 - **Хуки активити.** `XServerDisplayActivity`: `onBeforeStart` (не запускать после выгрузки

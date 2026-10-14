@@ -50,6 +50,12 @@ android {
         buildConfig = true
     }
 
+    androidResources {
+        // Архивы среды Winlator (*.tzst, ≈140 МБ) не входят в APK: приложение скачивает их при
+        // первом запуске и проверяет по SHA-256 (RemoteAssets). Остальное — стандартный список aapt.
+        ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~:!*.tzst"
+    }
+
     packaging {
         // Winlator запускает часть .so как программы (PulseAudio), поэтому они распаковываются на диск.
         jniLibs.useLegacyPackaging = true

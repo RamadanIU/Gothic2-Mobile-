@@ -16,4 +16,5 @@
 | Kotlin stdlib | kotlinlang.org | Apache-2.0 | используется |
 
 Компоненты среды берутся из Winlator 11.2 как есть (его `assets`), кроме замены пути rootfs при
-распаковке. `runtime_components.ini` и `ComponentInstaller` этой схемой не используются.
+распаковке. Архивы `*.tzst` в APK не входят: приложение скачивает их с GitHub закреплённого коммита
+и проверяет по SHA-256 из `remote_assets.txt` (создаётся при сборке). `runtime_components.ini` и `ComponentInstaller` этой схемой не используются.
