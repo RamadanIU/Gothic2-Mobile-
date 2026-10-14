@@ -61,7 +61,9 @@ class GameLauncher(private val app: GothicApplication) {
         }
 
         onStep("Подготовка игры…", null)
-        val profile = DeviceProfiles.select(GpuInfo.rendererName())
+        val gpu = GpuInfo.rendererName()
+        app.settings.gpuName = gpu
+        val profile = DeviceProfiles.select(gpu)
         val graphics = app.settings.userSettings().effectiveGraphics(profile)
 
         val iniRel = tree.resolve(build.iniPath) ?: build.iniPath
@@ -80,7 +82,7 @@ class GameLauncher(private val app: GothicApplication) {
 
         app.diagnostics.log(
             "launch",
-            "variant=${variant.id} profile=${profile.id} graphics=${mode.id} ${graphics.width}x${graphics.height} container=${container.id}",
+            "variant=${variant.id} gpu=$gpu profile=${profile.id} graphics=${mode.id} ${graphics.width}x${graphics.height} container=${container.id}",
         )
         return Prepared(container.id, root.resolve(exeRel).toString(), args, graphics, profile)
     }
@@ -141,7 +143,7 @@ class GameLauncher(private val app: GothicApplication) {
                 container.dxWrapperConfig = "ddrawWrapper=${DXWrappers.D7VK}"
             }
             // Встроенный ddraw Wine → WineD3D → OpenGL (Zink или Gladio).
-            GraphicsMode.WINED3D_ZINK, GraphicsMode.WINED3D_GLADIO -> {
+            GraphicsMode.WINED3D_ZINK, GraphicsMode.WINED3D_ZINK_TURNIP, GraphicsMode.WINED3D_GLADIO -> {
                 container.dxWrapper = DXWrappers.WINED3D
                 container.dxWrapperConfig = ""
             }
@@ -163,7 +165,7 @@ class GameLauncher(private val app: GothicApplication) {
         val SKIPPED_ASSETS = listOf(
             "wincomponents/direct3d", "wincomponents/directshow", "wincomponents/directplay",
             "wincomponents/xaudio", "wincomponents/vcrun", "wincomponents/wmdecoder",
-            "graphics_driver/virgl", "graphics_driver/turnip",
+            "graphics_driver/virgl",
             "dxwrapper/cnc-ddraw",
         )
     }

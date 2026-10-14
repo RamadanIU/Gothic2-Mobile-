@@ -14,9 +14,7 @@
             app:key="graphics_mode"
             app:title="Режим графики"
             app:entries="@array/graphics_mode_entries"
-            app:entryValues="@array/graphics_mode_values"
-            app:defaultValue="wined3d_zink"
-            app:useSimpleSummaryProvider="true" />
+            app:entryValues="@array/graphics_mode_values" />
         <ListPreference
             app:key="quality"
             app:title="Качество изображения"
