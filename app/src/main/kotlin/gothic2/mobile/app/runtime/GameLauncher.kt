@@ -7,6 +7,7 @@ import com.winlator.core.RemoteAssets
 import com.winlator.xenvironment.RootFS
 import com.winlator.xenvironment.RootFSInstaller
 import gothic2.mobile.app.GothicApplication
+import gothic2.mobile.core.config.CpuCores
 import gothic2.mobile.core.config.DeviceProfile
 import gothic2.mobile.core.config.DeviceProfiles
 import gothic2.mobile.core.config.GothicIniWriter
@@ -74,7 +75,8 @@ class GameLauncher(private val app: GothicApplication) {
         iniPath.writeText(ini.toString(), Charsets.ISO_8859_1)
 
         val mode = app.settings.graphicsMode
-        val container = ensureContainer(mode, graphics)
+        val cores = CpuCores.forGame(CpuInfo.maxFreqKHz())
+        val container = ensureContainer(mode, graphics, cores)
         val exeRel = tree.resolve(build.exeOf(variant)) ?: error("В папке игры нет ${build.exeOf(variant)}")
         // Файлы варианта (классика прячет архивы аддона) — последним шагом; обратно их
         // возвращает экран игры после выхода, а после сбоя — следующий запуск приложения.
@@ -82,7 +84,8 @@ class GameLauncher(private val app: GothicApplication) {
 
         app.diagnostics.log(
             "launch",
-            "variant=${variant.id} gpu=$gpu profile=${profile.id} graphics=${mode.id} ${graphics.width}x${graphics.height} container=${container.id}",
+            "variant=${variant.id} gpu=$gpu profile=${profile.id} graphics=${mode.id} ${graphics.width}x${graphics.height} " +
+                "cpus=${CpuCores.format(cores)}/${CpuCores.format(CpuInfo.cpus)} container=${container.id}",
         )
         return Prepared(container.id, root.resolve(exeRel).toString(), args, graphics, profile)
     }
@@ -120,7 +123,7 @@ class GameLauncher(private val app: GothicApplication) {
     }
 
     /** Контейнер Wine для игры: создаётся один раз, настройки обновляются при каждом запуске. */
-    private fun ensureContainer(mode: GraphicsMode, graphics: GraphicsPreset): Container {
+    private fun ensureContainer(mode: GraphicsMode, graphics: GraphicsPreset, cores: List<Int>): Container {
         val manager = ContainerManager(app)
         val container = manager.containers.firstOrNull { it.name == CONTAINER_NAME }
             ?: manager.createContainer(
@@ -135,6 +138,13 @@ class GameLauncher(private val app: GothicApplication) {
         // Из библиотек Windows Gothic нужны DirectSound и DirectMusic (музыка); остальное — встроенное Wine.
         container.winComponents = WIN_COMPONENTS
         container.screenSize = "${graphics.width}x${graphics.height}"
+        // Сродство процесса игры: Winlator ставит его через winhandler, когда появляется окно игры
+        // (Win32AppWorkarounds). Без медленных ядер главный поток и поток отрисовки не попадают на
+        // них посреди кадра. Gothic 32-битная (WoW64), но списки одинаковые — на всякий случай оба.
+        if (cores.isNotEmpty()) {
+            container.setCPUList(cores.joinToString(","))
+            container.setCPUListWoW64(cores.joinToString(","))
+        }
         container.graphicsDriver = mode.graphicsDriver
         when (mode) {
             // D7VK переводит Direct3D 7 (ddraw Gothic) сразу в Vulkan.

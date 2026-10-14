@@ -1,11 +1,13 @@
 package gothic2.mobile.app.ui
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.hardware.input.InputManager
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -32,13 +34,16 @@ import gothic2.mobile.app.R
 import gothic2.mobile.app.app
 import gothic2.mobile.app.bridge.BridgeServer
 import gothic2.mobile.app.input.GamepadMapper
+import gothic2.mobile.app.runtime.CpuInfo
 import gothic2.mobile.app.runtime.GameLauncher
 import gothic2.mobile.app.runtime.WinlatorBackend
 import gothic2.mobile.app.runtime.XServerInputSink
 import gothic2.mobile.core.bridge.BridgeProtocol
 import gothic2.mobile.core.bridge.BridgeSession
 import gothic2.mobile.core.bridge.ModeController
+import gothic2.mobile.core.config.CpuCores
 import gothic2.mobile.core.config.UserSettings
+import gothic2.mobile.core.diagnostics.CpuLoad
 import gothic2.mobile.core.diagnostics.FrameStats
 import gothic2.mobile.core.diagnostics.SessionJournal
 import gothic2.mobile.core.diagnostics.TimedInputSink
@@ -55,6 +60,10 @@ import gothic2.mobile.core.input.TouchCommand
 import gothic2.mobile.core.input.TouchRouter
 import gothic2.mobile.core.runtime.SessionController
 import gothic2.mobile.core.saves.SaveBackupPolicy
+import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 /**
  * Экран игры. Wine, X-сервер, звук и вывод изображения — от Winlator (XServerDisplayActivity),
@@ -99,21 +108,66 @@ class GameActivity : XServerDisplayActivity() {
         override fun onUpdateWindowContent(window: Window) = frames.onFrame(window.id, SystemClock.uptimeMillis())
     }
 
-    /** Раз в минуту: отметка «жив», сводка задержки ввода и плавности картинки в журнал диагностики. */
+    /** Загрузка процессора по потокам игры и среды: снимки в своём потоке, пока экран игры на виду. */
+    private val cpuLoad = CpuLoad(CpuInfo.ticksPerSecond)
+    private var cpuSampler: ScheduledExecutorService? = null
+    private val cpuClusters by lazy { CpuCores.clusters(CpuInfo.maxFreqKHz()) }
+
+    /** Раз в минуту: отметка «жив» и сводка в журнал диагностики. */
     private val periodic = object : Runnable {
         override fun run() {
             app.background.execute { journal.heartbeat() }
-            timedSink.keys.summary()?.let { app.diagnostics.log("latency", "keys p50=${it.p50} p95=${it.p95} max=${it.max} n=${it.count}") }
-            timedSink.mouse.summary()?.let { app.diagnostics.log("latency", "mouse p50=${it.p50} p95=${it.p95} max=${it.max} n=${it.count}") }
-            frames.summaryAndReset()?.let {
-                app.diagnostics.log(
-                    "frames",
-                    "fps=${"%.1f".format(java.util.Locale.ROOT, it.fps)} ms p50=${it.p50} p95=${it.p95} p99=${it.p99} max=${it.max} " +
-                        "hitches=${it.hitches} pauses=${it.pauses} n=${it.frames}",
-                )
-            }
+            logStats()
             main.postDelayed(this, PERIODIC_MS)
         }
+    }
+
+    /**
+     * Сводка с прошлой записи: задержка ввода, плавность картинки, загрузка процессора, память и
+     * запас до перегрева. Пишется раз в минуту, а также при уходе с экрана игры и выходе из неё —
+     * иначе короткая игра перед отправкой журнала в него не попадает.
+     */
+    private fun logStats() {
+        val diagnostics = app.diagnostics
+        timedSink.keys.summary()?.let { diagnostics.log("latency", "keys p50=${it.p50} p95=${it.p95} max=${it.max} n=${it.count}") }
+        timedSink.mouse.summary()?.let { diagnostics.log("latency", "mouse p50=${it.p50} p95=${it.p95} max=${it.max} n=${it.count}") }
+        timedSink.keys.reset()
+        timedSink.mouse.reset()
+        frames.summaryAndReset()?.let {
+            diagnostics.log(
+                "frames",
+                "fps=${"%.1f".format(Locale.ROOT, it.fps)} ms p50=${it.p50} p95=${it.p95} p99=${it.p99} max=${it.max} " +
+                    "hitches=${it.hitches} pauses=${it.pauses} n=${it.frames}",
+            )
+        }
+        val memory = ActivityManager.MemoryInfo().also { getSystemService(ActivityManager::class.java).getMemoryInfo(it) }
+        // Запас до перегрева: 1.0 — система начинает снижать частоты (Android 11+).
+        val headroom = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            getSystemService(PowerManager::class.java).getThermalHeadroom(0).takeUnless { it.isNaN() }
+        } else {
+            null
+        }
+        val tail = " mem=${memory.availMem / 1_048_576}MB" + (if (memory.lowMemory) " low" else "") +
+            (headroom?.let { " thermal=${"%.2f".format(Locale.ROOT, it)}" } ?: "")
+        diagnostics.log("cpu", (cpuLoad.summaryAndReset()?.format(cpuClusters) ?: "n/a") + ";" + tail)
+    }
+
+    private fun startCpuSampler() {
+        if (cpuSampler != null) return
+        cpuLoad.restart()
+        cpuSampler = Executors.newSingleThreadScheduledExecutor { Thread(it, "cpu-sampler").apply { isDaemon = true } }.also {
+            it.scheduleWithFixedDelay(
+                { runCatching { cpuLoad.onSample(SystemClock.uptimeMillis(), CpuInfo.sampleThreads(), CpuInfo.curFreqKHz()) } },
+                0,
+                CPU_SAMPLE_MS,
+                TimeUnit.MILLISECONDS,
+            )
+        }
+    }
+
+    private fun stopCpuSampler() {
+        cpuSampler?.shutdownNow()
+        cpuSampler = null
     }
 
     private val thermalListener = PowerManager.OnThermalStatusChangedListener { s ->
@@ -265,6 +319,8 @@ class GameActivity : XServerDisplayActivity() {
         if (exited) return
         exited = true
         val seconds = (SystemClock.uptimeMillis() - startedAt) / 1000
+        logStats()
+        stopCpuSampler()
         app.diagnostics.log("game", "exited after ${seconds}s")
         // Игра закрылась почти сразу — вероятно, ошибка: лаунчер покажет кнопку «Отправить журнал».
         app.settings.lastSessionFailed = seconds < QUICK_EXIT_SECONDS
@@ -476,6 +532,9 @@ class GameActivity : XServerDisplayActivity() {
         if (!started) return
         session.onFocusLost()
         router.onCancel()
+        // Процессы Wine на паузе остановлены — сводка за время игры, снимки до возврата не нужны.
+        if (!exited) logStats()
+        stopCpuSampler()
     }
 
     override fun onResume() {
@@ -488,10 +547,12 @@ class GameActivity : XServerDisplayActivity() {
         touchOverlay.opacity = settings.overlayOpacity
         if (touchOverlay.editor == null) router.layout = currentLayout()
         if (hasWindowFocus()) session.onFocusGained()
+        if (!exited) startCpuSampler()
     }
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
+        stopCpuSampler()
         if (started) {
             getSystemService(PowerManager::class.java).removeThermalStatusListener(thermalListener)
             getSystemService(InputManager::class.java).unregisterInputDeviceListener(deviceListener)
@@ -535,6 +596,8 @@ class GameActivity : XServerDisplayActivity() {
         private const val EXTRA_EXEC_PATH = "exec_path"
         private const val EXTRA_ARGS = "gothic2_args"
         private const val PERIODIC_MS = 60_000L
+        /** Снимок потоков: 2 с — достаточно, чтобы заметить, на каких ядрах работают потоки. */
+        private const val CPU_SAMPLE_MS = 2_000L
         /** Игра, закрывшаяся быстрее, считается неудачным запуском. */
         private const val QUICK_EXIT_SECONDS = 180
         private val MODE_TITLES = mapOf(
