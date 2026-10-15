@@ -312,11 +312,14 @@ class GameActivity : XServerDisplayActivity() {
         router.onButtonPressed = {
             if (settings.haptics) touchOverlay.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         }
-        modes = ModeController(arbiter) { _, adapter ->
-            router.adapterActive = adapter
+        // Режим панели подстраивается сам: по игровому адаптеру, а без него — по клавишам,
+        // которые отправляет приложение, и по намерению игрока (ModeController).
+        modes = ModeController(arbiter) { _, _ ->
             router.onModeChanged()
             touchOverlay.invalidate()
         }
+        arbiter.onKeyTapped = modes::onKeyTapped
+        router.onWorldIntent = modes::onWorldIntent
         session = SessionController(arbiter, backend, ::abandonAudioFocus, ::requestAudioFocus)
         gamepad = GamepadMapper(arbiter)
 
@@ -327,6 +330,8 @@ class GameActivity : XServerDisplayActivity() {
             opacity = settings.overlayOpacity
             visibility = View.INVISIBLE
         }
+        // Gothic начинает с главного меню: панель — «Выбрать», «Назад» и стрелки.
+        modes.onGameStarted()
         editorBar = buildEditorBar()
         val display = findViewById<FrameLayout>(com.winlator.R.id.FLXServerDisplay)
         display.addView(touchOverlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -472,11 +477,7 @@ class GameActivity : XServerDisplayActivity() {
     // ---- быстрое меню ------------------------------------------------------------------
 
     private fun onUiCommand(cmd: TouchCommand) {
-        when (cmd) {
-            is TouchCommand.SwitchMode -> modes.manual(cmd.mode)
-            TouchCommand.QuickMenu -> showQuickMenu()
-            else -> Unit
-        }
+        if (cmd == TouchCommand.QuickMenu) showQuickMenu()
         scheduleTick()
     }
 
@@ -486,7 +487,7 @@ class GameActivity : XServerDisplayActivity() {
         GothicPanels.grid(
             panels,
             getString(R.string.menu_title),
-            listOf(
+            listOfNotNull(
                 tap(R.string.menu_map, GameKey.MAP),
                 tap(R.string.menu_character, GameKey.CHARACTER),
                 tap(R.string.menu_log, GameKey.LOG),
@@ -500,6 +501,7 @@ class GameActivity : XServerDisplayActivity() {
                 },
                 PanelButton(getString(R.string.menu_layout)) { startEditor() },
                 PanelButton(getString(R.string.settings_title)) { startActivity(Intent(this, SettingsActivity::class.java)) },
+                panelSwitch(),
             ),
             columns = 3,
             footer = listOf(
@@ -512,6 +514,17 @@ class GameActivity : XServerDisplayActivity() {
                 PanelButton(getString(R.string.menu_resume), ButtonKind.PRIMARY),
             ),
         )
+    }
+
+    /**
+     * Запасной путь, пока нет игрового адаптера: диалог и торговлю начинает сама игра, и
+     * панель о них не знает. Кнопки меню (стрелки, «Выбрать», «Назад») включаются здесь,
+     * обратно — этим же пунктом или просто движением камеры.
+     */
+    private fun panelSwitch(): PanelButton? = when {
+        modes.adapterActive -> null
+        arbiter.mode.isInWorld -> PanelButton(getString(R.string.menu_nav_controls)) { modes.manual(ControlMode.DIALOG) }
+        else -> PanelButton(getString(R.string.menu_world_controls)) { modes.showWorldPanel() }
     }
 
     // ---- редактор раскладки -------------------------------------------------------------
@@ -734,8 +747,7 @@ class GameActivity : XServerDisplayActivity() {
         private val MODE_TITLES = mapOf(
             ControlMode.WORLD to "мир",
             ControlMode.COMBAT to "бой",
-            ControlMode.RANGED to "лук/магия",
-            ControlMode.MENU to "навигация",
+            ControlMode.MENU to "меню",
         )
 
         fun intent(context: Context, prepared: GameLauncher.Prepared): Intent =

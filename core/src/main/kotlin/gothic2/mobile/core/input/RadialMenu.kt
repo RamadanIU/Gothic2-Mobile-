@@ -38,16 +38,19 @@ class RadialMenu(val items: List<Item>, private val deadZonePx: Float) {
         fun slotKey(number: Int): GameKey = SLOTS[number - 1]
 
         /**
-         * Слоты 1..10. Без адаптера подписи — только номера; с адаптером — тип содержимого,
-         * который сообщила игра (иконки и названия рун без адаптера достоверно не получить).
+         * Слоты 1..10. В Gothic II слот 1 — оружие ближнего боя, 2 — лук или арбалет, 3–0 — руны
+         * и свитки; без адаптера у них только номера. С адаптером — тип содержимого, который
+         * сообщила игра (иконки и названия рун без адаптера достоверно не получить).
          */
         fun quickSlots(deadZonePx: Float, kinds: Map<Int, String> = emptyMap()) = RadialMenu(
             SLOTS.mapIndexed { i, k ->
                 val n = i + 1
-                Item(k, kinds[n]?.let { "$n · ${kindLabel(it)}" } ?: n.toString())
+                Item(k, kinds[n]?.let { "$n · ${kindLabel(it)}" } ?: DEFAULT_LABELS[n] ?: n.toString())
             },
             deadZonePx,
         )
+
+        private val DEFAULT_LABELS = mapOf(1 to "Меч", 2 to "Лук")
 
         private fun kindLabel(kind: String) = when (kind.uppercase()) {
             "MELEE" -> "оружие"

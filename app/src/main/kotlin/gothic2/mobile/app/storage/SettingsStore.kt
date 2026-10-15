@@ -83,7 +83,8 @@ class SettingsStore(context: Context) {
         const val KEY_EXE = "imported_exe_sha256"
         const val KEY_VARIANT = "game_variant"
         const val KEY_DEV = "dev_mode"
-        const val KEY_LAYOUT = "layout_overrides"
+        /** v2 — раскладка с главной кнопкой: положения кнопок прежней раскладки к ней не подходят. */
+        const val KEY_LAYOUT = "layout_overrides_v2"
         const val KEY_FAILED = "last_session_failed"
         const val KEY_GRAPHICS = "graphics_mode"
         const val KEY_GPU = "gpu_name"

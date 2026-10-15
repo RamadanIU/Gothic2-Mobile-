@@ -7,6 +7,7 @@ import gothic2.mobile.core.input.AttackDirection
 import gothic2.mobile.core.input.ControlMode
 import gothic2.mobile.core.input.GameKey
 import gothic2.mobile.core.input.InputArbiter
+import gothic2.mobile.core.input.SwipeDir
 
 /**
  * Геймпад через тот же [InputArbiter], что и сенсорное управление (раздел 21).
@@ -29,7 +30,8 @@ class GamepadMapper(private val arbiter: InputArbiter) {
         rightY = dead(e.getAxisValue(MotionEvent.AXIS_RZ))
         val hatX = e.getAxisValue(MotionEvent.AXIS_HAT_X)
         val hatY = e.getAxisValue(MotionEvent.AXIS_HAT_Y)
-        if (!arbiter.mode.isInWorld) {
+        // Крестовина на экранах меню — одиночные шаги; левый стик там тоже работает как стрелки.
+        if (arbiter.mode.isNavigation) {
             when {
                 hatY < -0.5f -> arbiter.tap(GameKey.MENU_UP)
                 hatY > 0.5f -> arbiter.tap(GameKey.MENU_DOWN)
@@ -50,24 +52,42 @@ class GamepadMapper(private val arbiter: InputArbiter) {
         if (e.repeatCount > 0) return true
         val down = e.action == KeyEvent.ACTION_DOWN
         val id = "pad:${e.keyCode}"
-        val combat = arbiter.mode == ControlMode.COMBAT
         when (e.keyCode) {
+            // A — та же главная кнопка, что на экране: в мире действие/удар/выстрел (держать —
+            // прицел, отпустить — выстрел), на экранах меню — «Выбрать».
             KeyEvent.KEYCODE_BUTTON_A -> when {
-                !arbiter.mode.isInWorld -> if (down) arbiter.tap(GameKey.CONFIRM)
-                combat -> if (down) arbiter.requestAttack(AttackDirection.FORWARD)
-                else -> arbiter.setContextAction(down)
+                arbiter.mode.isNavigation -> if (down) arbiter.tap(arbiter.mode.confirmKey)
+                down -> arbiter.strikeBegin()
+                else -> arbiter.strikeEnd()
             }
             KeyEvent.KEYCODE_BUTTON_B -> if (!arbiter.mode.isInWorld) { if (down) arbiter.tap(GameKey.ESCAPE) } else hold(id, GameKey.JUMP, down)
             KeyEvent.KEYCODE_BUTTON_X -> if (down) arbiter.tap(GameKey.WEAPON)
             KeyEvent.KEYCODE_BUTTON_Y -> if (down) arbiter.tap(GameKey.INVENTORY)
-            KeyEvent.KEYCODE_BUTTON_L1 -> if (combat) { if (down) arbiter.requestAttack(AttackDirection.LEFT) } else hold(id, GameKey.ACTION, down)
-            KeyEvent.KEYCODE_BUTTON_R1 -> if (combat) { if (down) arbiter.requestAttack(AttackDirection.RIGHT) } else hold(id, GameKey.FORWARD, down)
+            KeyEvent.KEYCODE_BUTTON_L1 -> side(id, AttackDirection.LEFT, down)
+            KeyEvent.KEYCODE_BUTTON_R1 -> side(id, AttackDirection.RIGHT, down)
             KeyEvent.KEYCODE_BUTTON_L2, KeyEvent.KEYCODE_BUTTON_R2 -> arbiter.setBlock(down)
             KeyEvent.KEYCODE_BUTTON_START -> if (down) arbiter.tap(GameKey.ESCAPE)
             KeyEvent.KEYCODE_BUTTON_SELECT -> if (down) arbiter.tap(GameKey.LOG)
             else -> return false
         }
         return true
+    }
+
+    /**
+     * Боковой удар: при зажатой A — направление жеста главной кнопки, в бою без A — отдельный
+     * удар, вне боя — удержание «действия» (L1) или «вперёд» (R1) для стрельбы вручную.
+     */
+    private fun side(id: String, dir: AttackDirection, down: Boolean) {
+        if (!down) {
+            arbiter.onHoldEnd(id)
+            if (arbiter.isStriking()) arbiter.strikeAim(null)
+            return
+        }
+        when {
+            arbiter.isStriking() -> arbiter.strikeAim(if (dir == AttackDirection.LEFT) SwipeDir.LEFT else SwipeDir.RIGHT)
+            arbiter.mode == ControlMode.COMBAT -> arbiter.requestAttack(dir)
+            else -> arbiter.onHoldStart(id, if (dir == AttackDirection.LEFT) GameKey.ACTION else GameKey.FORWARD)
+        }
     }
 
     private fun hold(id: String, key: GameKey, down: Boolean) {

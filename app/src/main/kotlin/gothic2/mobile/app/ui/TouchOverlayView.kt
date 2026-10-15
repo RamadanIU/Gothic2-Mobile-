@@ -17,6 +17,8 @@ import gothic2.mobile.app.ui.gothic.GothicPalette
 import gothic2.mobile.core.input.ControlMode
 import gothic2.mobile.core.input.ControlSpec
 import gothic2.mobile.core.input.LayoutEditor
+import gothic2.mobile.core.input.SwipeDir
+import gothic2.mobile.core.input.TouchCommand
 import gothic2.mobile.core.input.TouchRouter
 import kotlin.math.cos
 import kotlin.math.sin
@@ -116,6 +118,8 @@ class TouchOverlayView(context: Context, private val router: TouchRouter) : View
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 val i = e.actionIndex
                 router.onPointerDown(e.getPointerId(i), e.getX(i), e.getY(i))
+                // Колесо слотов появляется и без движения пальца — по удержанию кнопки оружия.
+                if (router.owners()[e.getPointerId(i)] is TouchRouter.Owner.Wheel) postInvalidateDelayed(TouchRouter.WHEEL_HOLD_MS + 16)
             }
             MotionEvent.ACTION_MOVE -> for (i in 0 until e.pointerCount) {
                 router.onPointerMove(e.getPointerId(i), e.getX(i), e.getY(i))
@@ -142,28 +146,99 @@ class TouchOverlayView(context: Context, private val router: TouchRouter) : View
         if (ed != null) {
             val l = ed.layout()
             canvas.drawColor(0x99000000.toInt())
-            for (c in l.forMode(editorMode, adapterActive = false)) drawButton(canvas, c, l.buttonScale, 255, c.id == ed.draggingId)
+            for (c in l.forMode(editorMode)) drawButton(canvas, c, editorMode, l.buttonScale, 255, c.id == ed.draggingId)
             return
         }
         if (minimal) return
         val alpha = (opacity * 255).toInt()
         val owners = router.owners().values
+        val mode = router.mode
         val pressed = owners.mapNotNull {
-            (it as? TouchRouter.Owner.Button)?.spec?.id ?: (it as? TouchRouter.Owner.Radial)?.spec?.id
+            when (it) {
+                is TouchRouter.Owner.Button -> it.spec.id
+                is TouchRouter.Owner.Strike -> it.spec.id
+                is TouchRouter.Owner.Wheel -> it.spec.id
+                else -> null
+            }
         }.toSet()
-        for (c in router.visibleControls()) drawButton(canvas, c, router.layout.buttonScale, alpha, c.id in pressed)
+        val strike = owners.firstNotNullOfOrNull { it as? TouchRouter.Owner.Strike }
+        val vp = router.viewport
+        val scale = router.layout.buttonScale
+        for (c in router.visibleControls()) {
+            drawButton(canvas, c, mode, scale, alpha, c.id in pressed)
+            // В бою у главной кнопки — стрелки свайпов: влево/вправо — боковые удары, вниз — блок.
+            if (c.command == TouchCommand.Main && mode == ControlMode.COMBAT) {
+                drawSwipeHints(canvas, vp.toPxX(c.cx), vp.toPxY(c.cy), c.radiusDp * scale * density, alpha, strike?.sector)
+            }
+        }
         for (o in owners) {
             when (o) {
-                is TouchRouter.Owner.Joystick -> drawJoystick(canvas, o.originX, o.originY, router.layout.joystickRadiusDp * density, alpha)
-                is TouchRouter.Owner.Radial -> drawRadial(canvas, o)
+                is TouchRouter.Owner.Joystick -> if (!isDpadOrigin(o)) {
+                    drawJoystick(canvas, o.originX, o.originY, router.layout.joystickRadiusDp * density, alpha)
+                }
+                is TouchRouter.Owner.Wheel -> if (router.isWheelOpen(o)) drawRadial(canvas, o)
                 else -> Unit
             }
         }
     }
 
-    private fun drawButton(canvas: Canvas, c: ControlSpec, scale: Float, alpha: Int, active: Boolean) {
+    /** Палец лёг на крестовину: она и так нарисована, кольцо джойстика поверх не нужно. */
+    private fun isDpadOrigin(o: TouchRouter.Owner.Joystick): Boolean {
         val vp = router.viewport
-        drawDisc(canvas, vp.toPxX(c.cx), vp.toPxY(c.cy), c.radiusDp * scale * density, alpha, active, c.label)
+        return router.visibleControls().any {
+            it.command == TouchCommand.DPad && vp.toPxX(it.cx) == o.originX && vp.toPxY(it.cy) == o.originY
+        }
+    }
+
+    private fun drawButton(canvas: Canvas, c: ControlSpec, mode: ControlMode, scale: Float, alpha: Int, active: Boolean) {
+        val vp = router.viewport
+        val x = vp.toPxX(c.cx)
+        val y = vp.toPxY(c.cy)
+        val r = c.radiusDp * scale * density
+        if (c.command == TouchCommand.DPad) drawDpad(canvas, x, y, r, alpha, active)
+        else drawDisc(canvas, x, y, r, alpha, active, c.labelFor(mode))
+    }
+
+    /** Крестовина экранов меню: тёмный диск и четыре золотые стрелки. */
+    private fun drawDpad(canvas: Canvas, x: Float, y: Float, r: Float, alpha: Int, active: Boolean) {
+        shaderMatrix.setScale(r, r)
+        shaderMatrix.postTranslate(x, y)
+        disc.setLocalMatrix(shaderMatrix)
+        fill.shader = disc
+        fill.alpha = (alpha * 0.7f).toInt()
+        canvas.drawCircle(x, y, r, fill)
+        ring.color = if (active) GothicPalette.GOLD_LIGHT else GothicPalette.GOLD_DEEP
+        ring.alpha = alpha
+        canvas.drawCircle(x, y, r, ring)
+        innerRing.alpha = (alpha * 0.4f).toInt()
+        canvas.drawCircle(x, y, r * 0.3f, innerRing)
+        gem.alpha = alpha.coerceAtLeast(160)
+        for (i in 0..3) {
+            val ax = COMPASS_X[i]
+            val ay = COMPASS_Y[i]
+            triangle(x + ax * r * 0.62f, y + ay * r * 0.62f, ax, ay, r * 0.2f)
+            canvas.drawPath(path, gem)
+        }
+    }
+
+    /** Стрелки вокруг главной кнопки; стрелка сектора, куда сдвинут палец, горит ярче. */
+    private fun drawSwipeHints(canvas: Canvas, x: Float, y: Float, r: Float, alpha: Int, sector: SwipeDir?) {
+        val hints = listOf(SwipeDir.LEFT to (-1f to 0f), SwipeDir.RIGHT to (1f to 0f), SwipeDir.DOWN to (0f to 1f))
+        for ((dir, v) in hints) {
+            val (ax, ay) = v
+            gem.alpha = if (dir == sector) 255 else (alpha * 0.8f).toInt()
+            triangle(x + ax * (r + 9f * density), y + ay * (r + 9f * density), ax, ay, 5f * density)
+            canvas.drawPath(path, gem)
+        }
+    }
+
+    /** Треугольник с вершиной в направлении (dx, dy) и центром в (cx, cy). */
+    private fun triangle(cx: Float, cy: Float, dx: Float, dy: Float, s: Float) {
+        path.reset()
+        path.moveTo(cx + dx * s, cy + dy * s)
+        path.lineTo(cx - dx * s * 0.6f - dy * s * 0.85f, cy - dy * s * 0.6f + dx * s * 0.85f)
+        path.lineTo(cx - dx * s * 0.6f + dy * s * 0.85f, cy - dy * s * 0.6f - dx * s * 0.85f)
+        path.close()
     }
 
     /** Диск кнопки: тёмная кожа (нажатие — золото), кольцо, ромб сверху, подпись по размеру. */
@@ -186,33 +261,12 @@ class TouchOverlayView(context: Context, private val router: TouchRouter) : View
         canvas.drawPath(path, gem)
         canvas.drawPath(path, gemEdge)
         text.alpha = alpha.coerceAtLeast(160)
-        if (drawArrow(canvas, x, y, r, label)) return
         // Подпись капителью; длинная уменьшается, чтобы поместиться в диск.
         text.textSize = 13f * density * (r / (30f * density)).coerceIn(0.85f, 1.25f)
         val maxWidth = r * 1.62f
         val w = text.measureText(label)
         if (w > maxWidth) text.textSize = (text.textSize * maxWidth / w).coerceAtLeast(8f * density)
         canvas.drawText(label, x, y + text.textSize / 3, text)
-    }
-
-    /** Стрелки навигации — золотые треугольники вместо символов шрифта. */
-    private fun drawArrow(canvas: Canvas, x: Float, y: Float, r: Float, label: String): Boolean {
-        val (dx, dy) = when (label) {
-            "▲" -> 0f to -1f
-            "▼" -> 0f to 1f
-            "◀" -> -1f to 0f
-            "▶" -> 1f to 0f
-            else -> return false
-        }
-        val s = r * 0.38f
-        path.reset()
-        path.moveTo(x + dx * s, y + dy * s)
-        path.lineTo(x - dx * s * 0.6f - dy * s * 0.85f, y - dy * s * 0.6f + dx * s * 0.85f)
-        path.lineTo(x - dx * s * 0.6f + dy * s * 0.85f, y - dy * s * 0.6f - dx * s * 0.85f)
-        path.close()
-        gem.alpha = text.alpha
-        canvas.drawPath(path, gem)
-        return true
     }
 
     /** Джойстик ходьбы: кольцо с ромбами по сторонам света и точка в центре касания. */
@@ -249,7 +303,7 @@ class TouchOverlayView(context: Context, private val router: TouchRouter) : View
     }
 
     /** Колесо слотов рисуется в центре экрана; выбор определяется направлением пальца. */
-    private fun drawRadial(canvas: Canvas, o: TouchRouter.Owner.Radial) {
+    private fun drawRadial(canvas: Canvas, o: TouchRouter.Owner.Wheel) {
         val menu = router.radialMenu()
         val selected = menu.select(o.dx, o.dy)
         val cx = width / 2f
@@ -285,7 +339,7 @@ class TouchOverlayView(context: Context, private val router: TouchRouter) : View
     private companion object {
         const val RADIAL_RADIUS_DP = 110f
 
-        /** Стороны света для ромбов на кольце джойстика: вверх, вправо, вниз, влево. */
+        /** Стороны света для ромбов на кольце джойстика и стрелок крестовины: вверх, вправо, вниз, влево. */
         val COMPASS_X = floatArrayOf(0f, 1f, 0f, -1f)
         val COMPASS_Y = floatArrayOf(-1f, 0f, 1f, 0f)
     }

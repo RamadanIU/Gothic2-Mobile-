@@ -1,5 +1,6 @@
 package gothic2.mobile.core.input
 
+import kotlin.math.abs
 import kotlin.math.hypot
 
 /**
@@ -31,6 +32,7 @@ class JoystickMapper(private val config: Config = Config()) {
     private var left = false
     private var right = false
     private var running = true
+    private var navKey: GameKey? = null
 
     /**
      * @param x вправо положительно, −1..1
@@ -58,11 +60,50 @@ class JoystickMapper(private val config: Config = Config()) {
         return Output(keys, running)
     }
 
+    /**
+     * Джойстик на экранах навигации — стрелки: удерживается одна стрелка по преобладающей оси
+     * (без диагоналей, чтобы выбор не прыгал сразу на две строки). Короткое движение — один шаг.
+     * Стрелки «вверх/вниз» — те же клавиши, что «вперёд/назад», поэтому, если меню на самом деле
+     * уже закрыто, герой просто идёт.
+     */
+    fun mapNav(x: Float, y: Float): GameKey? {
+        val magnitude = hypot(x, y)
+        val threshold = if (navKey == null) config.axisOn else config.axisOff
+        if (magnitude < threshold) {
+            navKey = null
+            return null
+        }
+        val ax = abs(x)
+        val ay = abs(y)
+        // Направление меняется, только когда другая ось заметно перевесила: палец, ведомый
+        // по диагонали, не переключает стрелки туда-сюда.
+        val keep = when (navKey) {
+            GameKey.MENU_LEFT -> -x >= ay * NAV_KEEP_RATIO
+            GameKey.MENU_RIGHT -> x >= ay * NAV_KEEP_RATIO
+            GameKey.MENU_UP -> y >= ax * NAV_KEEP_RATIO
+            GameKey.MENU_DOWN -> -y >= ax * NAV_KEEP_RATIO
+            else -> false
+        }
+        if (!keep) {
+            navKey = when {
+                ax > ay -> if (x > 0) GameKey.MENU_RIGHT else GameKey.MENU_LEFT
+                else -> if (y > 0) GameKey.MENU_UP else GameKey.MENU_DOWN
+            }
+        }
+        return navKey
+    }
+
     fun reset() {
         forward = false; back = false; left = false; right = false
         running = true
+        navKey = null
     }
 
     private fun axis(value: Float, active: Boolean): Boolean =
         if (active) value > config.axisOff else value > config.axisOn
+
+    private companion object {
+        /** Текущая стрелка держится, пока её ось не меньше 3/4 другой. */
+        const val NAV_KEEP_RATIO = 0.75f
+    }
 }

@@ -71,6 +71,8 @@
     <string name="menu_quicksave">Быстрое сохранение</string>
     <string name="menu_quickload">Быстрая загрузка…</string>
     <string name="menu_layout">Настроить кнопки</string>
+    <string name="menu_nav_controls">Кнопки меню и диалога</string>
+    <string name="menu_world_controls">Кнопки игры</string>
     <string name="menu_quit">Выйти из игры…</string>
     <string name="menu_resume">Вернуться в игру</string>
     <string name="quickload_title">Быстрая загрузка</string>

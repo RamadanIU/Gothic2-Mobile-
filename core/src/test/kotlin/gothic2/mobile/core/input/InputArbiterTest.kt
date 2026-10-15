@@ -113,21 +113,45 @@ class InputArbiterTest {
     }
 
     @Test
-    fun `mode change keeps joystick but drops button holds`() {
+    fun `leaving the world keeps joystick but drops button holds`() {
         arbiter.onJoystick(0f, 1f)
         arbiter.onHoldStart("p1", GameKey.JUMP)
-        arbiter.setMode(ControlMode.COMBAT)
-        assertEquals(setOf(s(GameKey.FORWARD)), arbiter.downScanCodes())
+        arbiter.setMode(ControlMode.DIALOG)
+        // Джойстик в диалоге — стрелка «вверх» (та же клавиша, что «вперёд»), прыжок снят.
+        assertEquals(setOf(s(GameKey.MENU_UP)), arbiter.downScanCodes())
     }
 
     @Test
-    fun `menu mode disables movement and camera`() {
-        arbiter.onJoystick(0f, 1f)
-        arbiter.setMode(ControlMode.DIALOG)
+    fun `drawing a weapon keeps the panel holds`() {
+        arbiter.onHoldStart("p1", GameKey.JUMP)
+        arbiter.setMode(ControlMode.COMBAT)
+        assertEquals(setOf(s(GameKey.JUMP)), arbiter.downScanCodes())
+    }
+
+    @Test
+    fun `navigation joystick holds one arrow and camera is off`() {
+        arbiter.setMode(ControlMode.INVENTORY)
+        arbiter.onJoystick(0.6f, 0.5f) // по диагонали — только преобладающая ось
+        assertEquals(setOf(s(GameKey.MENU_RIGHT)), arbiter.downScanCodes())
+        arbiter.onJoystick(0.5f, 0.55f) // чуть перевесила вертикаль — стрелка не прыгает
+        assertEquals(setOf(s(GameKey.MENU_RIGHT)), arbiter.downScanCodes())
+        arbiter.onJoystick(0.1f, -0.8f)
+        assertEquals(setOf(s(GameKey.MENU_DOWN)), arbiter.downScanCodes())
+        arbiter.onJoystickReleased()
         assertTrue(arbiter.downScanCodes().isEmpty())
         sink.clear()
         arbiter.onCameraDelta(50f, 0f)
         assertTrue(sink.events.isEmpty())
+    }
+
+    @Test
+    fun `tap survives the mode change it causes`() {
+        arbiter.onKeyTapped = { if (it == GameKey.INVENTORY) arbiter.setMode(ControlMode.INVENTORY) }
+        arbiter.tap(GameKey.INVENTORY)
+        assertEquals(ControlMode.INVENTORY, arbiter.mode)
+        assertTrue(s(GameKey.INVENTORY) in arbiter.downScanCodes(), "Tab не обрывается сменой панели")
+        advance(timing.tapHoldMs)
+        assertTrue(arbiter.downScanCodes().isEmpty())
     }
 
     @Test
@@ -142,19 +166,106 @@ class InputArbiterTest {
     }
 
     @Test
-    fun `context action is ignored in combat so forward does not attack`() {
-        arbiter.setMode(ControlMode.COMBAT)
-        arbiter.setContextAction(true)
+    fun `main button tap holds action then strikes forward on release`() {
         arbiter.onJoystick(0f, 1f)
-        assertEquals(setOf(s(GameKey.FORWARD)), arbiter.downScanCodes())
+        sink.clear()
+        assertTrue(arbiter.strikeBegin())
+        assertEquals(listOf<Event>(Up(s(GameKey.FORWARD))), sink.events, "движение снято")
+        advance(timing.movementReleaseMs)
+        assertEquals(setOf(s(GameKey.ACTION)), arbiter.downScanCodes())
+        advance(30)
+        arbiter.strikeEnd()
+        // «Вперёд» не раньше, чем через actionLeadMs после «действия».
+        assertEquals(setOf(s(GameKey.ACTION)), arbiter.downScanCodes())
+        advance(timing.actionLeadMs - 30)
+        assertEquals(setOf(s(GameKey.ACTION), s(GameKey.FORWARD)), arbiter.downScanCodes())
+        advance(timing.strikeHoldMs)
+        assertTrue(arbiter.downScanCodes().isEmpty())
+        advance(timing.recoverMs)
+        assertEquals(setOf(s(GameKey.FORWARD)), arbiter.downScanCodes(), "джойстик снова ведёт")
+        assertFalse(arbiter.isStriking())
+        assertNull(arbiter.nextDeadline())
     }
 
     @Test
-    fun `context action in world holds action with forward`() {
-        arbiter.setContextAction(true)
-        assertEquals(setOf(s(GameKey.ACTION), s(GameKey.FORWARD)), arbiter.downScanCodes())
-        arbiter.setContextAction(false)
+    fun `holding main button aims and release fires`() {
+        arbiter.setMode(ControlMode.RANGED)
+        arbiter.strikeBegin()
+        advance(2_000)
+        assertEquals(setOf(s(GameKey.ACTION)), arbiter.downScanCodes(), "прицел, пока палец держит")
+        arbiter.strikeEnd()
+        assertEquals(setOf(s(GameKey.ACTION), s(GameKey.FORWARD)), arbiter.downScanCodes(), "выстрел сразу по отпусканию")
+        advance(timing.strikeHoldMs + timing.recoverMs)
         assertTrue(arbiter.downScanCodes().isEmpty())
+    }
+
+    @Test
+    fun `swipes strike sideways once and down blocks while held`() {
+        arbiter.setMode(ControlMode.COMBAT)
+        arbiter.strikeBegin()
+        advance(timing.movementReleaseMs + timing.actionLeadMs)
+        assertTrue(arbiter.strikeAim(SwipeDir.LEFT))
+        assertEquals(setOf(s(GameKey.ACTION), s(GameKey.TURN_LEFT)), arbiter.downScanCodes())
+        assertFalse(arbiter.strikeAim(SwipeDir.RIGHT), "второй удар во время первого — без очереди")
+        advance(timing.strikeHoldMs)
+        assertEquals(setOf(s(GameKey.ACTION)), arbiter.downScanCodes())
+        // Серия одним пальцем: следующее направление после окончания удара.
+        assertTrue(arbiter.strikeAim(SwipeDir.DOWN))
+        assertTrue(arbiter.isBlocking())
+        advance(3_000)
+        assertEquals(setOf(s(GameKey.ACTION), s(GameKey.BACK)), arbiter.downScanCodes())
+        arbiter.strikeEnd()
+        advance(timing.strikeHoldMs + timing.recoverMs)
+        assertTrue(arbiter.downScanCodes().isEmpty())
+        val forward = sink.events.count { it == Down(s(GameKey.FORWARD)) }
+        assertEquals(0, forward, "после свайпов отпускание не бьёт вперёд")
+    }
+
+    @Test
+    fun `very short swipe still holds the strike long enough`() {
+        arbiter.strikeBegin()
+        advance(timing.movementReleaseMs + timing.actionLeadMs)
+        arbiter.strikeAim(SwipeDir.UP)
+        advance(10)
+        arbiter.strikeAim(null)
+        assertTrue(s(GameKey.FORWARD) in arbiter.downScanCodes())
+        advance(timing.strikeHoldMs - 10)
+        assertFalse(s(GameKey.FORWARD) in arbiter.downScanCodes())
+    }
+
+    @Test
+    fun `interaction without forward when the build wants only action`() {
+        arbiter.interactUsesForward = false
+        arbiter.strikeBegin()
+        arbiter.strikeEnd()
+        advance(timing.movementReleaseMs + timing.actionLeadMs)
+        assertEquals(setOf(s(GameKey.ACTION)), arbiter.downScanCodes())
+        advance(1_000)
+        assertTrue(sink.events.none { it == Down(s(GameKey.FORWARD)) })
+    }
+
+    @Test
+    fun `strike is rejected in menus and dropped when a menu opens`() {
+        arbiter.setMode(ControlMode.MENU)
+        assertFalse(arbiter.strikeBegin())
+        arbiter.setMode(ControlMode.WORLD)
+        assertTrue(arbiter.strikeBegin())
+        advance(timing.movementReleaseMs)
+        arbiter.setMode(ControlMode.DIALOG)
+        assertTrue(arbiter.downScanCodes().isEmpty())
+        assertFalse(arbiter.isStriking())
+    }
+
+    @Test
+    fun `block button cancels the main button gesture`() {
+        arbiter.setMode(ControlMode.COMBAT)
+        arbiter.strikeBegin()
+        advance(timing.movementReleaseMs)
+        arbiter.setBlock(true)
+        assertFalse(arbiter.isStriking())
+        arbiter.strikeEnd() // палец с главной кнопки — уже ничего не делает
+        advance(timing.movementReleaseMs + timing.actionLeadMs)
+        assertEquals(setOf(s(GameKey.ACTION), s(GameKey.BACK)), arbiter.downScanCodes())
     }
 
     @Test
