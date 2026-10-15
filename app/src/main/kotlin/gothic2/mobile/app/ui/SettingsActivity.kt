@@ -2,9 +2,8 @@ package gothic2.mobile.app.ui
 
 import android.content.Intent
 import android.os.Bundle
-import android.widget.Toast
+import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.preference.ListPreference
 import androidx.preference.Preference
@@ -13,7 +12,12 @@ import androidx.preference.SwitchPreferenceCompat
 import gothic2.mobile.app.BuildConfig
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
+import gothic2.mobile.app.storage.DiagnosticsShare
 import gothic2.mobile.app.storage.DocumentExport
+import gothic2.mobile.app.ui.gothic.Gothic
+import gothic2.mobile.app.ui.gothic.GothicPanels
+import gothic2.mobile.app.ui.gothic.GothicScreens
+import gothic2.mobile.app.ui.gothic.OverlayHost
 import gothic2.mobile.core.config.UserSettings
 import gothic2.mobile.core.gamedata.BuildFingerprint
 import gothic2.mobile.core.gamedata.PathGameTree
@@ -21,15 +25,32 @@ import gothic2.mobile.core.saves.SaveManager
 
 /** Только понятные игровые параметры; технические настройки среды игроку не показываются. */
 class SettingsActivity : AppCompatActivity() {
+    lateinit var panels: OverlayHost
+        private set
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        GothicScreens.immersive(this)
+        val root = GothicScreens.backdrop(this)
+        val body = GothicScreens.page(this, root, getString(R.string.settings_title), framed = true) { onBackPressedDispatcher.onBackPressed() }
+        body.id = R.id.settings_container
+        setContentView(root)
+        panels = OverlayHost(root)
+        onBackPressedDispatcher.addCallback(this, panels.backCallback)
         if (savedInstanceState == null) {
-            supportFragmentManager.beginTransaction().replace(android.R.id.content, SettingsFragment()).commit()
+            supportFragmentManager.beginTransaction().replace(R.id.settings_container, SettingsFragment()).commit()
         }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) GothicScreens.immersive(this)
     }
 
     class SettingsFragment : PreferenceFragmentCompat() {
         private var before: UserSettings? = null
+
+        private val panels: OverlayHost get() = (requireActivity() as SettingsActivity).panels
 
         /** Сохранения выбранного варианта игры; null — игра ещё не импортирована. */
         private fun currentSaves(): SaveManager? {
@@ -67,10 +88,10 @@ class SettingsActivity : AppCompatActivity() {
             val cache = requireContext().cacheDir
             val build = app.importedBuild()
             // Подсчёт хэшей нескольких гигабайт занимает минуты — предупреждаем, чтобы экран не закрыли.
-            Toast.makeText(requireContext(), R.string.build_report_wait, Toast.LENGTH_LONG).show()
+            Gothic.toast(requireContext(), R.string.build_report_wait, long = true)
             runIo({
                 val report = BuildFingerprint.collect(
-                    PathGameTree(app.paths.gameRoot),
+                    PathGameTree(app.gameRoot()),
                     app.verifier,
                     savesDirs = build?.allSavesDirs() ?: listOf("Saves"),
                 )
@@ -104,13 +125,44 @@ class SettingsActivity : AppCompatActivity() {
             click("restore_backup") { showBackups() }
             click("build_report") { exportBuildReport.launch("gothic2-build-report.txt") }
             setupVariantPreference()
+            setupGraphicsPreference()
             click("reset_layout") {
                 app.settings.layoutOverrides = emptyMap()
-                Toast.makeText(requireContext(), R.string.layout_reset_done, Toast.LENGTH_SHORT).show()
+                Gothic.toast(requireContext(), R.string.layout_reset_done)
             }
+            click("send_diagnostics") { DiagnosticsShare.share(requireActivity()) }
             click("export_diagnostics") { exportLog.launch("gothic2-diagnostics.txt") }
             click("reimport_game") {
                 startActivity(Intent(requireContext(), LauncherActivity::class.java).putExtra(LauncherActivity.EXTRA_REIMPORT, true))
+            }
+            click("licenses") { startActivity(Intent(requireContext(), LicensesActivity::class.java)) }
+        }
+
+        override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+            super.onViewCreated(view, savedInstanceState)
+            listView.apply {
+                clipToPadding = false
+                setPadding(0, 0, 0, Gothic.dp(context, 16f))
+                overScrollMode = View.OVER_SCROLL_NEVER
+                isVerticalFadingEdgeEnabled = true
+                setFadingEdgeLength(Gothic.dp(context, 24f))
+            }
+        }
+
+        /** Списки выбора — в панели в стиле игры, а не в системном диалоге. */
+        override fun onDisplayPreferenceDialog(preference: Preference) {
+            if (preference !is ListPreference) return super.onDisplayPreferenceDialog(preference)
+            val values = preference.entryValues ?: return
+            // Режим графики, пока игрок его не выбирал, — действующий по видеокарте.
+            val current = preference.value ?: requireContext().app.settings.graphicsMode.id.takeIf { preference.key == "graphics_mode" }
+            GothicPanels.choose(
+                panels,
+                preference.title,
+                preference.entries.toList(),
+                preference.findIndexOfValue(current),
+            ) { i ->
+                val value = values[i].toString()
+                if (preference.callChangeListener(value)) preference.value = value
             }
         }
 
@@ -118,7 +170,7 @@ class SettingsActivity : AppCompatActivity() {
             super.onPause()
             val now = requireContext().app.settings.userSettings()
             if (before != null && UserSettings.requiresRestart(before!!, now)) {
-                Toast.makeText(requireContext(), R.string.restart_required, Toast.LENGTH_LONG).show()
+                Gothic.toast(requireContext(), R.string.restart_required, long = true)
             }
             before = now
         }
@@ -133,9 +185,17 @@ class SettingsActivity : AppCompatActivity() {
                 pref.isVisible = false
                 return
             }
-            pref.entries = variants.map { it.title }.toTypedArray()
+            pref.entries = variants.map { VariantText.title(requireContext(), it) }.toTypedArray()
             pref.entryValues = variants.map { it.id }.toTypedArray()
             pref.value = app.selectedVariant(build)?.id
+        }
+
+        /** Пока игрок не выбрал режим сам, показывается режим по видеокарте — без записи в настройки. */
+        private fun setupGraphicsPreference() {
+            val pref = findPreference<ListPreference>("graphics_mode") ?: return
+            pref.summaryProvider = Preference.SummaryProvider<ListPreference> { p ->
+                p.entry ?: requireContext().app.settings.graphicsMode.title
+            }
         }
 
         private fun showBackups() {
@@ -145,14 +205,12 @@ class SettingsActivity : AppCompatActivity() {
                 .flatMap { saves.listBackups(it) }
                 .sortedByDescending { it.id }
             if (all.isEmpty()) {
-                Toast.makeText(requireContext(), R.string.no_backups, Toast.LENGTH_SHORT).show()
+                Gothic.toast(requireContext(), R.string.no_backups)
                 return
             }
-            AlertDialog.Builder(requireContext())
-                .setItems(all.map { "${it.slot} — ${it.id} (${it.reason})" }.toTypedArray()) { _, i ->
-                    runIo({ saves.restore(all[i]); getString(R.string.restore_done) })
-                }
-                .show()
+            GothicPanels.choose(panels, getString(R.string.restore_title), all.map { "${it.slot} — ${it.id} (${it.reason})" }) { i ->
+                runIo({ saves.restore(all[i]); getString(R.string.restore_done) })
+            }
         }
 
         private fun click(key: String, action: () -> Unit) {
@@ -163,7 +221,7 @@ class SettingsActivity : AppCompatActivity() {
             val ctx = requireContext().applicationContext
             ctx.app.background.execute {
                 val msg = runCatching(work).getOrElse { ctx.getString(R.string.saves_error, it.message) }
-                activity?.runOnUiThread { Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show() }
+                activity?.runOnUiThread { Gothic.toast(ctx, msg, long = true) }
             }
         }
     }

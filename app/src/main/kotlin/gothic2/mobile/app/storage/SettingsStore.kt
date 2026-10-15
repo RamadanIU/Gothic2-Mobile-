@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.core.content.edit
 import androidx.preference.PreferenceManager
 import gothic2.mobile.app.BuildConfig
+import gothic2.mobile.app.runtime.FlickerFix
+import gothic2.mobile.app.runtime.GraphicsMode
 import gothic2.mobile.core.config.UserSettings
 
 /** Хранение пользовательских настроек и состояния импорта. */
@@ -39,6 +41,33 @@ class SettingsStore(context: Context) {
         }.toMap()
         set(v) = prefs.edit { putString(KEY_LAYOUT, v.entries.joinToString(";") { "${it.key}:${it.value.first}:${it.value.second}" }) }
 
+    /** Прошлая игра закрылась сразу после запуска: лаунчер покажет экран с журналом. */
+    var lastSessionFailed: Boolean
+        get() = prefs.getBoolean(KEY_FAILED, false)
+        set(v) = prefs.edit { putBoolean(KEY_FAILED, v) }
+
+    /**
+     * Папка игры на накопителе (путь файловой системы), из которой игра запускается напрямую;
+     * null — игра скопирована во внутреннее хранилище приложения.
+     */
+    var gameDir: String?
+        get() = prefs.getString(KEY_GAME_DIR, null)
+        set(v) = prefs.edit { putString(KEY_GAME_DIR, v) }
+
+    /** Режим графики; пока игрок не выбрал сам — по видеокарте (GraphicsMode.defaultFor). */
+    var graphicsMode: GraphicsMode
+        get() = GraphicsMode.of(prefs.getString(KEY_GRAPHICS, null), gpuName)
+        set(v) = prefs.edit { putString(KEY_GRAPHICS, v.id) }
+
+    /** Вариант против мерцания в режимах D7VK (пункт «Мерцание» в настройках). */
+    val flickerFix: FlickerFix
+        get() = FlickerFix.of(prefs.getString(KEY_FLICKER, null))
+
+    /** Имя GPU (GL_RENDERER), запомненное при подготовке запуска. */
+    var gpuName: String?
+        get() = prefs.getString(KEY_GPU, null)
+        set(v) = prefs.edit { putString(KEY_GPU, v) }
+
     fun userSettings(): UserSettings = runCatching {
         UserSettings(
             quality = UserSettings.Quality.valueOf(prefs.getString("quality", "AUTO")!!),
@@ -59,6 +88,12 @@ class SettingsStore(context: Context) {
         const val KEY_EXE = "imported_exe_sha256"
         const val KEY_VARIANT = "game_variant"
         const val KEY_DEV = "dev_mode"
-        const val KEY_LAYOUT = "layout_overrides"
+        /** v2 — раскладка с главной кнопкой: положения кнопок прежней раскладки к ней не подходят. */
+        const val KEY_LAYOUT = "layout_overrides_v2"
+        const val KEY_FAILED = "last_session_failed"
+        const val KEY_GRAPHICS = "graphics_mode"
+        const val KEY_GPU = "gpu_name"
+        const val KEY_FLICKER = "flicker_fix"
+        const val KEY_GAME_DIR = "game_dir"
     }
 }

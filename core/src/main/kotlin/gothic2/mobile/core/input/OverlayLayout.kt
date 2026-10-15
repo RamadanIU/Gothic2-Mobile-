@@ -8,24 +8,24 @@ sealed interface TouchCommand {
     /** Одиночное нажатие с минимальной длительностью. */
     data class Tap(val key: GameKey) : TouchCommand
 
-    data class Attack(val direction: AttackDirection) : TouchCommand
+    /**
+     * Главная кнопка — одна на все случаи. В мире: касание — действие, удар, выстрел или
+     * заклинание (смотря что в руках); свайп влево/вправо — боковой удар; вниз и держать — блок;
+     * вверх и держать — удар/заряд; удержание без движения — прицел, отпускание — выстрел.
+     * На экранах меню, диалога и инвентаря — «Выбрать» ([ControlMode.confirmKey]).
+     */
+    data object Main : TouchCommand
 
     data object Block : TouchCommand
 
-    /** Говорить / подобрать / использовать. */
-    data object ContextAction : TouchCommand
+    /** Оружие: касание — достать/убрать, потянуть — колесо слотов (оружие, лук, руны). */
+    data object Weapon : TouchCommand
 
-    /** Ручная смена панели (уровень 1, без игрового адаптера). */
-    data class SwitchMode(val mode: ControlMode) : TouchCommand
+    /** Крестовина экранов навигации: стрелки, пока палец держит направление. */
+    data object DPad : TouchCommand
 
-    /** Раскрывающееся меню редких действий — обрабатывает приложение. */
+    /** Панель редких действий — обрабатывает приложение. */
     data object QuickMenu : TouchCommand
-
-    /** Радиальное меню быстрых слотов: выбор направлением пальца, отпускание — применение. */
-    data object QuickSlots : TouchCommand
-
-    /** Повторить последний выбранный быстрый слот (например, последнее заклинание). */
-    data object LastSlot : TouchCommand
 }
 
 /** Прямоугольник в нормированных координатах безопасной области (0..1). */
@@ -46,13 +46,15 @@ data class ControlSpec(
     val radiusDp: Float,
     val modes: Set<ControlMode>,
     val command: TouchCommand,
-    /** Видна только без игрового адаптера (ручное переключение режимов). */
-    val manualOnly: Boolean = false,
+    /** Подпись по режимам: одна и та же кнопка говорит, что сделает сейчас. */
+    val labels: Map<ControlMode, String> = emptyMap(),
 ) {
     init {
         require(radiusDp >= MIN_RADIUS_DP) { "Кнопка $id меньше минимальной зоны касания 48 dp" }
         require(cx in 0f..1f && cy in 0f..1f) { "Кнопка $id вне безопасной области" }
     }
+
+    fun labelFor(mode: ControlMode): String = labels[mode] ?: label
 
     fun mirrored() = copy(cx = 1f - cx)
 
@@ -63,7 +65,7 @@ data class ControlSpec(
 
 data class OverlayLayout(
     val controls: List<ControlSpec>,
-    /** Зона, где касание создаёт плавающий джойстик. */
+    /** Зона, где касание создаёт плавающий джойстик (в меню — стрелки). */
     val joystickZone: NRect,
     /** Свободная зона поворота камеры (кнопки имеют приоритет). */
     val cameraZone: NRect,
@@ -77,8 +79,7 @@ data class OverlayLayout(
         require(buttonScale in 0.5f..2.5f && opacity in 0.1f..1f)
     }
 
-    fun forMode(mode: ControlMode, adapterActive: Boolean): List<ControlSpec> =
-        controls.filter { mode in it.modes && !(adapterActive && it.manualOnly) }
+    fun forMode(mode: ControlMode): List<ControlSpec> = controls.filter { mode in it.modes }
 
     /** Раскладка для левшей: зеркальное отражение по горизонтали. */
     fun mirrored() = copy(
@@ -94,63 +95,53 @@ data class OverlayLayout(
     )
 
     companion object {
-        private val WORLD_ALL = setOf(ControlMode.WORLD, ControlMode.COMBAT, ControlMode.RANGED, ControlMode.MAGIC)
-        private val NAV = setOf(ControlMode.DIALOG, ControlMode.INVENTORY, ControlMode.TRADE, ControlMode.MENU)
+        val WORLD_ALL = setOf(ControlMode.WORLD, ControlMode.COMBAT, ControlMode.RANGED, ControlMode.MAGIC)
+        val NAV = setOf(ControlMode.DIALOG, ControlMode.INVENTORY, ControlMode.TRADE, ControlMode.MENU)
 
         /**
-         * Стартовая раскладка для правши: слева джойстик, справа камера и действия,
-         * сверху по краям — инвентарь, журнал, меню. Позиции — отправная точка
-         * для проверки на реальных экранах.
+         * Раскладка для правши (раздел 8 плана). Кнопок мало, режимы игрок не переключает:
+         *  - слева — плавающий джойстик (лёгкое отклонение — шаг, дальше — бег), в меню — стрелки;
+         *  - справа — обзор пальцем и одна главная кнопка под большим пальцем, рядом прыжок
+         *    и оружие с колесом слотов, в бою — ещё блок;
+         *  - сверху — «Сумка», «Ещё» (карта, журнал, сохранения…) и одна кнопка Esc:
+         *    «Меню» в игре, «Назад» на любом экране.
+         * Главная кнопка и Esc стоят на одних и тех же местах во всех режимах.
          */
         fun gothicDefault(): OverlayLayout {
             val c = mutableListOf<ControlSpec>()
-            val world = setOf(ControlMode.WORLD)
-            val combat = setOf(ControlMode.COMBAT)
-            val ranged = setOf(ControlMode.RANGED, ControlMode.MAGIC)
+            val everywhere = WORLD_ALL + NAV + ControlMode.LOADING
 
-            // Верхние края: редкие экраны.
-            c += ControlSpec("inventory", "Инвентарь", 0.06f, 0.08f, 26f, WORLD_ALL, TouchCommand.Tap(GameKey.INVENTORY))
-            c += ControlSpec("log", "Журнал", 0.16f, 0.08f, 26f, world, TouchCommand.Tap(GameKey.LOG))
-            c += ControlSpec("menu", "Меню", 0.94f, 0.08f, 26f, WORLD_ALL + NAV, TouchCommand.Tap(GameKey.ESCAPE))
-            c += ControlSpec("quick", "Ещё", 0.84f, 0.08f, 26f, WORLD_ALL, TouchCommand.QuickMenu)
+            // Верх: редкие экраны и Esc.
+            c += ControlSpec("inventory", "Сумка", 0.06f, 0.08f, 26f, WORLD_ALL + ControlMode.INVENTORY, TouchCommand.Tap(GameKey.INVENTORY))
+            c += ControlSpec("more", "Ещё", 0.84f, 0.08f, 26f, WORLD_ALL + NAV, TouchCommand.QuickMenu)
+            c += ControlSpec(
+                "escape", "Назад", 0.94f, 0.08f, 26f, everywhere, TouchCommand.Tap(GameKey.ESCAPE),
+                labels = WORLD_ALL.associateWith { "Меню" } + (ControlMode.LOADING to "Пропуск"),
+            )
 
-            // Мир.
-            c += ControlSpec("context", "Действие", 0.88f, 0.72f, 40f, world, TouchCommand.ContextAction)
-            c += ControlSpec("jump", "Прыжок", 0.76f, 0.86f, 32f, world + combat, TouchCommand.Hold(GameKey.JUMP))
-            c += ControlSpec("weapon", "Оружие", 0.94f, 0.32f, 30f, WORLD_ALL, TouchCommand.Tap(GameKey.WEAPON))
+            // Главная кнопка — под большим пальцем; подпись говорит, что она сделает сейчас.
+            c += ControlSpec(
+                "main", "Действие", 0.87f, 0.72f, 44f, WORLD_ALL + NAV, TouchCommand.Main,
+                labels = mapOf(
+                    ControlMode.COMBAT to "Удар",
+                    ControlMode.RANGED to "Выстрел",
+                    ControlMode.MAGIC to "Магия",
+                    ControlMode.MENU to "Выбрать",
+                    ControlMode.DIALOG to "Выбрать",
+                    ControlMode.INVENTORY to "Применить",
+                    ControlMode.TRADE to "Обмен",
+                ),
+            )
+            c += ControlSpec("jump", "Прыжок", 0.73f, 0.87f, 30f, WORLD_ALL, TouchCommand.Hold(GameKey.JUMP))
+            c += ControlSpec("weapon", "Оружие", 0.72f, 0.58f, 32f, WORLD_ALL, TouchCommand.Weapon)
+            c += ControlSpec("block", "Блок", 0.93f, 0.42f, 34f, setOf(ControlMode.COMBAT), TouchCommand.Block)
 
-            // Быстрые слоты: радиальное меню и повтор последнего выбора.
-            c += ControlSpec("slots", "Слоты", 0.62f, 0.88f, 30f, WORLD_ALL, TouchCommand.QuickSlots)
-            c += ControlSpec("last_slot", "Посл.", 0.66f, 0.70f, 28f, WORLD_ALL, TouchCommand.LastSlot)
-
-            // Ближний бой: ромб «вперёд / влево / вправо / блок».
-            c += ControlSpec("atk_fwd", "Удар", 0.86f, 0.52f, 34f, combat, TouchCommand.Attack(AttackDirection.FORWARD))
-            c += ControlSpec("atk_left", "Слева", 0.78f, 0.66f, 32f, combat, TouchCommand.Attack(AttackDirection.LEFT))
-            c += ControlSpec("atk_right", "Справа", 0.94f, 0.66f, 32f, combat, TouchCommand.Attack(AttackDirection.RIGHT))
-            c += ControlSpec("block", "Блок", 0.86f, 0.80f, 34f, combat, TouchCommand.Block)
-
-            // Лук, арбалет, магия: удержание действия + выстрел/применение (проверить на сборке).
-            c += ControlSpec("aim", "Цель", 0.80f, 0.74f, 36f, ranged, TouchCommand.Hold(GameKey.ACTION))
-            c += ControlSpec("fire", "Пуск", 0.92f, 0.70f, 34f, ranged, TouchCommand.Hold(GameKey.FORWARD))
-
-            // Ручное переключение панелей (только без адаптера).
-            c += ControlSpec("to_combat", "Бой", 0.70f, 0.08f, 26f, world, TouchCommand.SwitchMode(ControlMode.COMBAT), manualOnly = true)
-            c += ControlSpec("to_world", "Мир", 0.70f, 0.08f, 26f, combat + ranged, TouchCommand.SwitchMode(ControlMode.WORLD), manualOnly = true)
-            c += ControlSpec("to_ranged", "Лук/Магия", 0.60f, 0.08f, 26f, combat, TouchCommand.SwitchMode(ControlMode.RANGED), manualOnly = true)
-            c += ControlSpec("to_nav", "Навигация", 0.26f, 0.08f, 26f, world, TouchCommand.SwitchMode(ControlMode.MENU), manualOnly = true)
-            c += ControlSpec("nav_to_world", "К игре", 0.06f, 0.08f, 26f, NAV, TouchCommand.SwitchMode(ControlMode.WORLD), manualOnly = true)
-
-            // Навигация по меню, диалогам, инвентарю и торговле.
-            c += ControlSpec("nav_up", "▲", 0.14f, 0.52f, 32f, NAV, TouchCommand.Tap(GameKey.MENU_UP))
-            c += ControlSpec("nav_down", "▼", 0.14f, 0.80f, 32f, NAV, TouchCommand.Tap(GameKey.MENU_DOWN))
-            c += ControlSpec("nav_left", "◀", 0.06f, 0.66f, 30f, setOf(ControlMode.INVENTORY, ControlMode.TRADE, ControlMode.MENU), TouchCommand.Tap(GameKey.MENU_LEFT))
-            c += ControlSpec("nav_right", "▶", 0.22f, 0.66f, 30f, setOf(ControlMode.INVENTORY, ControlMode.TRADE, ControlMode.MENU), TouchCommand.Tap(GameKey.MENU_RIGHT))
-            c += ControlSpec("confirm", "Выбрать", 0.88f, 0.72f, 38f, setOf(ControlMode.DIALOG, ControlMode.MENU), TouchCommand.Tap(GameKey.CONFIRM))
-            c += ControlSpec("use_item", "Использовать", 0.88f, 0.72f, 38f, setOf(ControlMode.INVENTORY, ControlMode.TRADE), TouchCommand.Tap(GameKey.ACTION))
+            // Экраны навигации: крестовина на месте джойстика.
+            c += ControlSpec("dpad", "", 0.15f, 0.66f, 56f, NAV, TouchCommand.DPad)
 
             return OverlayLayout(
                 controls = c,
-                joystickZone = NRect(0f, 0.25f, 0.45f, 1f),
+                joystickZone = NRect(0f, 0.18f, 0.45f, 1f),
                 cameraZone = NRect(0.45f, 0.15f, 1f, 1f),
             )
         }

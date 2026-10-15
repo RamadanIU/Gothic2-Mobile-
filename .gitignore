@@ -10,6 +10,8 @@ captures/
 *.apk
 *.aab
 *.keystore
+# Исключение: общий debug-ключ, чтобы APK из разных сессий ставились поверх друг друга.
+!app/debug.keystore
 *.jks
 # Игровые файлы никогда не попадают в репозиторий (см. docs/LEGAL.md).
 /game-data/
@@ -17,3 +19,5 @@ captures/
 *.VDF
 *.mod
 *.MOD
+# Исходники Winlator скачивает tools/fetch-winlator.sh; в репозитории только наш патч.
+/third_party/winlator-app/

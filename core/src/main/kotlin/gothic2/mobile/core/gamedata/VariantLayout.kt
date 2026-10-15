@@ -1,6 +1,7 @@
 package gothic2.mobile.core.gamedata
 
 import gothic2.mobile.core.util.FileOps
+import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.deleteIfExists
 import kotlin.io.path.exists
@@ -59,6 +60,20 @@ class VariantLayout(private val root: Path) {
             }
         }
         marker.deleteIfExists()
+    }
+
+    /**
+     * Создать каталог сохранений [variant], если его нет (поиск без учёта регистра).
+     * Gothic сама создаёт только `savegameN` внутри него, а без самого каталога падает при
+     * первом сохранении — так было с `Saves_GII` классики: импорт его не создавал.
+     *
+     * @return относительный путь созданного каталога или null, если он уже был
+     */
+    fun ensureSavesDir(build: SupportedBuild, variant: GameVariant): String? {
+        val rel = build.savesDirOf(variant).trimEnd('/')
+        if (tree.resolve(rel) != null) return null
+        Files.createDirectories(target(rel))
+        return rel
     }
 
     /** Вариант, раскладка которого сейчас применена, или null. */

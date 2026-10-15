@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string-array name="quality_entries">
-        <item>Автоматически (профиль устройства)</item>
+        <item>Автоматически (по телефону)</item>
         <item>Совместимость — 800×600</item>
         <item>Основной — 960×540</item>
         <item>Качество — 1280×720</item>
@@ -12,8 +12,35 @@
         <item>BALANCED</item>
         <item>QUALITY</item>
     </string-array>
+    <!-- Порядок и значения — как в GraphicsMode (проверяет GraphicsModeTest). -->
+    <string-array name="graphics_mode_entries">
+        <item>Vulkan · Adreno — быстрый</item>
+        <item>OpenGL · Adreno — совместимый</item>
+        <item>OpenGL — совместимый</item>
+        <item>Vulkan — быстрый</item>
+        <item>OpenGL — запасной</item>
+    </string-array>
+    <string-array name="graphics_mode_values">
+        <item>d7vk_turnip</item>
+        <item>wined3d_zink_turnip</item>
+        <item>wined3d_zink</item>
+        <item>d7vk</item>
+        <item>wined3d</item>
+    </string-array>
+    <string-array name="flicker_fix_entries">
+        <item>Обычный</item>
+        <item>1 — без сжатия кадра</item>
+        <item>2 — точная глубина</item>
+        <item>3 — всё сразу, строгий режим</item>
+    </string-array>
+    <string-array name="flicker_fix_values">
+        <item>standard</item>
+        <item>no_compression</item>
+        <item>depth24</item>
+        <item>strict</item>
+    </string-array>
     <string-array name="fps_entries">
-        <item>Как в профиле</item>
+        <item>Как в профиле телефона</item>
         <item>30</item>
         <item>45</item>
         <item>60</item>
@@ -23,5 +50,25 @@
         <item>30</item>
         <item>45</item>
         <item>60</item>
+    </string-array>
+
+    <!-- Советы на экране загрузки: только правда об управлении и немного Хориниса. -->
+    <string-array name="loading_tips">
+        <item>Левая часть экрана — ходьба: чуть сдвиньте палец — шаг, дальше — бег.</item>
+        <item>Правая часть экрана — обзор: проведите пальцем, чтобы осмотреться.</item>
+        <item>Большая кнопка справа делает главное: говорить, подобрать, ударить, выстрелить, колдовать.</item>
+        <item>В бою проведите по большой кнопке влево или вправо — боковой удар, вниз и держать — блок.</item>
+        <item>С луком и магией держите большую кнопку, чтобы прицелиться, отпустите — выстрел.</item>
+        <item>«Оружие»: коснитесь — достать или убрать, потяните — колесо слотов: меч, лук, руны.</item>
+        <item>Панель меняется сама: в меню и сумке большая кнопка — «Выбрать», а джойстик — стрелки.</item>
+        <item>Кнопка «Меню» в игре и «Назад» на любом экране — одна и та же, как Esc. «Назад» телефона — тоже.</item>
+        <item>Если меню уже закрыто, а кнопки остались от меню, — просто осмотритесь: вернутся кнопки игры.</item>
+        <item>Диалог или торговля, а кнопок меню нет? «Ещё» → «Кнопки меню и диалога».</item>
+        <item>«Ещё» — карта, журнал, персонаж, быстрое сохранение и настройка кнопок.</item>
+        <item>Кнопки можно передвинуть под свою руку: «Ещё» → «Настроить кнопки».</item>
+        <item>С геймпадом сенсорные кнопки прячутся сами — коснитесь экрана, чтобы вернуть их.</item>
+        <item>Сохраняйтесь почаще: в Хоринисе опасность ждёт за каждым поворотом.</item>
+        <item>Берегите сохранения: Настройки → «Экспортировать сохранения».</item>
+        <item>Телефон сильно греется? Снизьте качество изображения в настройках.</item>
     </string-array>
 </resources>

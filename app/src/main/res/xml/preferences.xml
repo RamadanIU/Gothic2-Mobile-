@@ -2,29 +2,41 @@
 <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
-    <PreferenceCategory app:title="Игра">
-        <ListPreference
+    <PreferenceCategory app:iconSpaceReserved="false" app:layout="@layout/gothic_preference_category" app:title="Игра">
+        <ListPreference app:iconSpaceReserved="false"
             app:key="game_variant"
             app:title="Вариант игры"
             app:useSimpleSummaryProvider="true" />
     </PreferenceCategory>
 
-    <PreferenceCategory app:title="Изображение">
-        <ListPreference
+    <PreferenceCategory app:iconSpaceReserved="false" app:layout="@layout/gothic_preference_category" app:title="Изображение">
+        <ListPreference app:iconSpaceReserved="false"
+            app:key="graphics_mode"
+            app:title="Режим графики"
+            app:entries="@array/graphics_mode_entries"
+            app:entryValues="@array/graphics_mode_values" />
+        <ListPreference app:iconSpaceReserved="false"
+            app:key="flicker_fix"
+            app:title="Мерцание: вариант исправления"
+            app:entries="@array/flicker_fix_entries"
+            app:entryValues="@array/flicker_fix_values"
+            app:defaultValue="standard"
+            app:useSimpleSummaryProvider="true" />
+        <ListPreference app:iconSpaceReserved="false"
             app:key="quality"
             app:title="Качество изображения"
             app:entries="@array/quality_entries"
             app:entryValues="@array/quality_values"
             app:defaultValue="AUTO"
             app:useSimpleSummaryProvider="true" />
-        <SeekBarPreference
+        <SeekBarPreference app:iconSpaceReserved="false"
             app:key="view_distance"
             app:title="Дальность видимости (относительно профиля)"
             app:min="-3"
             android:max="3"
             app:defaultValue="0"
             app:showSeekBarValue="true" />
-        <ListPreference
+        <ListPreference app:iconSpaceReserved="false"
             app:key="fps_limit"
             app:title="Ограничение FPS"
             app:entries="@array/fps_entries"
@@ -33,26 +45,26 @@
             app:useSimpleSummaryProvider="true" />
     </PreferenceCategory>
 
-    <PreferenceCategory app:title="Управление">
-        <SeekBarPreference
+    <PreferenceCategory app:iconSpaceReserved="false" app:layout="@layout/gothic_preference_category" app:title="Управление">
+        <SeekBarPreference app:iconSpaceReserved="false"
             app:key="camera_sensitivity"
             app:title="Чувствительность камеры, %"
             app:min="10"
             android:max="300"
             app:defaultValue="100"
             app:showSeekBarValue="true" />
-        <SwitchPreferenceCompat app:key="invert_y" app:title="Инвертировать вертикаль" app:defaultValue="false" />
-        <SwitchPreferenceCompat app:key="left_handed" app:title="Раскладка для левши" app:defaultValue="false" />
-        <SwitchPreferenceCompat app:key="haptics" app:title="Вибрация при нажатии кнопок" app:defaultValue="true" />
-        <Preference app:key="reset_layout" app:title="Сбросить расположение кнопок" app:summary="Перенести кнопки можно в игре: «Ещё» → «Настроить кнопки»" />
-        <SeekBarPreference
+        <SwitchPreferenceCompat app:iconSpaceReserved="false" app:key="invert_y" app:title="Инвертировать вертикаль" app:defaultValue="false" />
+        <SwitchPreferenceCompat app:iconSpaceReserved="false" app:key="left_handed" app:title="Раскладка для левши" app:defaultValue="false" />
+        <SwitchPreferenceCompat app:iconSpaceReserved="false" app:key="haptics" app:title="Вибрация при нажатии кнопок" app:defaultValue="true" />
+        <Preference app:iconSpaceReserved="false" app:key="reset_layout" app:title="Сбросить расположение кнопок" app:summary="Перенести кнопки можно в игре: «Ещё» → «Настроить кнопки»" />
+        <SeekBarPreference app:iconSpaceReserved="false"
             app:key="button_scale"
             app:title="Размер кнопок, %"
             app:min="50"
             android:max="250"
             app:defaultValue="100"
             app:showSeekBarValue="true" />
-        <SeekBarPreference
+        <SeekBarPreference app:iconSpaceReserved="false"
             app:key="overlay_opacity"
             app:title="Непрозрачность кнопок, %"
             app:min="10"
@@ -61,8 +73,8 @@
             app:showSeekBarValue="true" />
     </PreferenceCategory>
 
-    <PreferenceCategory app:title="Звук">
-        <SeekBarPreference
+    <PreferenceCategory app:iconSpaceReserved="false" app:layout="@layout/gothic_preference_category" app:title="Звук">
+        <SeekBarPreference app:iconSpaceReserved="false"
             app:key="volume"
             app:title="Громкость, %"
             app:min="0"
@@ -71,16 +83,21 @@
             app:showSeekBarValue="true" />
     </PreferenceCategory>
 
-    <PreferenceCategory app:title="Сохранения">
-        <Preference app:key="export_saves" app:title="Экспортировать сохранения" app:summary="@string/uninstall_warning" />
-        <Preference app:key="import_saves" app:title="Импортировать сохранения" app:summary="Текущие слоты будут предварительно зарезервированы" />
-        <Preference app:key="restore_backup" app:title="Восстановить из резервной копии" />
+    <PreferenceCategory app:iconSpaceReserved="false" app:layout="@layout/gothic_preference_category" app:title="Сохранения">
+        <Preference app:iconSpaceReserved="false" app:key="export_saves" app:title="Экспортировать сохранения" app:summary="@string/uninstall_warning" />
+        <Preference app:iconSpaceReserved="false" app:key="import_saves" app:title="Импортировать сохранения" app:summary="Текущие слоты будут предварительно зарезервированы" />
+        <Preference app:iconSpaceReserved="false" app:key="restore_backup" app:title="Восстановить из резервной копии" />
     </PreferenceCategory>
 
-    <PreferenceCategory app:title="Обслуживание">
-        <Preference app:key="build_report" app:title="Отчёт о сборке игры" app:summary="Контрольные суммы файлов вашей копии — для закрепления сборки. Без игровых файлов и личных данных" />
-        <Preference app:key="export_diagnostics" app:title="Экспортировать журнал диагностики" app:summary="Без персональных данных: только события среды и ошибки" />
-        <Preference app:key="reimport_game" app:title="Импортировать файлы игры заново" />
-        <SwitchPreferenceCompat app:key="dev_mode" app:title="Режим разработчика" app:summary="Разрешает запуск незакреплённых сборок" />
+    <PreferenceCategory app:iconSpaceReserved="false" app:layout="@layout/gothic_preference_category" app:title="Обслуживание">
+        <Preference app:iconSpaceReserved="false" app:key="build_report" app:title="Отчёт о сборке игры" app:summary="Контрольные суммы файлов вашей копии — для закрепления сборки. Без игровых файлов и личных данных" />
+        <Preference app:iconSpaceReserved="false" app:key="send_diagnostics" app:title="Отправить журнал диагностики" app:summary="Через «Поделиться»: мессенджер, почта или файлы. Без персональных данных" />
+        <Preference app:iconSpaceReserved="false" app:key="export_diagnostics" app:title="Сохранить журнал диагностики в файл" app:summary="Без персональных данных: только события запуска и ошибки" />
+        <Preference app:iconSpaceReserved="false" app:key="reimport_game" app:title="Указать папку игры заново" />
+        <SwitchPreferenceCompat app:iconSpaceReserved="false" app:key="dev_mode" app:title="Режим разработчика" app:summary="Разрешает запуск незакреплённых сборок" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:iconSpaceReserved="false" app:layout="@layout/gothic_preference_category" app:title="Об игре">
+        <Preference app:iconSpaceReserved="false" app:key="licenses" app:title="@string/licenses_title" app:summary="Авторы шрифтов и компонентов, лицензии" />
     </PreferenceCategory>
 </PreferenceScreen>

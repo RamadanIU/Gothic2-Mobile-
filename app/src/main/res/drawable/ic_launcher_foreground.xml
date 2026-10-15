@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp" android:height="108dp"
-    android:viewportWidth="108" android:viewportHeight="108">
-    <!-- Нейтральный знак меча: без логотипов и товарных знаков игры. -->
-    <path android:fillColor="#C9A45C"
-        android:pathData="M52,24h4v44h-4z M42,66h24v4h-24z M51,70h6v12h-6z M50,82h8v4h-8z" />
-</vector>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Фон значка: тёплая тьма с отсветом посередине. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="radial" android:centerX="54" android:centerY="46" android:gradientRadius="68">
+                <item android:offset="0" android:color="#53351E" />
+                <item android:offset="0.45" android:color="#2A190D" />
+                <item android:offset="0.8" android:color="#120A06" />
+                <item android:offset="1" android:color="#070403" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

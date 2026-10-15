@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+        Строки Winlator, которые могут попасть на глаза игроку (окно запуска, уведомление о работе
+        в фоне): без названий среды. Переопределены во всех языках, что есть у Winlator.
+    -->
+    <string name="app_name">Gothic II</string>
+    <string name="installing_system_files" tools:ignore="UnusedResources">Подготовка…</string>
+    <string name="updating_system_files" tools:ignore="UnusedResources">Подготовка…</string>
+    <string name="starting_up" tools:ignore="UnusedResources">Загрузка…</string>
+    <string name="fgs_notification_channel_desc" tools:ignore="UnusedResources">Не даёт Android остановить игру, пока она свёрнута.</string>
+    <string name="fgs_notification_content_container_background" tools:ignore="UnusedResources">Игра приостановлена</string>
+    <string name="fgs_notification_content_container_foreground" tools:ignore="UnusedResources">Игра запущена</string>
+    <string name="fgs_notification_content_else" tools:ignore="UnusedResources">Игра работает в фоне</string>
+</resources>

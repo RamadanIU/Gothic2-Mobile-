@@ -1,10 +1,13 @@
 package gothic2.mobile.app.ui
 
+import android.app.ActivityManager
+import android.content.Context
 import android.content.Intent
 import android.hardware.input.InputManager
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -16,37 +19,41 @@ import android.view.HapticFeedbackConstants
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.view.SurfaceHolder
-import android.view.SurfaceView
 import android.view.View
-import android.view.WindowManager
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.PopupMenu
-import android.widget.TextView
-import android.widget.Toast
-import androidx.activity.addCallback
-import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.isNotEmpty
+import com.winlator.XServerDisplayActivity
+import com.winlator.core.GPUHelper
+import com.winlator.core.ProcessHelper
+import com.winlator.xserver.Window
+import com.winlator.xserver.WindowManager
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
 import gothic2.mobile.app.bridge.BridgeServer
 import gothic2.mobile.app.input.GamepadMapper
+import gothic2.mobile.app.runtime.CpuInfo
 import gothic2.mobile.app.runtime.GameLauncher
-import gothic2.mobile.app.runtime.GpuInfo
-import gothic2.mobile.app.runtime.RuntimePreparer
-import gothic2.mobile.app.runtime.StubRuntimeBackend
+import gothic2.mobile.app.runtime.GraphicsMode
+import gothic2.mobile.app.runtime.WinlatorBackend
+import gothic2.mobile.app.runtime.XServerInputSink
+import gothic2.mobile.app.ui.gothic.FrameDrawable
+import gothic2.mobile.app.ui.gothic.Gothic
+import gothic2.mobile.app.ui.gothic.Gothic.ButtonKind
+import gothic2.mobile.app.ui.gothic.GothicPanels
+import gothic2.mobile.app.ui.gothic.GothicScreens
+import gothic2.mobile.app.ui.gothic.OverlayHost
+import gothic2.mobile.app.ui.gothic.PanelButton
 import gothic2.mobile.core.bridge.BridgeProtocol
 import gothic2.mobile.core.bridge.BridgeSession
 import gothic2.mobile.core.bridge.ModeController
-import gothic2.mobile.core.config.DeviceProfiles
-import gothic2.mobile.core.config.GraphicsPreset
+import gothic2.mobile.core.config.CpuCores
 import gothic2.mobile.core.config.UserSettings
-import gothic2.mobile.core.config.ViewportFit
+import gothic2.mobile.core.diagnostics.CpuLoad
+import gothic2.mobile.core.diagnostics.FrameStats
+import gothic2.mobile.core.diagnostics.GameExit
 import gothic2.mobile.core.diagnostics.SessionJournal
 import gothic2.mobile.core.diagnostics.TimedInputSink
 import gothic2.mobile.core.gamedata.GameVariant
@@ -60,39 +67,58 @@ import gothic2.mobile.core.input.LayoutEditor
 import gothic2.mobile.core.input.OverlayLayout
 import gothic2.mobile.core.input.TouchCommand
 import gothic2.mobile.core.input.TouchRouter
-import gothic2.mobile.core.runtime.BridgeEndpoint
-import gothic2.mobile.core.runtime.RuntimeState
+import gothic2.mobile.core.runtime.BinaryFix
 import gothic2.mobile.core.runtime.SessionController
 import gothic2.mobile.core.saves.SaveBackupPolicy
+import java.io.File
+import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 /**
- * Экран игры: полноэкранный вывод + сенсорный оверлей. Ни рабочего стола, ни технических
- * окон: при ошибке показывается собственное сообщение с понятным действием.
+ * Экран игры. Wine, X-сервер, звук и вывод изображения — от Winlator (XServerDisplayActivity),
+ * поверх — наше сенсорное управление Gothic. Ни рабочего стола, ни окон Winlator: игра
+ * запускается сразу из контейнера, подготовленного [GameLauncher]. Пока не появилось окно игры,
+ * виден экран загрузки в стиле игры (тот же, что в лаунчере); меню и подтверждения — панели
+ * в том же стиле поверх игры.
  */
-class GameActivity : AppCompatActivity() {
+class GameActivity : XServerDisplayActivity() {
     private val main = Handler(Looper.getMainLooper())
+    private var started = false
     private var exited = false
+    private var startedAt = 0L
+
+    /** Игрок сам выбрал «Выйти» — завершение игры не считается сбоем. */
+    @Volatile private var userQuit = false
+
+    /** Первая строка вывода Wine, похожая на сбой игры (GameExit.isCrashLine); пишется из потока Wine. */
+    @Volatile private var crashLine: String? = null
 
     private lateinit var settings: UserSettings
-    private lateinit var backend: StubRuntimeBackend
+    private lateinit var backend: WinlatorBackend
     private lateinit var timedSink: TimedInputSink
     private lateinit var arbiter: InputArbiter
     private lateinit var router: TouchRouter
     private lateinit var touchOverlay: TouchOverlayView
-    private lateinit var surface: SurfaceView
     private lateinit var modes: ModeController
     private lateinit var session: SessionController
     private lateinit var gamepad: GamepadMapper
-    private lateinit var status: TextView
     private lateinit var editorBar: LinearLayout
     private lateinit var editorModeButton: Button
+    private lateinit var panels: OverlayHost
+
+    /** Экран загрузки поверх вывода игры; null — уже убран. */
+    private var cover: View? = null
+
+    /** Окно игры показало первый кадр (из потока X-сервера). */
+    @Volatile private var gameVisible = false
+    private val coverTimeout = Runnable { hideCover("timeout") }
     private lateinit var journal: SessionJournal
     private var bridge: BridgeServer? = null
     private lateinit var variant: GameVariant
-    private var graphics: GraphicsPreset? = null
     private var audioFocus: AudioFocusRequest? = null
     private var thermalWarned = false
-    private val echo = ArrayDeque<String>()
 
     private val tickRunnable = Runnable { arbiter.tick(); scheduleTick() }
 
@@ -103,14 +129,81 @@ class GameActivity : AppCompatActivity() {
         }
     }
 
-    /** Раз в минуту: отметка «жив» и сводка задержки ввода в журнал диагностики. */
+    /** Плавность картинки: кадры окна игры приходят из потока X-сервера. */
+    private val frames = FrameStats()
+    private val frameListener = object : WindowManager.OnWindowModificationListener {
+        override fun onUpdateWindowContent(window: Window) {
+            frames.onFrame(window.id, SystemClock.uptimeMillis())
+            // Первый кадр окна программы (не рабочего стола Wine) — экран загрузки больше не нужен.
+            // Так же Winlator решает, когда убрать свой: окно отображается и у него есть класс.
+            if (!gameVisible && window.isRenderable && !window.isDesktopWindow && window.className.isNotEmpty()) {
+                gameVisible = true
+                val cls = window.className
+                main.post { hideCover("window $cls") }
+            }
+        }
+    }
+
+    /** Загрузка процессора по потокам игры и среды: снимки в своём потоке, пока экран игры на виду. */
+    private val cpuLoad = CpuLoad(CpuInfo.ticksPerSecond)
+    private var cpuSampler: ScheduledExecutorService? = null
+    private val cpuClusters by lazy { CpuCores.clusters(CpuInfo.maxFreqKHz()) }
+
+    /** Раз в минуту: отметка «жив» и сводка в журнал диагностики. */
     private val periodic = object : Runnable {
         override fun run() {
             app.background.execute { journal.heartbeat() }
-            timedSink.keys.summary()?.let { app.diagnostics.log("latency", "keys p50=${it.p50} p95=${it.p95} max=${it.max} n=${it.count}") }
-            timedSink.mouse.summary()?.let { app.diagnostics.log("latency", "mouse p50=${it.p50} p95=${it.p95} max=${it.max} n=${it.count}") }
+            logStats()
             main.postDelayed(this, PERIODIC_MS)
         }
+    }
+
+    /**
+     * Сводка с прошлой записи: задержка ввода, плавность картинки, загрузка процессора, память и
+     * запас до перегрева. Пишется раз в минуту, а также при уходе с экрана игры и выходе из неё —
+     * иначе короткая игра перед отправкой журнала в него не попадает.
+     */
+    private fun logStats() {
+        val diagnostics = app.diagnostics
+        timedSink.keys.summary()?.let { diagnostics.log("latency", "keys p50=${it.p50} p95=${it.p95} max=${it.max} n=${it.count}") }
+        timedSink.mouse.summary()?.let { diagnostics.log("latency", "mouse p50=${it.p50} p95=${it.p95} max=${it.max} n=${it.count}") }
+        timedSink.keys.reset()
+        timedSink.mouse.reset()
+        frames.summaryAndReset()?.let {
+            diagnostics.log(
+                "frames",
+                "fps=${"%.1f".format(Locale.ROOT, it.fps)} ms p50=${it.p50} p95=${it.p95} p99=${it.p99} max=${it.max} " +
+                    "hitches=${it.hitches} pauses=${it.pauses} n=${it.frames}",
+            )
+        }
+        val memory = ActivityManager.MemoryInfo().also { getSystemService(ActivityManager::class.java).getMemoryInfo(it) }
+        // Запас до перегрева: 1.0 — система начинает снижать частоты (Android 11+).
+        val headroom = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            getSystemService(PowerManager::class.java).getThermalHeadroom(0).takeUnless { it.isNaN() }
+        } else {
+            null
+        }
+        val tail = " mem=${memory.availMem / 1_048_576}MB" + (if (memory.lowMemory) " low" else "") +
+            (headroom?.let { " thermal=${"%.2f".format(Locale.ROOT, it)}" } ?: "")
+        diagnostics.log("cpu", (cpuLoad.summaryAndReset()?.format(cpuClusters) ?: "n/a") + ";" + tail)
+    }
+
+    private fun startCpuSampler() {
+        if (cpuSampler != null) return
+        cpuLoad.restart()
+        cpuSampler = Executors.newSingleThreadScheduledExecutor { Thread(it, "cpu-sampler").apply { isDaemon = true } }.also {
+            it.scheduleWithFixedDelay(
+                { runCatching { cpuLoad.onSample(SystemClock.uptimeMillis(), CpuInfo.sampleThreads(), CpuInfo.curFreqKHz()) } },
+                0,
+                CPU_SAMPLE_MS,
+                TimeUnit.MILLISECONDS,
+            )
+        }
+    }
+
+    private fun stopCpuSampler() {
+        cpuSampler?.shutdownNow()
+        cpuSampler = null
     }
 
     private val thermalListener = PowerManager.OnThermalStatusChangedListener { s ->
@@ -118,7 +211,7 @@ class GameActivity : AppCompatActivity() {
         // Разрешение на ходу не меняем — только предлагаем снизить нагрузку (раздел 19 плана).
         if (s >= PowerManager.THERMAL_STATUS_SEVERE && !thermalWarned) {
             thermalWarned = true
-            Toast.makeText(this, R.string.thermal_warning, Toast.LENGTH_LONG).show()
+            Gothic.toast(this, R.string.thermal_warning, long = true)
         }
     }
 
@@ -128,24 +221,85 @@ class GameActivity : AppCompatActivity() {
         override fun onInputDeviceChanged(deviceId: Int) = updateGamepadState()
     }
 
+    /**
+     * Android пересоздал экран после выгрузки процесса или экран открыт не из лаунчера:
+     * точное состояние игры потеряно, поэтому показываем экран восстановления, а не
+     * перезапускаем игру молча.
+     */
+    override fun onBeforeStart(savedInstanceState: Bundle?): Boolean {
+        val build = app.importedBuild()
+        val variant = build?.let { app.selectedVariant(it) }
+        // Вторая игра в одном процессе не запускается (см. GothicApplication.gameSessionUsed):
+        // лаунчер перезапустит процесс.
+        if (savedInstanceState != null || variant == null || !intent.hasExtra(EXTRA_CONTAINER_ID) || app.gameSessionUsed) {
+            finishToLauncher()
+            return false
+        }
+        this.variant = variant
+        started = true
+        app.gameSessionUsed = true
+        WinlatorBackend.sessionActive = true
+        return true
+    }
+
+    /** До запуска среды: журнал Wine, аргументы EXE и адрес моста с игровым адаптером. */
+    override fun onSetupLogging() {
+        val diagnostics = app.diagnostics
+        diagnostics.beginWineLog()
+        ProcessHelper.addDebugCallback { line ->
+            diagnostics.wine(line)
+            if (crashLine == null && GameExit.isCrashLine(line)) crashLine = line
+        }
+        val env = overrideEnvVars
+        // Ошибки Wine нужны для разбора проблем, отладочный шум — нет.
+        env.put("WINEDEBUG", "err+all,fixme-all")
+        // ESync (события Windows на eventfd) выключен: с ним Union в GOG-сборке не создаёт свой
+        // объект-событие («Can not create Event object»). Gothic лёгкая, синхронизация через
+        // wineserver на скорости почти не сказывается.
+        env.put("WINEESYNC", "0")
+        val mode = app.settings.graphicsMode
+        val fix = app.settings.flickerFix
+        if (mode.isD7VK) {
+            // Журнал D7VK пишет в вывод Wine (без файлов у игры); на уровне info — ~5000 строк о
+            // перебираемых D3DX7 устройствах, поэтому только предупреждения и ошибки.
+            val config = GraphicsMode.d7vkConfig(fix)
+            env.put("DXVK_CONFIG", config)
+            env.put("D7VK_LOG_LEVEL", "warn")
+            diagnostics.log("launch", "flicker_fix=${fix.id} DXVK_CONFIG=$config")
+        }
+        if (mode.usesTurnip) {
+            // Ставим сами: Winlator 11.2 теряет sysmem для Adreno 7xx (см. GraphicsMode.turnipDebug).
+            val tuDebug = GraphicsMode.turnipDebug(GPUHelper.getAdrenoModelId(this).toInt(), fix)
+            env.put("TU_DEBUG", tuDebug)
+            diagnostics.log("launch", "TU_DEBUG=$tuDebug")
+        }
+        val args = intent.getStringArrayExtra(EXTRA_ARGS).orEmpty()
+        if (args.isNotEmpty()) env.put("EXTRA_EXEC_ARGS", args.joinToString(" "))
+        startBridge()?.let { (socket, token) ->
+            env.put(BridgeProtocol.SOCKET_ENV, socket)
+            env.put(BridgeProtocol.TOKEN_ENV, token)
+        }
+    }
+
+    /** Файлы контейнера распакованы, Wine ещё не запущен (фоновый поток Winlator). */
+    override fun onWineSystemFilesReady() {
+        val ddraw = File(container.rootDir, ".wine/drive_c/windows/syswow64/ddraw.dll").toPath()
+        val result = runCatching { BinaryFix.D7VK_1_11_HEL_CAPS.apply(ddraw) }
+            .onFailure { app.diagnostics.log("launch", "d7vk fix failed: $it") }
+            .getOrNull()
+        if (result == BinaryFix.Result.FIXED) app.diagnostics.log("launch", "d7vk: fixed GetCaps (HEL)")
+    }
+
+    /** Winlator ставит свою тему (AppUtils.setActivityTheme) — вместо неё наша, её наследница. */
+    override fun setTheme(resid: Int) = super.setTheme(R.style.Theme_Gothic2_Game)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!started) return
         val app = app
-        // Android пересоздал экран после выгрузки процесса: точное состояние игры потеряно,
-        // поэтому показываем экран восстановления, а не делаем вид, что ничего не случилось.
-        if (savedInstanceState != null) return finishToLauncher()
-        val build = app.importedBuild() ?: return finishToLauncher()
-        val variant = app.selectedVariant(build) ?: return finishToLauncher()
-        this.variant = variant
         settings = app.settings.userSettings()
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        enterImmersive()
-
         journal = SessionJournal(app.paths.sessionMarker)
-        backend = StubRuntimeBackend(
-            app.diagnostics,
-            RuntimePreparer(assets, app.paths.components, app.diagnostics, allowUnpinned = app.settings.devMode),
-        )
+        backend = WinlatorBackend(XServerInputSink(xServer)) { exit() }
         timedSink = TimedInputSink(backend.inputSink, SystemClock::uptimeMillis)
         arbiter = InputArbiter(
             sink = timedSink,
@@ -156,73 +310,64 @@ class GameActivity : AppCompatActivity() {
         router.onButtonPressed = {
             if (settings.haptics) touchOverlay.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         }
-        modes = ModeController(arbiter) { _, adapter ->
-            router.adapterActive = adapter
+        // Режим панели подстраивается сам: по игровому адаптеру, а без него — по клавишам,
+        // которые отправляет приложение, и по намерению игрока (ModeController).
+        modes = ModeController(arbiter) { _, _ ->
             router.onModeChanged()
             touchOverlay.invalidate()
         }
+        arbiter.onKeyTapped = modes::onKeyTapped
+        router.onWorldIntent = modes::onWorldIntent
         session = SessionController(arbiter, backend, ::abandonAudioFocus, ::requestAudioFocus)
         gamepad = GamepadMapper(arbiter)
 
-        surface = SurfaceView(this)
-        surface.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) = Unit
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) =
-                backend.attachSurface(holder.surface, width, height)
-            override fun surfaceDestroyed(holder: SurfaceHolder) = backend.detachSurface()
-        })
-        touchOverlay = TouchOverlayView(this, router).apply { opacity = settings.overlayOpacity }
-        status = TextView(this).apply {
-            setTextColor(0xFFC9A45C.toInt())
-            textSize = 12f
-            gravity = Gravity.CENTER
-            text = getString(R.string.runtime_stub)
+        // Поверх изображения Winlator — наш оверлей: он забирает все касания, так что
+        // сенсорная панель-мышь Winlator игре не мешает. До первого кадра игры его закрывает
+        // экран загрузки (он тоже забирает касания).
+        touchOverlay = TouchOverlayView(this, router).apply {
+            opacity = settings.overlayOpacity
+            visibility = View.INVISIBLE
         }
+        // Gothic начинает с главного меню: панель — «Выбрать», «Назад» и стрелки.
+        modes.onGameStarted()
         editorBar = buildEditorBar()
-        val root = FrameLayout(this).apply {
-            setBackgroundColor(0xFF000000.toInt())
-            addView(surface, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER))
-            addView(status, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
-            addView(touchOverlay)
-            addView(editorBar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        val display = findViewById<FrameLayout>(com.winlator.R.id.FLXServerDisplay)
+        display.addView(touchOverlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        display.addView(editorBar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+            topMargin = Gothic.dp(this@GameActivity, 8f)
+        })
+        cover = buildCover().also {
+            display.addView(it, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
-        root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyViewport() }
-        setContentView(root)
+        panels = OverlayHost(display)
+        main.postDelayed(coverTimeout, COVER_TIMEOUT_MS)
 
-        backend.onInputEcho = { line ->
-            main.post {
-                echo.addLast(line)
-                while (echo.size > 5) echo.removeFirst()
-                val lat = timedSink.keys.summary()?.let { getString(R.string.latency_line, it.p50, it.p95) }.orEmpty()
-                status.text = getString(R.string.runtime_stub_echo, getString(R.string.runtime_stub), echo.joinToString("\n") + "\n" + lat)
-            }
-        }
-        backend.addListener(::onRuntimeState)
-
-        // Системная «Назад» открывает игровое меню, а не закрывает игру.
-        onBackPressedDispatcher.addCallback(this) {
-            if (touchOverlay.editor != null) {
-                finishEditor(save = false)
-                return@addCallback
-            }
-            arbiter.tap(GameKey.ESCAPE)
-            scheduleTick()
-        }
-
-        val endpoint = startBridge()
+        xServer.windowManager.addOnWindowModificationListener(frameListener)
         getSystemService(PowerManager::class.java).addThermalStatusListener(thermalListener)
         getSystemService(InputManager::class.java).registerInputDeviceListener(deviceListener, main)
         updateGamepadState()
-
-        app.background.execute {
-            journal.begin()
-            val profile = DeviceProfiles.select(GpuInfo.rendererName())
-            app.diagnostics.log("game", "profile ${profile.id} verified=${profile.verified}")
-            runCatching { GameLauncher(app, backend).prepareAndLaunch(build, variant, profile, endpoint) }
-                .onSuccess { launched -> main.post { graphics = launched.graphics; applyViewport() } }
-                .onFailure { e -> main.post { showFatal(e.message ?: e.toString()) } }
-        }
+        app.background.execute { journal.begin() }
+        startedAt = SystemClock.uptimeMillis()
+        app.diagnostics.log("game", "started variant=${variant.id}")
         main.postDelayed(periodic, PERIODIC_MS)
+    }
+
+    /** Экран загрузки — как в лаунчере, только искры реже: процессор нужен запуску игры. */
+    private fun buildCover(): View {
+        val loading = GothicScreens.loading(this, VariantText.title(this, variant), getString(R.string.launch_loading_world))
+        return GothicScreens.backdrop(this, emberFrameMs = 33).apply {
+            addView(loading.root, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            isClickable = true
+        }
+    }
+
+    private fun hideCover(reason: String) {
+        val c = cover ?: return
+        cover = null
+        main.removeCallbacks(coverTimeout)
+        app.diagnostics.log("game", "loading screen hidden ($reason) after ${(SystemClock.uptimeMillis() - startedAt) / 1000}s")
+        touchOverlay.visibility = View.VISIBLE
+        c.animate().alpha(0f).setDuration(450).withEndAction { (c.parent as? ViewGroup)?.removeView(c) }.start()
     }
 
     private fun currentLayout(): OverlayLayout = editorFor().layout()
@@ -235,7 +380,8 @@ class GameActivity : AppCompatActivity() {
 
     // ---- мост с игровым адаптером ------------------------------------------------------
 
-    private fun startBridge(): BridgeEndpoint? {
+    /** Сокет для адаптера внутри процесса игры; null — мост не запущен. */
+    private fun startBridge(): Pair<String, String>? {
         val sha = app.settings.importedExeSha256 ?: return null
         val server = BridgeServer(app.paths.bridgeSocket.toFile(), sha, BridgeSession.newToken(), app.diagnostics) { s ->
             s.addListener(modes)
@@ -260,118 +406,148 @@ class GameActivity : AppCompatActivity() {
         return runCatching {
             server.start()
             bridge = server
-            BridgeEndpoint(server.socketPath, server.token)
+            server.socketPath to server.token
         }.onFailure { app.diagnostics.log("bridge", "start failed: $it") }.getOrNull()
     }
 
-    // ---- изображение -------------------------------------------------------------------
+    // ---- завершение игры ---------------------------------------------------------------
 
-    /** Картинка игры не растягивается: 4:3 на широком экране выводится с полями. */
-    private fun applyViewport() {
-        val g = graphics ?: return
-        val root = surface.parent as? View ?: return
-        if (root.width == 0 || root.height == 0) return
-        val fit = ViewportFit.fit(root.width, root.height, g.width, g.height)
-        val lp = surface.layoutParams as FrameLayout.LayoutParams
-        if (lp.width != fit.game.width || lp.height != fit.game.height) {
-            lp.width = fit.game.width
-            lp.height = fit.game.height
-            lp.gravity = Gravity.CENTER
-            surface.layoutParams = lp
-            // Внутреннее разрешение игры; масштабирование до размера экрана делает композитор.
-            surface.holder.setFixedSize(g.width, g.height)
+    /** Winlator вызывает при завершении процесса игры (из фонового потока) и при выходе из меню. */
+    override fun exit() {
+        stopEnvironment()
+        runOnUiThread { onGameExited() }
+    }
+
+    /**
+     * Игра закончилась. Выход игрока (наше меню или меню Gothic) — штатный: приложение просто
+     * закрывается, и следующий запуск сразу открывает игру. Сбой — сразу экран «Игра закрылась»
+     * с журналом. В обоих случаях процесс после уборки завершается: вторую игру в том же
+     * процессе Winlator не выдерживает (GothicApplication.gameSessionUsed).
+     */
+    private fun onGameExited() {
+        if (exited) return
+        exited = true
+        val seconds = (SystemClock.uptimeMillis() - startedAt) / 1000
+        logStats()
+        stopCpuSampler()
+        // Окно могли не распознать (экран загрузки тогда убирается по тайм-ауту), а игра шла:
+        // долгая игра без признаков сбоя — не «не запустилась».
+        val windowShown = gameVisible || seconds * 1000 >= COVER_TIMEOUT_MS
+        val outcome = GameExit.classify(userQuit, windowShown, crashLine)
+        app.diagnostics.log("game", "exited after ${seconds}s: ${outcome.name.lowercase()}" + crashLine?.let { " ($it)" }.orEmpty())
+        app.settings.lastSessionFailed = outcome.failed
+        afterGame()
+        if (outcome.failed) {
+            // Лаунчер дождётся уборки, перезапустит процесс и покажет экран сбоя.
+            startActivity(Intent(this, LauncherActivity::class.java))
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
+        }
+        finish()
+    }
+
+    /**
+     * Игра больше не работает: завершить оставшиеся процессы Wine, вернуть файлы варианта,
+     * сохранить копии изменившихся слотов и завершить процесс (в фоне, по порядку). Отметка
+     * сеанса снимается до завершения процесса — иначе следующий запуск счёл бы игру прерванной.
+     */
+    private fun afterGame() {
+        val app = app
+        val build = app.importedBuild()
+        app.background.execute {
+            val killed = WinlatorBackend.killWineProcesses()
+            if (killed > 0) app.diagnostics.log("game", "stopped $killed Wine processes")
+            journal.end()
+            if (build != null) {
+                restoreVariantFiles(build)
+                runCatching { SaveBackupPolicy(app.saveManager(build, variant)).onGameExited() }
+                    .onFailure { app.diagnostics.log("saves", "backup failed: $it") }
+            }
+            app.endGameProcess()
         }
     }
 
-    // ---- состояние среды ---------------------------------------------------------------
-
-    private fun onRuntimeState(state: RuntimeState) {
-        when (state) {
-            is RuntimeState.Exited -> {
-                if (exited) return
-                exited = true
-                app.background.execute { journal.end() }
-                // Запись сохранений гарантированно окончена — резервируем изменившиеся слоты.
-                val build = app.importedBuild()
-                if (build != null) app.background.execute {
-                    restoreVariantFiles(build)
-                    runCatching { SaveBackupPolicy(app.saveManager(build, variant)).onGameExited() }
-                        .onFailure { app.diagnostics.log("saves", "backup failed: $it") }
-                }
-                finish()
-            }
-            is RuntimeState.Failed -> {
-                app.importedBuild()?.let { build -> app.background.execute { restoreVariantFiles(build) } }
-                showFatal("${state.reason}: ${state.details}")
-            }
-            else -> Unit
-        }
-    }
-
-    /** Игра больше не работает — вернуть файлы, которые вариант прятал на время запуска. */
     private fun restoreVariantFiles(build: SupportedBuild) {
-        runCatching { VariantLayout(app.paths.gameRoot).restore(build) }
+        runCatching { VariantLayout(app.gameRoot()).restore(build) }
             .onFailure { app.diagnostics.log("launch", "variant restore failed: $it") }
     }
 
+    // ---- быстрое меню ------------------------------------------------------------------
+
     private fun onUiCommand(cmd: TouchCommand) {
-        when (cmd) {
-            is TouchCommand.SwitchMode -> modes.manual(cmd.mode)
-            TouchCommand.QuickMenu -> showQuickMenu()
-            else -> Unit
-        }
+        if (cmd == TouchCommand.QuickMenu) showQuickMenu()
         scheduleTick()
     }
 
     private fun showQuickMenu() {
-        val anchor = View(this)
-        (touchOverlay.parent as FrameLayout).addView(anchor, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.END))
-        val menu = PopupMenu(this, anchor)
-        val items = linkedMapOf<String, () -> Unit>(
-            "Карта" to { arbiter.tap(GameKey.MAP) },
-            "Персонаж" to { arbiter.tap(GameKey.CHARACTER) },
-            "Журнал" to { arbiter.tap(GameKey.LOG) },
-            "Подкрасться" to { arbiter.tap(GameKey.SNEAK) },
-            "Вид от первого лица" to { arbiter.tap(GameKey.FIRST_PERSON) },
-            "Быстрое сохранение" to { arbiter.tap(GameKey.QUICKSAVE) },
-            "Быстрая загрузка…" to { confirm(R.string.quickload_confirm) { arbiter.tap(GameKey.QUICKLOAD) } },
-            "Настроить кнопки" to { startEditor() },
-            "Настройки" to { startActivity(Intent(this, SettingsActivity::class.java)) },
-            "Выйти из игры…" to { confirm(R.string.quit_confirm) { backend.stop() } },
-        )
-        items.keys.forEachIndexed { i, title -> menu.menu.add(0, i, i, title) }
-        menu.setOnMenuItemClickListener { item ->
-            items.values.elementAt(item.itemId).invoke()
-            scheduleTick()
-            true
-        }
-        menu.setOnDismissListener { (anchor.parent as? FrameLayout)?.removeView(anchor) }
         arbiter.releaseAll() // открытие меню не должно оставлять зажатых клавиш
-        menu.show()
+        fun tap(title: Int, key: GameKey) = PanelButton(getString(title)) { arbiter.tap(key); scheduleTick() }
+        GothicPanels.grid(
+            panels,
+            getString(R.string.menu_title),
+            listOfNotNull(
+                tap(R.string.menu_map, GameKey.MAP),
+                tap(R.string.menu_character, GameKey.CHARACTER),
+                tap(R.string.menu_log, GameKey.LOG),
+                tap(R.string.menu_sneak, GameKey.SNEAK),
+                tap(R.string.menu_first_person, GameKey.FIRST_PERSON),
+                tap(R.string.menu_quicksave, GameKey.QUICKSAVE),
+                PanelButton(getString(R.string.menu_quickload)) {
+                    confirm(R.string.quickload_title, R.string.quickload_confirm, R.string.quickload_action, ButtonKind.PRIMARY) {
+                        arbiter.tap(GameKey.QUICKLOAD)
+                    }
+                },
+                PanelButton(getString(R.string.menu_layout)) { startEditor() },
+                PanelButton(getString(R.string.settings_title)) { startActivity(Intent(this, SettingsActivity::class.java)) },
+                panelSwitch(),
+            ),
+            columns = 3,
+            footer = listOf(
+                PanelButton(getString(R.string.menu_quit), ButtonKind.DANGER) {
+                    confirm(R.string.quit_title, R.string.quit_confirm, R.string.quit_action, ButtonKind.DANGER) {
+                        userQuit = true
+                        backend.stop()
+                    }
+                },
+                PanelButton(getString(R.string.menu_resume), ButtonKind.PRIMARY),
+            ),
+        )
+    }
+
+    /**
+     * Запасной путь, пока нет игрового адаптера: диалог и торговлю начинает сама игра, и
+     * панель о них не знает. Кнопки меню (стрелки, «Выбрать», «Назад») включаются здесь,
+     * обратно — этим же пунктом или просто движением камеры.
+     */
+    private fun panelSwitch(): PanelButton? = when {
+        modes.adapterActive -> null
+        arbiter.mode.isInWorld -> PanelButton(getString(R.string.menu_nav_controls)) { modes.manual(ControlMode.DIALOG) }
+        else -> PanelButton(getString(R.string.menu_world_controls)) { modes.showWorldPanel() }
     }
 
     // ---- редактор раскладки -------------------------------------------------------------
 
     private fun buildEditorBar(): LinearLayout {
-        editorModeButton = Button(this).apply {
-            setOnClickListener {
-                val editable = MODE_TITLES.keys.toList()
-                touchOverlay.editorMode = editable[(editable.indexOf(touchOverlay.editorMode) + 1) % editable.size]
-                showEditorMode()
-            }
+        editorModeButton = Gothic.button(this, "", textSizeSp = 16f, compact = true) {
+            val editable = MODE_TITLES.keys.toList()
+            touchOverlay.editorMode = editable[(editable.indexOf(touchOverlay.editorMode) + 1) % editable.size]
+            showEditorMode()
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(0xCC000000.toInt())
+            background = FrameDrawable(resources.displayMetrics.density, compact = true)
             visibility = View.GONE
-            addView(editorModeButton)
-            addView(Button(this@GameActivity).apply {
-                text = getString(R.string.editor_reset)
-                setOnClickListener { touchOverlay.editor?.reset(); touchOverlay.invalidate() }
+            val gap = Gothic.dp(this@GameActivity, 8f)
+            fun add(v: View) = addView(v, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                if (isNotEmpty()) leftMargin = gap
             })
-            addView(Button(this@GameActivity).apply {
-                text = getString(R.string.editor_done)
-                setOnClickListener { finishEditor(save = true) }
+            add(editorModeButton)
+            add(Gothic.button(this@GameActivity, getString(R.string.editor_reset), textSizeSp = 16f, compact = true) {
+                touchOverlay.editor?.reset()
+                touchOverlay.invalidate()
+            })
+            add(Gothic.button(this@GameActivity, getString(R.string.editor_done), ButtonKind.PRIMARY, textSizeSp = 16f, compact = true) {
+                finishEditor(save = true)
             })
         }
     }
@@ -400,12 +576,17 @@ class GameActivity : AppCompatActivity() {
 
     // ---- ввод --------------------------------------------------------------------------
 
-    private fun confirm(message: Int, action: () -> Unit) {
-        AlertDialog.Builder(this)
-            .setMessage(message)
-            .setPositiveButton(R.string.yes) { _, _ -> action(); scheduleTick() }
-            .setNegativeButton(R.string.no, null)
-            .show()
+    /** Подтверждение панелью поверх игры; слева — отказ, справа — действие. */
+    private fun confirm(title: Int, message: Int, action: Int, kind: ButtonKind, onConfirm: () -> Unit) {
+        GothicPanels.message(
+            panels,
+            getString(title),
+            getString(message),
+            listOf(
+                PanelButton(getString(if (kind == ButtonKind.DANGER) R.string.stay_action else R.string.no)),
+                PanelButton(getString(action), kind) { onConfirm(); scheduleTick() },
+            ),
+        )
     }
 
     private fun scheduleTick() {
@@ -414,8 +595,22 @@ class GameActivity : AppCompatActivity() {
         main.postAtTime(tickRunnable, deadline)
     }
 
+    /** Системная «Назад» — Esc в игре (меню Gothic), а не закрытие игры и не меню Winlator. */
+    @Deprecated("Совместимость с XServerDisplayActivity, переопределяющей onBackPressed")
+    @Suppress("MissingSuperCall")
+    override fun onBackPressed() {
+        if (!started) return
+        if (GothicPanels.handleBack(panels)) return
+        if (touchOverlay.editor != null) {
+            finishEditor(save = false)
+            return
+        }
+        arbiter.tap(GameKey.ESCAPE)
+        scheduleTick()
+    }
+
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (!::timedSink.isInitialized) return super.dispatchTouchEvent(ev)
+        if (!started) return true
         timedSink.beginEvent(ev.eventTime)
         try {
             return super.dispatchTouchEvent(ev)
@@ -426,29 +621,29 @@ class GameActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (::gamepad.isInitialized) {
-            timedSink.beginEvent(event.eventTime)
-            val handled = try { gamepad.onKey(event) } finally { timedSink.endEvent() }
-            if (handled) {
-                touchOverlay.minimal = true
-                scheduleTick()
-                return true
-            }
+        if (!started) return true
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event)
+        timedSink.beginEvent(event.eventTime)
+        val handled = try { gamepad.onKey(event) } finally { timedSink.endEvent() }
+        if (handled) {
+            touchOverlay.minimal = true
+            scheduleTick()
+            return true
         }
+        // Физическая клавиатура — напрямую в X-сервер Winlator.
         return super.dispatchKeyEvent(event)
     }
 
     override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
-        if (::gamepad.isInitialized) {
-            timedSink.beginEvent(ev.eventTime)
-            val handled = try { gamepad.onMotion(ev) } finally { timedSink.endEvent() }
-            if (handled) {
-                touchOverlay.minimal = true
-                Choreographer.getInstance().removeFrameCallback(frameCallback)
-                if (gamepad.hasStickInput) Choreographer.getInstance().postFrameCallback(frameCallback)
-                scheduleTick()
-                return true
-            }
+        if (!started) return true
+        timedSink.beginEvent(ev.eventTime)
+        val handled = try { gamepad.onMotion(ev) } finally { timedSink.endEvent() }
+        if (handled) {
+            touchOverlay.minimal = true
+            Choreographer.getInstance().removeFrameCallback(frameCallback)
+            if (gamepad.hasStickInput) Choreographer.getInstance().postFrameCallback(frameCallback)
+            scheduleTick()
+            return true
         }
         return super.dispatchGenericMotionEvent(ev)
     }
@@ -466,12 +661,9 @@ class GameActivity : AppCompatActivity() {
     // ---- жизненный цикл ----------------------------------------------------------------
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
+        if (!started) return
         super.onWindowFocusChanged(hasFocus)
-        if (!::session.isInitialized) return
-        if (hasFocus) {
-            enterImmersive()
-            session.onFocusGained()
-        } else {
+        if (hasFocus) session.onFocusGained() else {
             session.onFocusLost()
             router.onCancel()
         }
@@ -479,14 +671,17 @@ class GameActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        if (!::session.isInitialized) return
+        if (!started) return
         session.onFocusLost()
         router.onCancel()
+        // Процессы Wine на паузе остановлены — сводка за время игры, снимки до возврата не нужны.
+        if (!exited) logStats()
+        stopCpuSampler()
     }
 
     override fun onResume() {
         super.onResume()
-        if (!::session.isInitialized) return
+        if (!started) return
         // Настройки могли измениться, пока экран был скрыт: управление применяется сразу.
         settings = app.settings.userSettings()
         arbiter.camera.sensitivity = settings.cameraSensitivity
@@ -494,17 +689,25 @@ class GameActivity : AppCompatActivity() {
         touchOverlay.opacity = settings.overlayOpacity
         if (touchOverlay.editor == null) router.layout = currentLayout()
         if (hasWindowFocus()) session.onFocusGained()
+        if (!exited) startCpuSampler()
     }
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
-        if (::session.isInitialized) {
+        stopCpuSampler()
+        if (started) {
             getSystemService(PowerManager::class.java).removeThermalStatusListener(thermalListener)
             getSystemService(InputManager::class.java).unregisterInputDeviceListener(deviceListener)
         }
         bridge?.stop()
-        if (::backend.isInitialized && isFinishing && !exited) backend.stop()
-        super.onDestroy()
+        super.onDestroy() // Winlator останавливает Wine
+        if (started) WinlatorBackend.sessionActive = false
+        if (started && isFinishing && !exited) {
+            exited = true
+            app.diagnostics.log("game", "closed by system" + crashLine?.let { " after crash ($it)" }.orEmpty())
+            app.settings.lastSessionFailed = crashLine != null
+            afterGame()
+        }
     }
 
     private fun requestAudioFocus() {
@@ -524,37 +727,31 @@ class GameActivity : AppCompatActivity() {
         audioFocus = null
     }
 
-    private fun enterImmersive() {
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        WindowInsetsControllerCompat(window, window.decorView).apply {
-            hide(WindowInsetsCompat.Type.systemBars())
-            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
-    }
-
-    private fun showFatal(message: String) {
-        app.diagnostics.log("game", "fatal: $message")
-        AlertDialog.Builder(this)
-            .setTitle("Не удалось запустить игру")
-            .setMessage("$message\n\nЖурнал диагностики можно экспортировать в настройках.")
-            .setPositiveButton("Настройки") { _, _ -> startActivity(Intent(this, SettingsActivity::class.java)); finish() }
-            .setNegativeButton("Закрыть") { _, _ -> finish() }
-            .setCancelable(false)
-            .show()
-    }
-
     private fun finishToLauncher() {
         startActivity(Intent(this, LauncherActivity::class.java))
         finish()
     }
 
-    private companion object {
-        const val PERIODIC_MS = 60_000L
-        val MODE_TITLES = mapOf(
+    companion object {
+        /** Имена дополнительных данных XServerDisplayActivity. */
+        private const val EXTRA_CONTAINER_ID = "container_id"
+        private const val EXTRA_EXEC_PATH = "exec_path"
+        private const val EXTRA_ARGS = "gothic2_args"
+        private const val PERIODIC_MS = 60_000L
+        /** Снимок потоков: 2 с — достаточно, чтобы заметить, на каких ядрах работают потоки. */
+        private const val CPU_SAMPLE_MS = 2_000L
+        /** Экран загрузки убирается и без окна игры: вдруг его не распознали, а игра уже идёт. */
+        private const val COVER_TIMEOUT_MS = 90_000L
+        private val MODE_TITLES = mapOf(
             ControlMode.WORLD to "мир",
             ControlMode.COMBAT to "бой",
-            ControlMode.RANGED to "лук/магия",
-            ControlMode.MENU to "навигация",
+            ControlMode.MENU to "меню",
         )
+
+        fun intent(context: Context, prepared: GameLauncher.Prepared): Intent =
+            Intent(context, GameActivity::class.java)
+                .putExtra(EXTRA_CONTAINER_ID, prepared.containerId)
+                .putExtra(EXTRA_EXEC_PATH, prepared.exePath)
+                .putExtra(EXTRA_ARGS, prepared.args.toTypedArray())
     }
 }

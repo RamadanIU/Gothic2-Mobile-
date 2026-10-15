@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- Исходники Winlator (модуль :winlator) — чужой код, проверяется только наш. -->
+    <issue id="all">
+        <ignore path="**/third_party/**" />
+        <ignore path="**/winlator/build/**" />
+    </issue>
+    <!-- targetSdk 28 нужен, чтобы Wine и Box64 исполнялись из каталога данных (как в Winlator). -->
+    <issue id="ExpiredTargetSdkVersion" severity="ignore" />
+    <issue id="OldTargetApi" severity="ignore" />
+    <!--
+        Приложение одноязычное: строки в values/ — русские (tools:locale="ru"). Папки values-ru и
+        values-pt есть только ради подмены строк Winlator (winlator_overrides.xml), а не перевода.
+    -->
+    <issue id="MissingTranslation" severity="ignore" />
+</lint>
