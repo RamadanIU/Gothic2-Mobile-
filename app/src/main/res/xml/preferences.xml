@@ -16,6 +16,13 @@
             app:entries="@array/graphics_mode_entries"
             app:entryValues="@array/graphics_mode_values" />
         <ListPreference app:iconSpaceReserved="false"
+            app:key="flicker_fix"
+            app:title="Мерцание: вариант исправления"
+            app:entries="@array/flicker_fix_entries"
+            app:entryValues="@array/flicker_fix_values"
+            app:defaultValue="standard"
+            app:useSimpleSummaryProvider="true" />
+        <ListPreference app:iconSpaceReserved="false"
             app:key="quality"
             app:title="Качество изображения"
             app:entries="@array/quality_entries"

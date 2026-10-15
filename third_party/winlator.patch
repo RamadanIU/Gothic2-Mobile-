@@ -835,7 +835,7 @@ index add450f..469b8e9 100644
                      }
                  }
 diff --git a/app/src/main/java/com/winlator/renderer/GLRenderer.java b/app/src/main/java/com/winlator/renderer/GLRenderer.java
-index 48a8344..3ac0ef6 100644
+index 48a8344..4c383e8 100644
 --- a/app/src/main/java/com/winlator/renderer/GLRenderer.java
 +++ b/app/src/main/java/com/winlator/renderer/GLRenderer.java
 @@ -55,6 +55,8 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
@@ -875,7 +875,16 @@ index 48a8344..3ac0ef6 100644
      }
  
      private void renderCursorDrawable(Drawable drawable, int x, int y) {
-@@ -266,6 +280,7 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+@@ -232,6 +246,8 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
+ 
+             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, quadVertices.count());
+             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
++            // Gothic II Mobile: копия следующего кадра игры в эту текстуру дождётся конца вывода.
++            texture.markScreenRead();
+         }
+     }
+ 
+@@ -266,6 +282,7 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
                  if (cursor.isVisible()) renderCursorDrawable(cursor.cursorImage, x - cursor.hotSpotX, y - cursor.hotSpotY);
              }
              else renderCursorDrawable(rootCursorDrawable, x, y);
@@ -884,10 +893,49 @@ index 48a8344..3ac0ef6 100644
  
          quadVertices.disable();
 diff --git a/app/src/main/java/com/winlator/renderer/Texture.java b/app/src/main/java/com/winlator/renderer/Texture.java
-index fb0252f..f74d752 100644
+index fb0252f..f156aba 100644
 --- a/app/src/main/java/com/winlator/renderer/Texture.java
 +++ b/app/src/main/java/com/winlator/renderer/Texture.java
-@@ -146,9 +146,21 @@ public class Texture {
+@@ -18,6 +18,12 @@ public class Texture {
+     protected boolean needsUpdate = true;
+     private boolean flipY = false;
+     protected Drawable owner;
++    /**
++     * Gothic II Mobile: отметка GPU после последнего вывода текстуры на экран (0 — нет). Пишется и
++     * читается под owner.renderLock: потоком экрана в {@link #markScreenRead()}, потоком X-сервера
++     * в {@link #copyFromSource(Texture)}.
++     */
++    private long screenReadFence = 0;
+ 
+     public Texture(Drawable owner) {
+         this.owner = owner;
+@@ -138,17 +144,47 @@ public class Texture {
+         return textureId;
+     }
+ 
++    /**
++     * Gothic II Mobile: поток экрана только что записал команды вывода этой текстуры. Экран и копия
++     * кадра игры — разные контексты EGL: блокировка renderLock упорядочивает запись команд, но не их
++     * выполнение на GPU, и копия следующего кадра могла переписать текстуру, пока экран из неё ещё
++     * рисует. Копия дождётся этой отметки. Вызывать под owner.renderLock.
++     */
++    public void markScreenRead() {
++        if (screenReadFence != 0) GLES32.glDeleteSync(screenReadFence);
++        screenReadFence = GLES32.glFenceSync(GLES32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
++    }
++
+     public void copyFromSource(Texture source) {
+         if (!source.isAllocated()) source.allocateTexture(source.owner.width, source.owner.height, null);
+         if (!this.isAllocated()) this.allocateTexture(source.owner.width, source.owner.height, null);
++        // Gothic II Mobile: не писать в текстуру, пока экран не закончил из неё рисовать. Отметку
++        // поток экрана отправляет на GPU при eglSwapBuffers сразу после кадра; ожидание ограничено.
++        if (screenReadFence != 0) {
++            GLES32.glClientWaitSync(screenReadFence, 0, COPY_WAIT_NANOS);
++            GLES32.glDeleteSync(screenReadFence);
++            screenReadFence = 0;
++        }
+         GLES32.glCopyImageSubData(
+             source.textureId, GLES20.GL_TEXTURE_2D, 0, 0, 0, 0,
              this.textureId, GLES20.GL_TEXTURE_2D, 0, 0, 0, 0,
              source.owner.width, source.owner.height, 1
          );
@@ -910,6 +958,17 @@ index fb0252f..f74d752 100644
      public void copyFromReadBuffer(short width, short height) {
          if (!isAllocated()) allocateTexture(width, height, null);
          GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId);
+@@ -158,6 +194,10 @@ public class Texture {
+     }
+ 
+     public void destroy() {
++        if (screenReadFence != 0) {
++            GLES32.glDeleteSync(screenReadFence);
++            screenReadFence = 0;
++        }
+         if (textureId > 0) {
+             int[] textureIds = new int[]{textureId};
+             GLES20.glDeleteTextures(textureIds.length, textureIds, 0);
 diff --git a/app/src/main/java/com/winlator/services/ForegroundService.java b/app/src/main/java/com/winlator/services/ForegroundService.java
 index 0940581..4614a13 100644
 --- a/app/src/main/java/com/winlator/services/ForegroundService.java

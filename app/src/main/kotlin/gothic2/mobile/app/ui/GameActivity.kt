@@ -258,20 +258,18 @@ class GameActivity : XServerDisplayActivity() {
         // wineserver на скорости почти не сказывается.
         env.put("WINEESYNC", "0")
         val mode = app.settings.graphicsMode
+        val fix = app.settings.flickerFix
         if (mode.isD7VK) {
-            // Профиль D7VK для Gothic II привязан к Gothic2.exe; классика — Gothic2c.exe, поэтому
-            // его настройку forceLegacyPresent (2D-вывод на основную поверхность — в теневую) задаём
-            // сами. Strict: с Auto D7VK после Lock/Unlock, GetDC/ReleaseDC и Blt по основной
-            // поверхности вне сцены сразу показывал её — а там не картинка игры, а остатки 2D:
-            // белые кадры при повороте камеры. Так же сделано в профиле D7VK для Arx Fatalis.
             // Журнал D7VK пишет в вывод Wine (без файлов у игры); на уровне info — ~5000 строк о
             // перебираемых D3DX7 устройствах, поэтому только предупреждения и ошибки.
-            env.put("DXVK_CONFIG", "ddraw.forceLegacyPresent = True; ddraw.legacyPresentGuard = Strict")
+            val config = GraphicsMode.d7vkConfig(fix)
+            env.put("DXVK_CONFIG", config)
             env.put("D7VK_LOG_LEVEL", "warn")
+            diagnostics.log("launch", "flicker_fix=${fix.id} DXVK_CONFIG=$config")
         }
         if (mode.usesTurnip) {
             // Ставим сами: Winlator 11.2 теряет sysmem для Adreno 7xx (см. GraphicsMode.turnipDebug).
-            val tuDebug = GraphicsMode.turnipDebug(GPUHelper.getAdrenoModelId(this).toInt())
+            val tuDebug = GraphicsMode.turnipDebug(GPUHelper.getAdrenoModelId(this).toInt(), fix)
             env.put("TU_DEBUG", tuDebug)
             diagnostics.log("launch", "TU_DEBUG=$tuDebug")
         }

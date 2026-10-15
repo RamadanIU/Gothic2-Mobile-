@@ -37,6 +37,25 @@ class GraphicsModeTest {
     }
 
     @Test
+    fun `flicker fix variants add to the standard launch`() {
+        // «Обычный» — ровно то, что было до вариантов.
+        assertEquals("sysmem,deck_emu", GraphicsMode.turnipDebug(740, FlickerFix.STANDARD))
+        assertEquals(
+            "ddraw.forceLegacyPresent = True; ddraw.legacyPresentGuard = Strict",
+            GraphicsMode.d7vkConfig(FlickerFix.STANDARD),
+        )
+        assertEquals("sysmem,deck_emu,noubwc,nolrz", GraphicsMode.turnipDebug(740, FlickerFix.NO_COMPRESSION))
+        assertEquals(
+            "ddraw.forceLegacyPresent = True; ddraw.legacyPresentGuard = Strict; ddraw.supportD16 = False",
+            GraphicsMode.d7vkConfig(FlickerFix.DEPTH24),
+        )
+        assertEquals("sysmem,deck_emu,noubwc,nolrz,flushall", GraphicsMode.turnipDebug(740, FlickerFix.STRICT))
+        assertEquals(FlickerFix.STANDARD, FlickerFix.of(null))
+        assertEquals(FlickerFix.STANDARD, FlickerFix.of("removed"))
+        assertEquals(FlickerFix.DEPTH24, FlickerFix.of("depth24"))
+    }
+
+    @Test
     fun `settings list matches the modes`() {
         val doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(File("src/main/res/values/arrays.xml"))
         val arrays = doc.getElementsByTagName("string-array")
@@ -52,12 +71,15 @@ class GraphicsModeTest {
         }
         assertEquals(GraphicsMode.entries.map { it.id }, items("graphics_mode_values"))
         assertEquals(GraphicsMode.entries.map { it.title }, items("graphics_mode_entries"))
+        assertEquals(FlickerFix.entries.map { it.id }, items("flicker_fix_values"))
+        assertEquals(FlickerFix.entries.map { it.title }, items("flicker_fix_entries"))
     }
 
     @Test
     fun `titles name no runtime libraries`() {
         // Игрок видит «быстрый/совместимый», а не устройство среды исполнения.
         val technical = Regex("wine|d7vk|dxvk|turnip|zink|vortek|gladio|winlator|box64", RegexOption.IGNORE_CASE)
-        for (mode in GraphicsMode.entries) assertTrue(!technical.containsMatchIn(mode.title), mode.title)
+        val titles = GraphicsMode.entries.map { it.title } + FlickerFix.entries.map { it.title }
+        for (title in titles) assertTrue(!technical.containsMatchIn(title), title)
     }
 }

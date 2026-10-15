@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.core.content.edit
 import androidx.preference.PreferenceManager
 import gothic2.mobile.app.BuildConfig
+import gothic2.mobile.app.runtime.FlickerFix
 import gothic2.mobile.app.runtime.GraphicsMode
 import gothic2.mobile.core.config.UserSettings
 
@@ -58,6 +59,10 @@ class SettingsStore(context: Context) {
         get() = GraphicsMode.of(prefs.getString(KEY_GRAPHICS, null), gpuName)
         set(v) = prefs.edit { putString(KEY_GRAPHICS, v.id) }
 
+    /** Вариант против мерцания в режимах D7VK (пункт «Мерцание» в настройках). */
+    val flickerFix: FlickerFix
+        get() = FlickerFix.of(prefs.getString(KEY_FLICKER, null))
+
     /** Имя GPU (GL_RENDERER), запомненное при подготовке запуска. */
     var gpuName: String?
         get() = prefs.getString(KEY_GPU, null)
@@ -88,6 +93,7 @@ class SettingsStore(context: Context) {
         const val KEY_FAILED = "last_session_failed"
         const val KEY_GRAPHICS = "graphics_mode"
         const val KEY_GPU = "gpu_name"
+        const val KEY_FLICKER = "flicker_fix"
         const val KEY_GAME_DIR = "game_dir"
     }
 }
