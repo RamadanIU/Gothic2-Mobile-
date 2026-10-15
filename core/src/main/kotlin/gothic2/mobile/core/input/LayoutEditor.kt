@@ -35,7 +35,7 @@ class LayoutEditor(
 
     fun begin(x: Float, y: Float, viewport: TouchRouter.Viewport, mode: ControlMode): Boolean {
         val l = layout()
-        val hit = l.forMode(mode, adapterActive = false).minByOrNull { c ->
+        val hit = l.forMode(mode).minByOrNull { c ->
             hypot(x - viewport.toPxX(c.cx), y - viewport.toPxY(c.cy))
         }?.takeIf { c ->
             hypot(x - viewport.toPxX(c.cx), y - viewport.toPxY(c.cy)) <= c.radiusDp * l.buttonScale * viewport.density * 1.3f
