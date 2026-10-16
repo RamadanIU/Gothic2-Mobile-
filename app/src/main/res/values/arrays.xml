@@ -27,6 +27,18 @@
         <item>d7vk</item>
         <item>wined3d</item>
     </string-array>
+    <string-array name="flicker_fix_entries">
+        <item>Обычный</item>
+        <item>1 — без сжатия кадра</item>
+        <item>2 — точная глубина</item>
+        <item>3 — всё сразу, строгий режим</item>
+    </string-array>
+    <string-array name="flicker_fix_values">
+        <item>standard</item>
+        <item>no_compression</item>
+        <item>depth24</item>
+        <item>strict</item>
+    </string-array>
     <string-array name="fps_entries">
         <item>Как в профиле телефона</item>
         <item>30</item>

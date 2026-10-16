@@ -11,6 +11,8 @@ import com.winlator.xenvironment.RootFS
 import gothic2.mobile.app.storage.AppPaths
 import gothic2.mobile.app.storage.CrashRecorder
 import gothic2.mobile.app.storage.Diagnostics
+import gothic2.mobile.app.storage.LogLocation
+import gothic2.mobile.app.storage.LogcatCapture
 import gothic2.mobile.app.storage.SettingsStore
 import gothic2.mobile.app.ui.LauncherActivity
 import gothic2.mobile.core.gamedata.BuildVerifier
@@ -84,8 +86,14 @@ class GothicApplication : Application() {
         super.onCreate()
         paths = AppPaths(this)
         settings = SettingsStore(this)
-        diagnostics = Diagnostics(paths.logs)
-        diagnostics.log("app", "start ${BuildConfig.VERSION_NAME}")
+        // Журнал — первым делом, до всего, что может упасть: пишется всегда, в видимую игроку папку.
+        val logDir = LogLocation.choose(this, paths.logs)
+        for (other in LogLocation.all(this, paths.logs)) Diagnostics.migrate(other, logDir)
+        LogcatCapture.keepPrevious(logDir)
+        diagnostics = Diagnostics(logDir, fallback = paths.logs)
+        val logcat = LogcatCapture.start(logDir, fromNow = false)
+        diagnostics.log("app", "start ${BuildConfig.VERSION_NAME} logs=$logDir")
+        logcat.onFailure { diagnostics.log("app", "logcat capture failed: $it") }
         CrashRecorder.install(this, diagnostics)
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
@@ -113,6 +121,19 @@ class GothicApplication : Application() {
     }
 
     /**
+     * Перенести журналы в лучшую доступную папку — после того как игрок дал разрешение «Файлы».
+     * Вызывать в [background]: перенос с внутренней памяти — копирование нескольких мегабайт.
+     */
+    fun updateLogLocation() {
+        val best = LogLocation.choose(this, paths.logs)
+        if (best == diagnostics.dir) return
+        LogcatCapture.stop()
+        diagnostics.relocate(best)
+        LogcatCapture.start(diagnostics.dir, fromNow = true)
+        diagnostics.log("app", "logs moved to ${diagnostics.dir}")
+    }
+
+    /**
      * Конец игры: уборка после неё уже сделана (вызывать последним шагом в [background]).
      * Если игрок вышел на рабочий стол — процесс завершается, следующий запуск начнётся с чистого
      * листа. Если за это время открыли лаунчер, он сам перезапустит процесс.
@@ -122,6 +143,8 @@ class GothicApplication : Application() {
         main.post {
             if (activities.none { !it.isFinishing }) {
                 diagnostics.logNow("app", "process ends after game")
+                diagnostics.flush()
+                LogcatCapture.stop()
                 Runtime.getRuntime().exit(0)
             }
         }
@@ -136,6 +159,7 @@ class GothicApplication : Application() {
             diagnostics.logNow("app", "restart process after game")
             diagnostics.flush()
             main.post {
+                LogcatCapture.stop()
                 startActivity(Intent.makeRestartActivityTask(ComponentName(this, LauncherActivity::class.java)))
                 Runtime.getRuntime().exit(0)
             }

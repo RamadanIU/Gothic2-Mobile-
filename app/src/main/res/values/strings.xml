@@ -99,6 +99,8 @@
     <string name="layout_reset_done">Расположение кнопок сброшено.</string>
     <string name="diagnostics_saved">Журнал диагностики сохранён.</string>
     <string name="diagnostics_failed">Не удалось подготовить журнал: %1$s</string>
+    <string name="logs_location">Всё, что происходит, и причины вылетов сразу записываются в папку %1$s</string>
+    <string name="logs_location_no_permission">Сейчас журнал пишется в %1$s. Нажмите и разрешите доступ к файлам — журнал будет в «Загрузках», где его легко найти</string>
     <string name="diagnostics_send">Отправить журнал</string>
 
     <!-- Лицензии -->

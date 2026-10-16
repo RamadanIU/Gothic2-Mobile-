@@ -61,5 +61,19 @@ enum class GraphicsMode(val id: String, val title: String, val graphicsDriver: S
             adrenoModel >= 700 -> "sysmem,deck_emu"
             else -> "deck_emu"
         }
+
+        /** `TU_DEBUG` с добавками выбранного варианта против мерцания. */
+        fun turnipDebug(adrenoModel: Int, fix: FlickerFix): String =
+            (listOf(turnipDebug(adrenoModel)) + fix.turnipDebug).joinToString(",")
+
+        /**
+         * Настройка D7VK (`DXVK_CONFIG`). Профиль D7VK для Gothic II привязан к Gothic2.exe;
+         * классика — Gothic2c.exe, поэтому его forceLegacyPresent (2D-вывод на основную поверхность —
+         * в теневую) задаём сами. Strict: с Auto D7VK после Lock/Unlock, GetDC/ReleaseDC и Blt по
+         * основной поверхности вне сцены сразу показывал её — а там не картинка игры, а остатки 2D:
+         * белые кадры при повороте камеры. Так же сделано в профиле D7VK для Arx Fatalis.
+         */
+        fun d7vkConfig(fix: FlickerFix): String =
+            (listOf("ddraw.forceLegacyPresent = True", "ddraw.legacyPresentGuard = Strict") + fix.d7vkConfig).joinToString("; ")
     }
 }

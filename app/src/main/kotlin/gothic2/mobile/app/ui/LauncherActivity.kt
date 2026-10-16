@@ -1,8 +1,6 @@
 package gothic2.mobile.app.ui
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
@@ -10,13 +8,13 @@ import android.widget.Button
 import android.widget.FrameLayout
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
 import gothic2.mobile.app.BuildConfig
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
 import gothic2.mobile.app.runtime.GameLauncher
 import gothic2.mobile.app.storage.DiagnosticsShare
 import gothic2.mobile.app.storage.DocumentExport
+import gothic2.mobile.app.storage.LogLocation
 import gothic2.mobile.app.storage.SafGameTree
 import gothic2.mobile.app.storage.StoragePaths
 import gothic2.mobile.app.ui.gothic.Gothic
@@ -64,8 +62,21 @@ class LauncherActivity : AppCompatActivity() {
     private val storagePermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         val path = linkPath
         val result = pending?.second
+        if (hasStoragePermission()) app.background.execute { app.updateLogLocation() }
         if (path == null || result == null) return@registerForActivityResult
         if (hasStoragePermission()) link(path, result) else setMessage(getString(R.string.link_permission_denied))
+    }
+
+    /** Ждём ответа на вопрос о разрешении для журналов, чтобы потом продолжить запуск. */
+    private var awaitingLogPermission = false
+
+    /** Журналы пишутся в «Загрузки» — там игрок найдёт их сам; без разрешения — в папку приложения. */
+    private val logPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        if (hasStoragePermission()) app.background.execute { app.updateLogLocation() }
+        if (awaitingLogPermission) {
+            awaitingLogPermission = false
+            proceed()
+        }
     }
 
     private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -94,6 +105,18 @@ class LauncherActivity : AppCompatActivity() {
             app.restartProcess()
             return
         }
+        if (!hasStoragePermission() && !app.settings.logPermissionAsked) {
+            // Один раз: разрешение «Файлы», чтобы журнал всегда писался в видимую папку.
+            app.settings.logPermissionAsked = true
+            awaitingLogPermission = true
+            logPermission.launch(STORAGE_PERMISSIONS)
+            return
+        }
+        proceed()
+    }
+
+    /** Обычный путь после проверок процесса и разрешений: игра сразу или выбор папки. */
+    private fun proceed() {
         if (intent.getBooleanExtra(EXTRA_REIMPORT, false).not() && isGameReady()) {
             val interrupted = SessionJournal(app.paths.sessionMarker).takeInterrupted()
             if (interrupted != null) {
@@ -125,8 +148,7 @@ class LauncherActivity : AppCompatActivity() {
         return if (build.isPinned) build.exeSha256 == sha && Files.exists(root.resolve(exe)) else app.settings.devMode
     }
 
-    private fun hasStoragePermission(): Boolean =
-        STORAGE_PERMISSIONS.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
+    private fun hasStoragePermission(): Boolean = LogLocation.hasStoragePermission(this)
 
     /** Выбор папки игры: панель с пояснением справа, эмблема и название слева. */
     private fun buildUi() {
@@ -467,6 +489,6 @@ class LauncherActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_REIMPORT = "reimport"
 
-        private val STORAGE_PERMISSIONS = arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        private val STORAGE_PERMISSIONS = LogLocation.STORAGE_PERMISSIONS
     }
 }

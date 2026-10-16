@@ -14,6 +14,7 @@ import gothic2.mobile.app.R
 import gothic2.mobile.app.app
 import gothic2.mobile.app.storage.DiagnosticsShare
 import gothic2.mobile.app.storage.DocumentExport
+import gothic2.mobile.app.storage.LogLocation
 import gothic2.mobile.app.ui.gothic.Gothic
 import gothic2.mobile.app.ui.gothic.GothicPanels
 import gothic2.mobile.app.ui.gothic.GothicScreens
@@ -100,6 +101,15 @@ class SettingsActivity : AppCompatActivity() {
             })
         }
 
+        /** Разрешение «Файлы» из настроек — если при первом запуске игрок отказал. */
+        private val logPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            val app = requireContext().app
+            app.background.execute {
+                app.updateLogLocation()
+                activity?.runOnUiThread { if (isAdded) updateLogsLocation() }
+            }
+        }
+
         private val exportLog = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
             if (uri == null) return@registerForActivityResult
             val resolver = requireContext().contentResolver
@@ -130,12 +140,28 @@ class SettingsActivity : AppCompatActivity() {
                 app.settings.layoutOverrides = emptyMap()
                 Gothic.toast(requireContext(), R.string.layout_reset_done)
             }
+            updateLogsLocation()
+            click("logs_location") {
+                if (!LogLocation.hasStoragePermission(requireContext())) logPermission.launch(LogLocation.STORAGE_PERMISSIONS)
+            }
             click("send_diagnostics") { DiagnosticsShare.share(requireActivity()) }
             click("export_diagnostics") { exportLog.launch("gothic2-diagnostics.txt") }
             click("reimport_game") {
                 startActivity(Intent(requireContext(), LauncherActivity::class.java).putExtra(LauncherActivity.EXTRA_REIMPORT, true))
             }
             click("licenses") { startActivity(Intent(requireContext(), LicensesActivity::class.java)) }
+        }
+
+        /** Где лежит журнал; без разрешения «Файлы» — подсказка, что нажатием его можно дать. */
+        private fun updateLogsLocation() {
+            val context = requireContext()
+            val dir = context.app.diagnostics.dir
+            findPreference<Preference>("logs_location")?.summary =
+                if (LogLocation.hasStoragePermission(context)) {
+                    getString(R.string.logs_location, dir.toString())
+                } else {
+                    getString(R.string.logs_location_no_permission, dir.toString())
+                }
         }
 
         override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
