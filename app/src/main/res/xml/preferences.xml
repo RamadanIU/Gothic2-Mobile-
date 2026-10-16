@@ -65,7 +65,7 @@
             app:defaultValue="100"
             app:showSeekBarValue="true" />
         <SeekBarPreference app:iconSpaceReserved="false"
-            app:key="overlay_opacity"
+            app:key="gothic_overlay_opacity"
             app:title="Непрозрачность кнопок, %"
             app:min="10"
             android:max="100"

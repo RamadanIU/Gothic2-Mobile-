@@ -16,8 +16,13 @@ import java.nio.file.Files
  */
 object CrashRecorder {
     private const val KEY_LAST_EXIT = "last_logged_exit_timestamp"
+    private val CRASH_REASONS = setOf(ApplicationExitInfo.REASON_CRASH, ApplicationExitInfo.REASON_CRASH_NATIVE, ApplicationExitInfo.REASON_ANR)
 
-    fun install(context: Context, diagnostics: Diagnostics) {
+    /**
+     * [onCrashExit] — прошлый процесс упал (Java, нативный код, ANR): лаунчер должен показать экран
+     * сбоя, а не запускать игру сразу — иначе ошибка при старте игры даёт бесконечный цикл вылетов.
+     */
+    fun install(context: Context, diagnostics: Diagnostics, onCrashExit: () -> Unit) {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             // Синхронно: после обработчика процесс завершается и очередь журнала не допишется.
@@ -25,11 +30,11 @@ object CrashRecorder {
             runCatching { diagnostics.flush() }
             previous?.uncaughtException(thread, error)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) logPreviousExits(context, diagnostics)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) logPreviousExits(context, diagnostics, onCrashExit)
     }
 
     @androidx.annotation.RequiresApi(Build.VERSION_CODES.R)
-    private fun logPreviousExits(context: Context, diagnostics: Diagnostics) {
+    private fun logPreviousExits(context: Context, diagnostics: Diagnostics, onCrashExit: () -> Unit) {
         val prefs = PreferenceManager.getDefaultSharedPreferences(context)
         val lastLogged = prefs.getLong(KEY_LAST_EXIT, 0)
         val am = context.getSystemService(ActivityManager::class.java) ?: return
@@ -44,6 +49,7 @@ object CrashRecorder {
             )
             // Для ANR Android отдаёт стеки всех потоков текстом — сохраняем рядом с журналом.
             if (e.reason == ApplicationExitInfo.REASON_ANR) saveTrace(e, diagnostics)
+            if (e.reason in CRASH_REASONS) onCrashExit()
         }
         exits.maxOfOrNull { it.timestamp }?.let { ts -> prefs.edit { putLong(KEY_LAST_EXIT, ts) } }
     }

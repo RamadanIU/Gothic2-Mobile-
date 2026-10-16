@@ -12,6 +12,23 @@ import gothic2.mobile.core.config.UserSettings
 class SettingsStore(context: Context) {
     private val prefs = PreferenceManager.getDefaultSharedPreferences(context)
 
+    init {
+        migrateOverlayOpacity()
+    }
+
+    /**
+     * Ключ «overlay_opacity» занят Winlator: тот читает его как Float из тех же настроек, а мы писали
+     * Int — экран игры падал при создании (ClassCastException в XServerDisplayActivity.setupUI), и
+     * после этого каждый запуск вылетал снова. Значение переносится под свой ключ, чужой удаляется.
+     */
+    private fun migrateOverlayOpacity() {
+        val old = prefs.all[KEY_WINLATOR_OPACITY] ?: return
+        prefs.edit(commit = true) {
+            if (old is Int && !prefs.contains(KEY_OPACITY)) putInt(KEY_OPACITY, old)
+            remove(KEY_WINLATOR_OPACITY)
+        }
+    }
+
     var importedBuildId: String?
         get() = prefs.getString(KEY_BUILD, null)
         set(v) = prefs.edit { putString(KEY_BUILD, v) }
@@ -82,7 +99,7 @@ class SettingsStore(context: Context) {
             invertY = prefs.getBoolean("invert_y", false),
             leftHanded = prefs.getBoolean("left_handed", false),
             buttonScale = prefs.getInt("button_scale", 100) / 100f,
-            overlayOpacity = prefs.getInt("overlay_opacity", 60) / 100f,
+            overlayOpacity = prefs.getInt(KEY_OPACITY, 60) / 100f,
             masterVolume = prefs.getInt("volume", 100) / 100f,
             haptics = prefs.getBoolean("haptics", true),
         )
@@ -101,5 +118,7 @@ class SettingsStore(context: Context) {
         const val KEY_FLICKER = "flicker_fix"
         const val KEY_GAME_DIR = "game_dir"
         const val KEY_LOG_PERMISSION = "log_permission_asked"
+        const val KEY_OPACITY = "gothic_overlay_opacity"
+        private const val KEY_WINLATOR_OPACITY = "overlay_opacity"
     }
 }
