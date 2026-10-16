@@ -94,7 +94,7 @@ class GothicApplication : Application() {
         val logcat = LogcatCapture.start(logDir, fromNow = false)
         diagnostics.log("app", "start ${BuildConfig.VERSION_NAME} logs=$logDir")
         logcat.onFailure { diagnostics.log("app", "logcat capture failed: $it") }
-        CrashRecorder.install(this, diagnostics)
+        CrashRecorder.install(this, diagnostics) { settings.lastSessionFailed = true }
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
                 activities += activity
