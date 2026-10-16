@@ -54,6 +54,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_GAME_DIR, null)
         set(v) = prefs.edit { putString(KEY_GAME_DIR, v) }
 
+    /** Разрешение «Файлы» для журналов уже спрашивали (спрашиваем один раз, при первом запуске). */
+    var logPermissionAsked: Boolean
+        get() = prefs.getBoolean(KEY_LOG_PERMISSION, false)
+        set(v) = prefs.edit { putBoolean(KEY_LOG_PERMISSION, v) }
+
     /** Режим графики; пока игрок не выбрал сам — по видеокарте (GraphicsMode.defaultFor). */
     var graphicsMode: GraphicsMode
         get() = GraphicsMode.of(prefs.getString(KEY_GRAPHICS, null), gpuName)
@@ -95,5 +100,6 @@ class SettingsStore(context: Context) {
         const val KEY_GPU = "gpu_name"
         const val KEY_FLICKER = "flicker_fix"
         const val KEY_GAME_DIR = "game_dir"
+        const val KEY_LOG_PERMISSION = "log_permission_asked"
     }
 }

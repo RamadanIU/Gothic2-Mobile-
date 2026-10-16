@@ -72,7 +72,9 @@ X-сервере Winlator (исправлено ожиданием в `Texture.c
 - среда: Winlator (`GameLauncher`, `GameActivity`, `XServerInputSink`, `WinlatorBackend`), замена пути
   rootfs при распаковке (`PathRelocator`), профили устройств → WineD3D или D7VK, `GOTHIC.INI`;
   игра только на быстрых ядрах (`CpuCores`, сродство через `cpuList` контейнера);
-  журнал Wine/Box64 (`files/logs/wine.log`) входит в экспорт диагностики;
+  журнал пишется всегда и сразу (без очереди) в «Загрузки/Gothic2Mobile/logs[-debug]»: `session.log`,
+  вывод Wine/Box64 с прокруткой (`wine.head/.1/.log`), logcat процесса (`logcat.log`, прошлый — `logcat-prev.log`);
+  разрешение «Файлы» спрашивается один раз (`LogLocation`), без него — Android/data/<пакет>/files/logs;
 - мост с игровым адаптером: протокол, рукопожатие с токеном, Unix-сокет в приватном каталоге;
 - Android: импорт через SAF, экран игры, вывод 4:3 с полями, экран восстановления, перегрев, настройки.
 
