@@ -33,4 +33,17 @@ class GameExitTest {
         assertFalse(GameExit.isCrashLine("0024:err:winediag:nodrv_CreateWindow Application tried to create a window"))
         assertFalse(GameExit.isCrashLine("[frames] fps=30.0"))
     }
+
+    @Test
+    fun `vulkan without adapters is a graphics failure even when the player quits`() {
+        // Журнал realme C71 (Mali-G57): D7VK без Vulkan 1.3 — игра закрывается сама через минуту.
+        val line = "warn:  DXVK: No adapters found. Please check your device filter settings"
+        assertTrue(GameExit.isGraphicsFailureLine(line))
+        assertTrue(GameExit.isGraphicsFailureLine("err:   Failed to initialize DXVK."))
+        assertFalse(GameExit.isGraphicsFailureLine(crash))
+        assertFalse(GameExit.isCrashLine(line))
+        assertEquals(GameExit.GRAPHICS_UNSUPPORTED, GameExit.classify(userQuit = false, windowShown = true, crashLine = null, graphicsLine = line))
+        assertEquals(GameExit.GRAPHICS_UNSUPPORTED, GameExit.classify(userQuit = true, windowShown = true, crashLine = null, graphicsLine = line))
+        assertTrue(GameExit.GRAPHICS_UNSUPPORTED.failed)
+    }
 }

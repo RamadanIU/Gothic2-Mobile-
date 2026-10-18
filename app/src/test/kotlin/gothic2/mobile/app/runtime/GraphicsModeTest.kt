@@ -9,14 +9,38 @@ import kotlin.test.assertTrue
 class GraphicsModeTest {
     @Test
     fun `adreno starts with D7VK and falls back to the working WineD3D mode`() {
-        assertEquals(GraphicsMode.D7VK_TURNIP, GraphicsMode.defaultFor("Adreno (TM) 740"))
-        assertEquals(GraphicsMode.WINED3D_ZINK, GraphicsMode.defaultFor("Mali-G715"))
+        val adreno = "Adreno (TM) 740"
+        assertEquals(GraphicsMode.D7VK_TURNIP, GraphicsMode.defaultFor(adreno))
         assertEquals(GraphicsMode.WINED3D_ZINK, GraphicsMode.defaultFor(null))
         // Кнопка «другой режим» после неудачи D7VK ведёт в режим, который уже работал на Adreno.
-        assertEquals(GraphicsMode.WINED3D_ZINK_TURNIP, GraphicsMode.D7VK_TURNIP.next())
+        assertEquals(GraphicsMode.WINED3D_ZINK_TURNIP, GraphicsMode.D7VK_TURNIP.next(adreno, vulkan13 = true))
         // Выбор игрока важнее видеокарты; неизвестный id — режим по умолчанию.
-        assertEquals(GraphicsMode.WINED3D_ZINK_TURNIP, GraphicsMode.of("wined3d_zink_turnip", "Adreno (TM) 740"))
-        assertEquals(GraphicsMode.D7VK_TURNIP, GraphicsMode.of("removed", "Adreno (TM) 740"))
+        assertEquals(GraphicsMode.WINED3D_ZINK_TURNIP, GraphicsMode.of("wined3d_zink_turnip", adreno))
+        assertEquals(GraphicsMode.D7VK_TURNIP, GraphicsMode.of("removed", adreno))
+    }
+
+    @Test
+    fun `mali without vulkan 1_3 gets only the OpenGL modes, Gladio first`() {
+        // realme C71 (Mali-G57): D7VK — «No adapters found», Zink — 2–6 FPS, Gladio — до 20 FPS.
+        val mali = "Mali-G57"
+        assertEquals(GraphicsMode.WINED3D_GLADIO, GraphicsMode.defaultFor(mali))
+        assertEquals(
+            listOf(GraphicsMode.WINED3D_ZINK, GraphicsMode.WINED3D_GLADIO),
+            GraphicsMode.available(mali, vulkan13 = false),
+        )
+        assertEquals(
+            listOf(GraphicsMode.WINED3D_ZINK, GraphicsMode.D7VK, GraphicsMode.WINED3D_GLADIO),
+            GraphicsMode.available(mali, vulkan13 = true),
+        )
+        // Сохранённый выбор, который здесь не работает, заменяется режимом по видеокарте.
+        assertEquals(GraphicsMode.WINED3D_GLADIO, GraphicsMode.of("d7vk", mali, vulkan13 = false))
+        assertEquals(GraphicsMode.WINED3D_GLADIO, GraphicsMode.of("d7vk_turnip", mali, vulkan13 = true))
+        assertEquals(GraphicsMode.D7VK, GraphicsMode.of("d7vk", mali, vulkan13 = true))
+        // «Другой режим» перебирает только работающие режимы.
+        assertEquals(GraphicsMode.WINED3D_ZINK, GraphicsMode.WINED3D_GLADIO.next(mali, vulkan13 = false))
+        assertEquals(GraphicsMode.WINED3D_GLADIO, GraphicsMode.WINED3D_ZINK.next(mali, vulkan13 = false))
+        // Пока видеокарта неизвестна (до первого запуска), список не урезается.
+        assertEquals(GraphicsMode.entries.filter { !it.isD7VK || it.usesTurnip }, GraphicsMode.available(null, vulkan13 = false))
     }
 
     @Test

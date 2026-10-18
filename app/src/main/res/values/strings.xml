@@ -58,6 +58,11 @@
     <string name="failed_launch_send">Отправить журнал</string>
     <string name="failed_launch_retry">Играть снова</string>
     <string name="failed_launch_other_graphics">Другая графика</string>
+    <string name="graphics_unsupported_title">Быстрая графика недоступна</string>
+    <string name="graphics_unsupported_message">Видеокарта этого телефона не поддерживает быстрый режим графики (нужен Vulkan 1.3), поэтому игра закрылась. Включён режим, который работает на этом телефоне, — нажмите «Играть снова».</string>
+    <string name="weak_device_title">Телефон слабее, чем нужно игре</string>
+    <string name="weak_device_message">Процессор этого телефона медленнее, чем нужно Gothic II: игра пойдёт с рывками, местами 5–20 кадров в секунду, и настройки графики это почти не меняют. Для плавной игры нужен процессор не слабее Snapdragon 7-й серии или Dimensity 7000.</string>
+    <string name="weak_device_play">Всё равно играть</string>
     <string name="recovery_title">Игра была прервана</string>
     <string name="recovery_message">Прошлый сеанс завершился без выхода из игры: Android выгрузил её из памяти, игра закрылась из списка задач или произошёл сбой. Прогресс после последнего сохранения мог быть потерян. Сохранения не тронуты — загрузите нужное из главного меню.</string>
 

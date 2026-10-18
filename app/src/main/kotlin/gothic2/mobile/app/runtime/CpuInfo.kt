@@ -3,6 +3,7 @@ package gothic2.mobile.app.runtime
 import android.system.Os
 import android.system.OsConstants
 import gothic2.mobile.core.config.CpuCores
+import gothic2.mobile.core.config.DevicePerformance
 import gothic2.mobile.core.diagnostics.CpuLoad
 import java.io.File
 
@@ -26,6 +27,9 @@ object CpuInfo {
 
     /** Текущая частота каждого ядра, кГц: падение у быстрых ядер — перегрев или экономия энергии. */
     fun curFreqKHz(): List<Long?> = freqKHz("scaling_cur_freq")
+
+    /** Модели ядер из /proc/cpuinfo — для оценки процессора ([DevicePerformance]). */
+    fun cores(): Map<Int, DevicePerformance.Core> = read("/proc/cpuinfo")?.let(DevicePerformance::parseCpuInfo).orEmpty()
 
     private fun freqKHz(name: String): List<Long?> =
         List((cpus.maxOrNull() ?: -1) + 1) { read("/sys/devices/system/cpu/cpu$it/cpufreq/$name")?.trim()?.toLongOrNull() }

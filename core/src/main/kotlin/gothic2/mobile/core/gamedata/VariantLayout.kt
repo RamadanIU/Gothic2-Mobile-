@@ -1,6 +1,7 @@
 package gothic2.mobile.core.gamedata
 
 import gothic2.mobile.core.util.FileOps
+import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.deleteIfExists
@@ -24,6 +25,10 @@ data class FileRename(val from: String, val to: String)
  * полного возврата, поэтому прерванная сессия (падение, убитый процесс) откатывается при
  * следующем [restore]. Без отметки [restore] ничего не трогает. Откат идёт в обратном порядке
  * и пропускает уже возвращённые файлы, так что его можно повторять.
+ *
+ * Если на месте назначения уже лежит файл (в папке игры и `ddraw.dll`, и `ddraw.dll.gd3d11` без
+ * отметки — так было у второго игрока), запуск не останавливается: копия того же содержимого
+ * удаляется, другой файл откладывается под свободным именем `<имя>.old` — ничего не теряется.
  */
 class VariantLayout(private val root: Path) {
     private val tree = PathGameTree(root)
@@ -38,11 +43,50 @@ class VariantLayout(private val root: Path) {
         for (r in variant.renames) {
             // Как rename в .bat: если исходного файла нет (SPLASH.BMP в GOG), шаг пропускается.
             val from = tree.resolve(r.from) ?: continue
-            if (tree.resolve(r.to) != null) {
-                throw LayoutException("Не удалось подготовить «${variant.title}»: ${r.to} уже существует")
-            }
+            tree.resolve(r.to)?.let { clearTarget(root.resolve(from), root.resolve(it)) }
             FileOps.moveAtomic(root.resolve(from), target(r.to))
         }
+    }
+
+    /** Освободить место назначения: та же копия удаляется, другой файл откладывается рядом. */
+    private fun clearTarget(from: Path, existing: Path) {
+        if (Files.isRegularFile(existing) && sameContent(from, existing)) {
+            Files.delete(existing)
+            return
+        }
+        val name = existing.fileName.toString()
+        val aside = (0..MAX_ASIDE).asSequence()
+            .map { existing.resolveSibling(if (it == 0) "$name.old" else "$name.old$it") }
+            .firstOrNull { !Files.exists(it) }
+            ?: throw LayoutException("Не удалось подготовить файлы игры: ${existing.fileName} уже существует")
+        FileOps.moveAtomic(existing, aside)
+    }
+
+    private fun sameContent(a: Path, b: Path): Boolean {
+        if (!Files.isRegularFile(a) || Files.size(a) != Files.size(b)) return false
+        val bufA = ByteArray(COMPARE_BUFFER)
+        val bufB = ByteArray(COMPARE_BUFFER)
+        Files.newInputStream(a).use { x ->
+            Files.newInputStream(b).use { y ->
+                while (true) {
+                    val n = fill(x, bufA)
+                    if (n != fill(y, bufB)) return false
+                    if (n == 0) return true
+                    for (i in 0 until n) if (bufA[i] != bufB[i]) return false
+                }
+            }
+        }
+    }
+
+    /** Прочитать сколько влезет в [buf] (InputStream.readNBytes — только с Java 9). */
+    private fun fill(input: InputStream, buf: ByteArray): Int {
+        var total = 0
+        while (total < buf.size) {
+            val n = input.read(buf, total, buf.size - total)
+            if (n < 0) break
+            total += n
+        }
+        return total
     }
 
     /** Вернуть файлы на место, если раскладка какого-либо варианта осталась применённой. */
@@ -94,5 +138,7 @@ class VariantLayout(private val root: Path) {
 
     companion object {
         const val MARKER = ".gothic2mobile-variant"
+        private const val MAX_ASIDE = 99
+        private const val COMPARE_BUFFER = 64 * 1024
     }
 }

@@ -26,13 +26,19 @@ enum class GraphicsMode(val id: String, val title: String, val graphicsDriver: S
     /** WineD3D → OpenGL через Zink → Vulkan через Turnip. Работает на первом телефоне, ~10 FPS. */
     WINED3D_ZINK_TURNIP("wined3d_zink_turnip", "OpenGL · Adreno — совместимый", "turnip,zink"),
 
-    /** То же через Vortek. Дошёл до меню на первом телефоне, но вылетал после ролика. */
+    /**
+     * То же через Vortek. Дошёл до меню на первом телефоне, но вылетал после ролика. На Mali-G57
+     * (realme C71) Zink выдавал ~25 тысяч ошибок OpenGL за игру и однажды терял устройство Vulkan.
+     */
     WINED3D_ZINK("wined3d_zink", "OpenGL — совместимый", "vortek,zink"),
 
-    /** D7VK через Vortek — для GPU не Adreno. */
+    /** D7VK через Vortek — для GPU не Adreno. Нужен Vulkan 1.3 у системного драйвера. */
     D7VK("d7vk", "Vulkan — быстрый", "vortek,zink"),
 
-    /** WineD3D через Gladio — OpenGL Winlator по умолчанию. На первом телефоне не дал 3D-устройства. */
+    /**
+     * WineD3D через Gladio — OpenGL Winlator по умолчанию. На первом телефоне (Adreno) не дал
+     * 3D-устройства, а на Mali-G57 — самый быстрый из доступных режимов (до 20–23 FPS).
+     */
     WINED3D_GLADIO("wined3d", "OpenGL — запасной", "vortek,gladio");
 
     val isD7VK: Boolean get() = this == D7VK_TURNIP || this == D7VK
@@ -40,14 +46,45 @@ enum class GraphicsMode(val id: String, val title: String, val graphicsDriver: S
     /** Vulkan — Turnip (драйвер Mesa в процессе игры), а не Vortek. */
     val usesTurnip: Boolean get() = graphicsDriver.startsWith("turnip,")
 
-    fun next(): GraphicsMode = entries[(ordinal + 1) % entries.size]
+    /**
+     * Режим работает на этом телефоне: Turnip — только драйвер Adreno (свой Vulkan 1.3), а D7VK
+     * через системный драйвер требует от него Vulkan 1.3 (без него — «DXVK: No adapters found» в
+     * журнале, и игра закрывается через минуту). Пока видеокарта неизвестна (до первого запуска),
+     * ничего не скрывается.
+     *
+     * @param vulkan13 системный драйвер Vulkan не ниже 1.3 и быстрый режим ещё не падал (GpuInfo)
+     */
+    fun supportedOn(gpuName: String?, vulkan13: Boolean): Boolean = when {
+        usesTurnip -> gpuName == null || isAdreno(gpuName)
+        isD7VK -> vulkan13
+        else -> true
+    }
+
+    /** Следующий режим, работающий на этом телефоне, — кнопка «другой режим» на экране сбоя. */
+    fun next(gpuName: String?, vulkan13: Boolean): GraphicsMode {
+        val all = entries
+        return (1..all.size).map { all[(ordinal + it) % all.size] }.first { it.supportedOn(gpuName, vulkan13) }
+    }
 
     companion object {
-        /** По умолчанию: на Adreno — D7VK через Turnip, иначе WineD3D через Vortek. */
-        fun defaultFor(gpuName: String?): GraphicsMode =
-            if (gpuName?.contains("Adreno", ignoreCase = true) == true) D7VK_TURNIP else WINED3D_ZINK
+        fun isAdreno(gpuName: String?): Boolean = gpuName?.contains("Adreno", ignoreCase = true) == true
 
-        fun of(id: String?, gpuName: String?): GraphicsMode = entries.firstOrNull { it.id == id } ?: defaultFor(gpuName)
+        /**
+         * По умолчанию: на Adreno — D7VK через Turnip; на Mali — WineD3D через Gladio (на Mali-G57
+         * быстрее Zink и без потери устройства); на остальных — WineD3D через Zink.
+         */
+        fun defaultFor(gpuName: String?): GraphicsMode = when {
+            isAdreno(gpuName) -> D7VK_TURNIP
+            gpuName?.contains("Mali", ignoreCase = true) == true -> WINED3D_GLADIO
+            else -> WINED3D_ZINK
+        }
+
+        /** Режимы для списка в настройках: только работающие на этом телефоне. */
+        fun available(gpuName: String?, vulkan13: Boolean): List<GraphicsMode> = entries.filter { it.supportedOn(gpuName, vulkan13) }
+
+        /** Выбор игрока, если режим работает на этом телефоне; иначе — режим по видеокарте. */
+        fun of(id: String?, gpuName: String?, vulkan13: Boolean = true): GraphicsMode =
+            entries.firstOrNull { it.id == id }?.takeIf { it.supportedOn(gpuName, vulkan13) } ?: defaultFor(gpuName)
 
         /**
          * Значение `TU_DEBUG` для Turnip на Adreno с номером [adrenoModel] (0 — не Adreno). Замысел
