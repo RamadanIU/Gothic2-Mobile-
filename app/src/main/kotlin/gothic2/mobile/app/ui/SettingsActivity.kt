@@ -179,8 +179,8 @@ class SettingsActivity : AppCompatActivity() {
         override fun onDisplayPreferenceDialog(preference: Preference) {
             if (preference !is ListPreference) return super.onDisplayPreferenceDialog(preference)
             val values = preference.entryValues ?: return
-            // Режим графики, пока игрок его не выбирал, — действующий по видеокарте.
-            val current = preference.value ?: requireContext().app.settings.graphicsMode.id.takeIf { preference.key == "graphics_mode" }
+            // Режим графики — действующий: по видеокарте, пока игрок не выбрал сам или если выбранный здесь не работает.
+            val current = if (preference.key == "graphics_mode") requireContext().app.settings.graphicsMode.id else preference.value
             GothicPanels.choose(
                 panels,
                 preference.title,
@@ -216,12 +216,16 @@ class SettingsActivity : AppCompatActivity() {
             pref.value = app.selectedVariant(build)?.id
         }
 
-        /** Пока игрок не выбрал режим сам, показывается режим по видеокарте — без записи в настройки. */
+        /**
+         * Пока игрок не выбрал режим сам, показывается режим по видеокарте — без записи в настройки.
+         * В списке — только режимы, которые работают на этом телефоне (GraphicsMode.supportedOn).
+         */
         private fun setupGraphicsPreference() {
             val pref = findPreference<ListPreference>("graphics_mode") ?: return
-            pref.summaryProvider = Preference.SummaryProvider<ListPreference> { p ->
-                p.entry ?: requireContext().app.settings.graphicsMode.title
-            }
+            val modes = requireContext().app.settings.availableGraphicsModes
+            pref.entries = modes.map { it.title }.toTypedArray()
+            pref.entryValues = modes.map { it.id }.toTypedArray()
+            pref.summaryProvider = Preference.SummaryProvider<ListPreference> { requireContext().app.settings.graphicsMode.title }
         }
 
         private fun showBackups() {

@@ -75,6 +75,7 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Экран игры. Wine, X-сервер, звук и вывод изображения — от Winlator (XServerDisplayActivity),
@@ -94,6 +95,12 @@ class GameActivity : XServerDisplayActivity() {
 
     /** Первая строка вывода Wine, похожая на сбой игры (GameExit.isCrashLine); пишется из потока Wine. */
     @Volatile private var crashLine: String? = null
+
+    /** Строка вывода Wine о том, что быстрый режим графики не запустился (GameExit.isGraphicsFailureLine). */
+    @Volatile private var graphicsLine: String? = null
+
+    /** Среда уже останавливается: [exit] вызывают и выход из меню, и завершение процесса игры. */
+    private val exiting = AtomicBoolean(false)
 
     private lateinit var settings: UserSettings
     private lateinit var backend: WinlatorBackend
@@ -249,10 +256,13 @@ class GameActivity : XServerDisplayActivity() {
         ProcessHelper.addDebugCallback { line ->
             diagnostics.wine(line)
             if (crashLine == null && GameExit.isCrashLine(line)) crashLine = line
+            if (graphicsLine == null && GameExit.isGraphicsFailureLine(line)) graphicsLine = line
         }
         val env = overrideEnvVars
-        // Ошибки Wine нужны для разбора проблем, отладочный шум — нет.
-        env.put("WINEDEBUG", "err+all,fixme-all")
+        // Ошибки Wine нужны для разбора проблем, отладочный шум — нет. Ошибки d3d выключены: с ними
+        // WineD3D создаёт отладочный контекст OpenGL (медленнее), а Zink на Mali-G57 выдавал по ~30
+        // одинаковых ошибок в секунду (glVertexAttribDivisor) — почти весь журнал Wine.
+        env.put("WINEDEBUG", "err+all,fixme-all,err-d3d")
         // ESync (события Windows на eventfd) выключен: с ним Union в GOG-сборке не создаёт свой
         // объект-событие («Can not create Event object»). Gothic лёгкая, синхронизация через
         // wineserver на скорости почти не сказывается.
@@ -412,8 +422,14 @@ class GameActivity : XServerDisplayActivity() {
 
     // ---- завершение игры ---------------------------------------------------------------
 
-    /** Winlator вызывает при завершении процесса игры (из фонового потока) и при выходе из меню. */
+    /**
+     * Winlator вызывает при завершении процесса игры (из фонового потока) и при выходе из меню.
+     * Выход из меню останавливает среду, от этого завершается процесс игры, и Winlator вызывает
+     * [exit] второй раз — из своего потока, одновременно с первым. Две остановки звукового сервера
+     * сразу роняли приложение (SIGSEGV в XConnectorEpoll_destroy), поэтому среда останавливается один раз.
+     */
     override fun exit() {
+        if (!exiting.compareAndSet(false, true)) return
         stopEnvironment()
         runOnUiThread { onGameExited() }
     }
@@ -433,9 +449,10 @@ class GameActivity : XServerDisplayActivity() {
         // Окно могли не распознать (экран загрузки тогда убирается по тайм-ауту), а игра шла:
         // долгая игра без признаков сбоя — не «не запустилась».
         val windowShown = gameVisible || seconds * 1000 >= COVER_TIMEOUT_MS
-        val outcome = GameExit.classify(userQuit, windowShown, crashLine)
-        app.diagnostics.log("game", "exited after ${seconds}s: ${outcome.name.lowercase()}" + crashLine?.let { " ($it)" }.orEmpty())
+        val outcome = GameExit.classify(userQuit, windowShown, crashLine, graphicsLine)
+        app.diagnostics.log("game", "exited after ${seconds}s: ${outcome.name.lowercase()}" + (graphicsLine ?: crashLine)?.let { " ($it)" }.orEmpty())
         app.settings.lastSessionFailed = outcome.failed
+        if (outcome == GameExit.GRAPHICS_UNSUPPORTED) onGraphicsUnsupported()
         afterGame()
         if (outcome.failed) {
             // Лаунчер дождётся уборки, перезапустит процесс и покажет экран сбоя.
@@ -444,6 +461,21 @@ class GameActivity : XServerDisplayActivity() {
             overridePendingTransition(0, 0)
         }
         finish()
+    }
+
+    /**
+     * Быстрый режим не нашёл устройство Vulkan. Если это режим через системный драйвер, он больше
+     * не предлагается (система могла сообщить Vulkan 1.3, а драйвер — не дать нужного); игра
+     * переключается на режим по видеокарте, а экран сбоя объясняет, что произошло.
+     */
+    private fun onGraphicsUnsupported() {
+        val settings = app.settings
+        val mode = settings.graphicsMode
+        if (mode.isD7VK && !mode.usesTurnip) settings.vulkanFailed = true
+        val next = if (mode.supportedOn(settings.gpuName, settings.vulkan13)) mode.next(settings.gpuName, settings.vulkan13) else settings.graphicsMode
+        settings.graphicsMode = next
+        settings.graphicsFallbackNotice = true
+        app.diagnostics.log("launch", "graphics unsupported: ${mode.id} -> ${next.id}")
     }
 
     /**

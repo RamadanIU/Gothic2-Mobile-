@@ -1056,6 +1056,25 @@ index 28849bf..a7d1a51 100644
                      ContentDialog.confirm(activity, R.string.do_you_want_to_end_this_process, () -> {
                          winHandler.killProcess(null, processInfo.pid);
                      });
+diff --git a/app/src/main/java/com/winlator/xconnector/XConnectorEpoll.java b/app/src/main/java/com/winlator/xconnector/XConnectorEpoll.java
+index 67556af..3bc41bf 100644
+--- a/app/src/main/java/com/winlator/xconnector/XConnectorEpoll.java
++++ b/app/src/main/java/com/winlator/xconnector/XConnectorEpoll.java
+@@ -35,7 +35,13 @@ public class XConnectorEpoll {
+         if (nativePtr != 0) startEpollThread(nativePtr, multithreadedClients);
+     }
+ 
+-    public void destroy() {
++    /**
++     * Gothic II Mobile: synchronized — среду останавливают и выход из меню (поток интерфейса), и
++     * завершение процесса игры (поток Winlator) одновременно. Оба видели nativePtr != 0, второй
++     * передавал в destroy уже обнулённый указатель — SIGSEGV в XConnectorEpoll_destroy.
++     * Потоку epoll эта блокировка не нужна, поэтому stopEpollThread не может на ней зависнуть.
++     */
++    public synchronized void destroy() {
+         if (nativePtr != 0) {
+             stopEpollThread(nativePtr);
+             destroy(nativePtr);
 diff --git a/app/src/main/java/com/winlator/xenvironment/RootFS.java b/app/src/main/java/com/winlator/xenvironment/RootFS.java
 index a1aeba7..628025e 100644
 --- a/app/src/main/java/com/winlator/xenvironment/RootFS.java

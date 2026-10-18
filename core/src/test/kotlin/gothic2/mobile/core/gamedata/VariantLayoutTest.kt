@@ -118,11 +118,25 @@ class VariantLayoutTest {
     }
 
     @Test
-    fun `conflicting leftover file stops the launch`() {
+    fun `leftover copy at the target does not stop the launch`() {
+        // Второй игрок: в папке и ddraw.dll, и ddraw.dll.gd3d11, отметки нет — запуск падал.
+        root.resolve("System/Paths.disabled").writeText("notr")
+        layout.apply(build, classic)
+        assertEquals("notr", text("System/Paths.disabled"))
+        assertFalse(root.resolve("System/Paths.disabled.old").exists())
+        layout.restore(build)
+        assertEquals("notr", text("System/Paths.d"))
+        assertFalse(root.resolve("System/Paths.disabled").exists())
+    }
+
+    @Test
+    fun `different file at the target is put aside, not lost`() {
         root.resolve("System/Paths.disabled").writeText("stale")
-        assertFailsWith<VariantLayout.LayoutException> { layout.apply(build, classic) }
-        // То, что успели переименовать, возвращается при следующем запуске.
-        root.resolve("System/Paths.disabled").toFile().delete()
+        root.resolve("System/Paths.disabled.old").writeText("older")
+        layout.apply(build, classic)
+        assertEquals("notr", text("System/Paths.disabled"))
+        assertEquals("older", text("System/Paths.disabled.old"))
+        assertEquals("stale", text("System/Paths.disabled.old1"))
         layout.restore(build)
         assertEquals("addon", text("Data/Worlds_Addon.vdf"))
         assertEquals("notr", text("System/Paths.d"))

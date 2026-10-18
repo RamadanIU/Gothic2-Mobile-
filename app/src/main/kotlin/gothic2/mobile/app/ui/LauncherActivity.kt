@@ -11,6 +11,7 @@ import androidx.appcompat.app.AppCompatActivity
 import gothic2.mobile.app.BuildConfig
 import gothic2.mobile.app.R
 import gothic2.mobile.app.app
+import gothic2.mobile.app.runtime.CpuInfo
 import gothic2.mobile.app.runtime.GameLauncher
 import gothic2.mobile.app.storage.DiagnosticsShare
 import gothic2.mobile.app.storage.DocumentExport
@@ -23,6 +24,7 @@ import gothic2.mobile.app.ui.gothic.GothicPanels
 import gothic2.mobile.app.ui.gothic.GothicScreens
 import gothic2.mobile.app.ui.gothic.OverlayHost
 import gothic2.mobile.app.ui.gothic.PanelButton
+import gothic2.mobile.core.config.DevicePerformance
 import gothic2.mobile.core.diagnostics.SessionJournal
 import gothic2.mobile.core.gamedata.BuildFingerprint
 import gothic2.mobile.core.gamedata.BuildVerifier
@@ -35,6 +37,7 @@ import gothic2.mobile.core.gamedata.VariantLayout
 import gothic2.mobile.core.util.FileOps
 import java.nio.file.Files
 import java.nio.file.Paths
+import java.util.Locale
 
 /**
  * Первый запуск: выбор папки с легальной копией игры. Игра запускается прямо из неё
@@ -123,6 +126,8 @@ class LauncherActivity : AppCompatActivity() {
                 // Процесс приложения погиб во время игры (вылет, нехватка памяти): вместе с ним погибла и игра.
                 app.diagnostics.log("session", "interrupted: started=${interrupted.startedAt} last=${interrupted.lastHeartbeat}")
                 showFailedLaunch(R.string.recovery_title, R.string.recovery_message)
+            } else if (app.settings.lastSessionFailed && app.settings.graphicsFallbackNotice) {
+                showFailedLaunch(R.string.graphics_unsupported_title, R.string.graphics_unsupported_message)
             } else if (app.settings.lastSessionFailed) {
                 showFailedLaunch(R.string.failed_launch_title, R.string.failed_launch_message)
             } else {
@@ -368,13 +373,16 @@ class LauncherActivity : AppCompatActivity() {
             panel,
             Gothic.button(this, getString(R.string.failed_launch_retry), ButtonKind.PRIMARY) {
                 app.settings.lastSessionFailed = false
+                app.settings.graphicsFallbackNotice = false
                 startGame()
             },
-            // Самая частая причина — графика: следующий режим из GraphicsMode.
+            // Самая частая причина — графика: следующий режим из GraphicsMode, работающий на этом телефоне.
             Gothic.button(this, getString(R.string.failed_launch_other_graphics)) {
-                val next = app.settings.graphicsMode.next()
-                app.settings.graphicsMode = next
-                app.settings.lastSessionFailed = false
+                val settings = app.settings
+                val next = settings.graphicsMode.next(settings.gpuName, settings.vulkan13)
+                settings.graphicsMode = next
+                settings.lastSessionFailed = false
+                settings.graphicsFallbackNotice = false
                 app.diagnostics.log("launch", "graphics mode -> ${next.id}")
                 startGame()
             },
@@ -385,6 +393,34 @@ class LauncherActivity : AppCompatActivity() {
             Gothic.button(this, getString(R.string.settings_title)) { startActivity(Intent(this, SettingsActivity::class.java)) },
         )
         GothicScreens.swap(content, GothicScreens.split(this, currentVariantTitle(), panel.root))
+    }
+
+    /**
+     * Один раз — до первой игры на слабом телефоне (DevicePerformance): иначе низкую скорость
+     * принимают за зависание. После ответа игра запускается как обычно.
+     *
+     * @return предупреждение показано, запуск продолжится по кнопке
+     */
+    private fun warnWeakDevice(): Boolean {
+        val freq = CpuInfo.maxFreqKHz()
+        val cores = CpuInfo.cores()
+        if (!DevicePerformance.isWeak(freq, cores)) return false
+        app.diagnostics.log("launch", "weak device: cpu score=${"%.2f".format(Locale.ROOT, DevicePerformance.score(freq, cores))}")
+        val play = {
+            app.settings.weakDeviceWarned = true
+            startGame()
+        }
+        GothicPanels.message(
+            panels,
+            getString(R.string.weak_device_title),
+            getString(R.string.weak_device_message),
+            listOf(
+                PanelButton(getString(R.string.close)) { finish() },
+                PanelButton(getString(R.string.weak_device_play), ButtonKind.PRIMARY) { play() },
+            ),
+            onCancel = { finish() },
+        )
+        return true
     }
 
     /** Отчёт о сборке из выбранной папки — без копирования игры в приложение. */
@@ -448,6 +484,7 @@ class LauncherActivity : AppCompatActivity() {
         val build = app.importedBuild()
         val variant = build?.let { app.selectedVariant(it) }
         if (build == null || variant == null) return buildUi()
+        if (!app.settings.weakDeviceWarned && warnWeakDevice()) return
         val loading = GothicScreens.loading(this, VariantText.title(this, variant), getString(R.string.launch_preparing))
         GothicScreens.swap(content, loading.root)
         app.background.execute {
