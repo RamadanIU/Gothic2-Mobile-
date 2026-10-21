@@ -1977,10 +1977,10 @@ index d4ddb41..3babfe3 100644
      bool  isActive() const;
 diff --git a/common/ui/touchicons.cpp b/common/ui/touchicons.cpp
 new file mode 100644
-index 0000000..2224659
+index 0000000..b57e987
 --- /dev/null
 +++ b/common/ui/touchicons.cpp
-@@ -0,0 +1,657 @@
+@@ -0,0 +1,666 @@
 +#include "touchicons.h"
 +
 +#include <Tempest/Pixmap>
@@ -2635,15 +2635,24 @@ index 0000000..2224659
 +        const float d  = (std::sqrt(dx*dx+dy*dy) - rad)/wid;
 +        a[size_t(y*n+x)] = std::exp(-d*d)*0.9f;
 +        }
-+    return alphaTexture(a,n,n,1.f,1.f,1.f);
++    // Цвет умножен на прозрачность: сложение (ONE, ONE) прозрачность не учитывает, и белый цвет
++    // в прозрачных углах лёг бы на экран квадратом
++    std::vector<float> rgba(a.size()*4);
++    for(size_t i=0; i<a.size(); ++i) {
++      rgba[i*4+0] = a[i];
++      rgba[i*4+1] = a[i];
++      rgba[i*4+2] = a[i];
++      rgba[i*4+3] = a[i];
++      }
++    return toTexture(rgba,n,n);
 +    });
 +  }
 diff --git a/common/ui/touchicons.h b/common/ui/touchicons.h
 new file mode 100644
-index 0000000..fb25f55
+index 0000000..5eb3773
 --- /dev/null
 +++ b/common/ui/touchicons.h
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,72 @@
 +#pragma once
 +
 +#include <Tempest/Texture2d>
@@ -2702,7 +2711,8 @@ index 0000000..fb25f55
 +    const Tempest::Texture2d& icon (Icon i, int size);
 +    // Круглая подложка кнопки диаметром size
 +    const Tempest::Texture2d& disc (int size);
-+    // Мягкое золотое свечение вокруг круга диаметром size (рисуется со сложением)
++    // Мягкое свечение вокруг круга диаметром size; холст в 1,3 раза больше круга. Цвет умножен на
++    // прозрачность - рисовать только со сложением (Painter::Add), силу задаёт цвет кисти
 +    const Tempest::Texture2d& glow (int size);
 +    // Подложка-«пилюля» w×h для кнопок с подписью
 +    const Tempest::Texture2d& pill (int w, int h);
@@ -2716,10 +2726,10 @@ index 0000000..fb25f55
 +    const Tempest::Texture2d& cached(uint64_t key, const std::function<Tempest::Texture2d()>& make);
 +  };
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f1730..0b67456 100644
+index d9f1730..bfb52ff 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,1234 @@
+@@ -1,41 +1,1230 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
@@ -2756,8 +2766,9 @@ index d9f1730..0b67456 100644
 +
 +float TouchInput::dp() const {
 +  return std::max(1.f, owner.uiScale());
-+  }
-+
+   }
+ 
+-void TouchInput::paintEvent(Tempest::PaintEvent& e) {
 +TouchInput::Ui TouchInput::currentUi() const {
 +  using M = MainWindow::TouchMode;
 +  const auto m = owner.touchMode();
@@ -3006,9 +3017,8 @@ index d9f1730..0b67456 100644
 +  while(txt.size()>1 && fnt.textSize(txt+"..").w>maxW)
 +    txt.pop_back();
 +  return txt+"..";
-   }
- 
--void TouchInput::paintEvent(Tempest::PaintEvent& e) {
++  }
++
 +void TouchInput::paintEvent(PaintEvent& e) {
 +  const Ui ui = currentUi();
 +  if(ui!=lastUi) {
@@ -3116,11 +3126,16 @@ index d9f1730..0b67456 100644
 +    if(f.ctl==C_Potion && now-f.downAt>150 && ctrl.potionCount(true)>0)
 +      drawHoldRing(p,buttonOf(C_Potion),float(now-f.downAt-150)/300.f);
 +    }
-+
+ 
+-  p.setBrush(Color(1,1,1, 0.2f));
+-  p.drawRect(10, h()-10 - 100, 100, 100);
 +  if(wheel!=Wheel::None)
 +    drawWheel(p);
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
+-  auto r = Rect(10, h()-10-100, 100, 100);
+-  if(!r.contains(e.pos())) {
 +void TouchInput::drawGlyph(Painter& p, TouchIcons::Icon ic, Point c, int size, const Color& cl) {
 +  if(size<4)
 +    return;
@@ -3135,16 +3150,19 @@ index d9f1730..0b67456 100644
 +  p.drawRect(x, y, size, size, 0,0,tx.w(),tx.h());
 +  }
 +
++void TouchInput::drawGlow(Painter& p, const Rect& r, int size, float k) {
++  // Сложение не смотрит на прозрачность кисти: сила свечения - яркость цвета
++  auto& g = icons.glow(size);
++  p.setBrush(Brush(g,Color(GlowColor.r()*k, GlowColor.g()*k, GlowColor.b()*k, 1.f),Painter::Add));
++  p.drawRect(r.x, r.y, r.w, r.h, 0,0,g.w(),g.h());
++  }
++
 +void TouchInput::drawRound(Painter& p, const Button& b, TouchIcons::Icon ic, bool pressed, bool active, float alpha) {
 +  // Видимый круг подложки занимает 88% текстуры: по краям - тень
 +  const int ds = int(float(2*b.r)/0.88f);
 +  if(active || pressed) {
 +    const int gs = int(float(ds)*1.3f);
-+    auto&     g  = icons.glow(ds);
-+    Color     gc = GlowColor;
-+    gc.set(gc.r(), gc.g(), gc.b(), active ? 0.85f : 0.55f);
-+    p.setBrush(Brush(g,gc,Painter::Add));
-+    p.drawRect(b.c.x-gs/2, b.c.y-gs/2, gs, gs, 0,0,g.w(),g.h());
++    drawGlow(p, Rect(b.c.x-gs/2, b.c.y-gs/2, gs, gs), ds, (active ? 0.85f : 0.55f)*alpha);
 +    }
 +  auto& d = icons.disc(ds);
 +  p.setBrush(Brush(d,Color(1.f,1.f,1.f,alpha*(pressed ? 1.f : 0.9f))));
@@ -3156,11 +3174,8 @@ index d9f1730..0b67456 100644
 +  }
 +
 +void TouchInput::drawPill(Painter& p, const Rect& r, TouchIcons::Icon ic, std::string_view label, bool pressed) {
-+  if(pressed) {
-+    auto& g = icons.glow(r.h);
-+    p.setBrush(Brush(g,Color(1.f,0.7f,0.28f,0.35f),Painter::Add));
-+    p.drawRect(r.x-r.h/6, r.y-r.h/6, r.w+r.h/3, r.h+r.h/3, 0,0,g.w(),g.h());
-+    }
++  if(pressed)
++    drawGlow(p, Rect(r.x-r.h/6, r.y-r.h/6, r.w+r.h/3, r.h+r.h/3), r.h, 0.35f);
 +  auto& t = icons.pill(r.w,r.h);
 +  p.setBrush(Brush(t,Color(1.f,1.f,1.f,pressed ? 1.f : 0.92f)));
 +  p.drawRect(r.x, r.y, r.w, r.h, 0,0,t.w(),t.h());
@@ -3188,9 +3203,7 @@ index d9f1730..0b67456 100644
 +  const int  ds      = int(float(2*b.r)/0.88f);
 +  if(pressed) {
 +    const int gs = int(float(ds)*1.3f);
-+    auto&     g  = icons.glow(ds);
-+    p.setBrush(Brush(g,Color(1.f,0.7f,0.28f,0.6f),Painter::Add));
-+    p.drawRect(b.c.x-gs/2, b.c.y-gs/2, gs, gs, 0,0,g.w(),g.h());
++    drawGlow(p, Rect(b.c.x-gs/2, b.c.y-gs/2, gs, gs), ds, 0.6f);
 +    }
 +  auto& d = icons.disc(ds);
 +  p.setBrush(Brush(d,Color(1.f,1.f,1.f,pressed ? 1.f : 0.92f)));
@@ -3261,10 +3274,8 @@ index d9f1730..0b67456 100644
 +  // Кольцо шага: внутри - шаг, за ним - бег
 +  if(active) {
 +    const int ws = int(float(R)*1.1f);
-+    auto&     g  = icons.glow(ws);
-+    p.setBrush(Brush(g,Color(1.f,0.85f,0.55f,0.25f),Painter::Add));
 +    const int gs = int(float(ws)*1.3f);
-+    p.drawRect(center.x-gs/2, center.y-gs/2, gs, gs, 0,0,g.w(),g.h());
++    drawGlow(p, Rect(center.x-gs/2, center.y-gs/2, gs, gs), ws, 0.25f);
 +    }
 +
 +  const int kr = int(float(R)*0.42f);
@@ -3498,9 +3509,7 @@ index d9f1730..0b67456 100644
 +  auto&       bg = icons.disc(ds);
 +  p.setBrush(Brush(bg,Color(1.f,1.f,1.f,0.95f)));
 +  p.drawRect(c.x-ds/2, c.y-ds/2, ds, ds, 0,0,bg.w(),bg.h());
- 
--  p.setBrush(Color(1,1,1, 0.2f));
--  p.drawRect(10, h()-10 - 100, 100, 100);
++
 +  const int ir = int(23*d);
 +  for(size_t i=0; i<wheelItems.size(); ++i) {
 +    const auto& it  = wheelItems[i];
@@ -3520,11 +3529,8 @@ index d9f1730..0b67456 100644
 +  else
 +    title = toCp1251(wheel==Wheel::Weapon ? "Оружие" : "Отряд");
 +  drawLabel(p, fit(title, int(float(R)*0.95f), 1.f), c, true, 1.f);
-   }
- 
--void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
--  auto r = Rect(10, h()-10-100, 100, 100);
--  if(!r.contains(e.pos())) {
++  }
++
 +void TouchInput::mouseDownEvent(MouseEvent& e) {
 +  const Ui ui = currentUi();
 +  if(ui==Ui::Hidden || e.mouseID<0 || size_t(e.mouseID)>=fingers.size()) {
@@ -3972,10 +3978,10 @@ index d9f1730..0b67456 100644
 +    }
    }
 diff --git a/common/ui/touchinput.h b/common/ui/touchinput.h
-index f46becc..c218e93 100644
+index f46becc..8a103a1 100644
 --- a/common/ui/touchinput.h
 +++ b/common/ui/touchinput.h
-@@ -1,21 +1,170 @@
+@@ -1,21 +1,171 @@
  #pragma once
  
  #include <Tempest/Widget>
@@ -4142,6 +4148,7 @@ index f46becc..c218e93 100644
 +    int            wheelPickAt (Tempest::Point p) const;
 +    void           applyWheel(int id);
 +
++    void           drawGlow    (Tempest::Painter& p, const Tempest::Rect& r, int size, float k);
 +    void           drawRound   (Tempest::Painter& p, const Button& b, TouchIcons::Icon ic, bool pressed, bool active, float alpha);
 +    void           drawGlyph   (Tempest::Painter& p, TouchIcons::Icon ic, Tempest::Point c, int size, const Tempest::Color& cl);
 +    void           drawPill    (Tempest::Painter& p, const Tempest::Rect& r, TouchIcons::Icon ic, std::string_view label, bool pressed);
@@ -4156,10 +4163,10 @@ index f46becc..c218e93 100644
 +  };
 diff --git a/common/utils/cp1251.h b/common/utils/cp1251.h
 new file mode 100644
-index 0000000..0edac34
+index 0000000..64f5b91
 --- /dev/null
 +++ b/common/utils/cp1251.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,56 @@
 +#pragma once
 +
 +#include <cstdint>
@@ -4168,24 +4175,49 @@ index 0000000..0edac34
 +
 +// Gothic II Mobile: строки наших кнопок и реплик. Шрифты и тексты русской Gothic II -
 +// в кодировке Windows-1251, а исходники - в UTF-8: кириллица переводится, прочее - '?'.
++// В шрифтах игры нет «ё», длинного тире и кавычек-«ёлочек»: они заменяются на «е», «-» и '"'.
 +inline std::string toCp1251(std::string_view utf8) {
 +  std::string ret;
 +  for(size_t i=0; i<utf8.size(); ++i) {
 +    const uint8_t c = uint8_t(utf8[i]);
-+    if(c<0x80 || i+1>=utf8.size()) {
++    if(c<0x80) {
 +      ret.push_back(char(c));
 +      continue;
 +      }
-+    const uint32_t cp = ((c & 0x1Fu)<<6) | (uint8_t(utf8[i+1]) & 0x3Fu);
-+    ++i;
++    // длина последовательности UTF-8 по первому байту
++    size_t   n  = 0;
++    uint32_t cp = 0;
++    if((c & 0xE0u)==0xC0u) {
++      n  = 1;
++      cp = c & 0x1Fu;
++      }
++    else if((c & 0xF0u)==0xE0u) {
++      n  = 2;
++      cp = c & 0x0Fu;
++      }
++    else if((c & 0xF8u)==0xF0u) {
++      n  = 3;
++      cp = c & 0x07u;
++      }
++    if(n==0 || i+n>=utf8.size()) {
++      ret.push_back('?');
++      continue;
++      }
++    for(size_t k=1; k<=n; ++k)
++      cp = (cp<<6) | (uint8_t(utf8[i+k]) & 0x3Fu);
++    i += n;
 +    if(cp>=0x410 && cp<=0x44F)
 +      ret.push_back(char(0xC0 + (cp-0x410)));
 +    else if(cp==0x401)
-+      ret.push_back(char(0xA8));
++      ret.push_back(char(0xC5)); // Ё -> Е
 +    else if(cp==0x451)
-+      ret.push_back(char(0xB8));
-+    else if(cp==0x2014)
-+      ret.push_back(char(0x97)); // тире
++      ret.push_back(char(0xE5)); // ё -> е
++    else if(cp==0x2013 || cp==0x2014)
++      ret.push_back('-');        // тире
++    else if(cp==0xAB || cp==0xBB || cp==0x201C || cp==0x201D || cp==0x201E)
++      ret.push_back('"');        // кавычки
++    else if(cp==0x2026)
++      ret.append("...");
 +    else
 +      ret.push_back('?');
 +    }
