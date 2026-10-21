@@ -21,6 +21,187 @@ index 24fcd186..46028b39 100644
    add_android_apk(OpenGothic-apk
      PACKAGE_NAME org.opengothic.app
      CODE Gothic2Notr
+diff --git a/common/game/companions.cpp b/common/game/companions.cpp
+new file mode 100644
+index 00000000..bd6c3ef5
+--- /dev/null
++++ b/common/game/companions.cpp
+@@ -0,0 +1,175 @@
++#include "gamescript.h"
++
++#include <Tempest/Log>
++
++#include <algorithm>
++
++#include "world/objects/npc.h"
++#include "world/aiqueue.h"
++#include "world/world.h"
++#include "utils/cp1251.h"
++#include "utils/string_frm.h"
++#include "gothic.h"
++
++// Gothic II Mobile: напарники.
++// В диалоге с безымянным человеком (NPCTYPE_*AMBIENT) - «Пойдём со мной». Нанятый получает флаг
++// AIV_PARTYMEMBER и распорядок TA_Follow_Player на весь день, как напарники из скриптов игры:
++// ZS_Follow_Player сам дерётся с врагами, а опыт за убитых им ZS_Dead отдаёт герою.
++// Цена - 10 золотых за уровень, напарник называет её озвученной фразой ($GOLD_*).
++
++static const size_t MaxHired = 3;
++
++static bool isAmbient(const zenkit::INpc& h) {
++  switch(h.type) {
++    case zenkit::NpcType::G2_AMBIENT:
++    case zenkit::NpcType::G2_OC_AMBIENT:
++    case zenkit::NpcType::G2_BL_AMBIENT:
++    case zenkit::NpcType::G2_TAL_AMBIENT:
++      return true;
++    default:
++      return false;
++    }
++  }
++
++int32_t GameScript::scriptConst(std::string_view name, int32_t def) {
++  auto* s = vm.find_symbol_by_name(name);
++  return s!=nullptr ? s->get_int() : def;
++  }
++
++bool GameScript::isPartyMember(Npc& npc) {
++  const int32_t id = scriptConst("AIV_PARTYMEMBER",15);
++  return id>=0 && uint32_t(id)<zenkit::INpc::aivar_count && npc.handle().aivar[size_t(id)]!=0;
++  }
++
++bool GameScript::isHired(Npc& npc) {
++  // Призванные монстры и сюжетные напарники - тоже AIV_PARTYMEMBER, но у них свои скрипты
++  auto& h = npc.handle();
++  return isAmbient(h) && h.guild<GIL_SEPERATOR_HUM && isPartyMember(npc);
++  }
++
++size_t GameScript::hiredCount() {
++  auto&  w = world();
++  size_t n = 0;
++  for(uint32_t i=0; i<w.npcCount(); ++i) {
++    auto npc = w.npcById(i);
++    if(npc!=nullptr && !npc->isDead() && isHired(*npc))
++      ++n;
++    }
++  return n;
++  }
++
++int32_t GameScript::hirePrice(Npc& npc) const {
++  // Шаг цены - как у озвученных сумм: до 100 - по 10, дальше - по 50
++  int32_t p = std::clamp(npc.handle().level*10, 10, 1000);
++  if(p<=100)
++    p = (p+9)/10*10; else
++    p = (p+49)/50*50;
++  return std::min(p,1000);
++  }
++
++void GameScript::companionSay(Npc& npc, Npc& player, std::string_view svm) {
++  npc.aiPush(AiQueue::aiOutputSvm(player,svm,aiOutOrderId));
++  ++aiOutOrderId;
++  }
++
++void GameScript::companionChoices(Npc& player, Npc& npc, std::vector<DlgChoice>& out) {
++  if(Gothic::inst().version().game!=2 || &player==&npc || npc.isDown())
++    return;
++  auto& h = npc.handle();
++  if(!isAmbient(h) || h.guild>=GIL_SEPERATOR_HUM)
++    return;
++
++  auto add = [&out](uint32_t id, const std::string& title) {
++    DlgChoice ch;
++    ch.title    = title;
++    ch.scriptFn = id;
++    ch.sort     = 998; // перед «Конец» (nr 999)
++    out.push_back(std::move(ch));
++    };
++
++  if(isHired(npc)) {
++    if(npc.hasRoutineState(findSymbolIndex("ZS_FOLLOW_PLAYER")))
++      add(CompanionWait,  toCp1251("Подожди меня здесь."));
++    else
++      add(CompanionFollow,toCp1251("Пойдём дальше вместе."));
++    add(CompanionDismiss, toCp1251("Дальше я сам. Спасибо за помощь!"));
++    return;
++    }
++
++  if(isPartyMember(npc))
++    return;
++  const auto att = personAttitude(npc,player);
++  if(att==ATT_HOSTILE || att==ATT_ANGRY)
++    return;
++  // Стража у прохода остаётся на посту: иначе ворота открылись бы сами
++  if(npc.hasRoutineState(findSymbolIndex("ZS_GUARD_PASSAGE")))
++    return;
++  if(hiredCount()>=MaxHired)
++    return;
++
++  const int32_t price = hirePrice(npc);
++  add(CompanionHire, toCp1251("Пойдём со мной — поможешь в бою? (") + std::to_string(price) + toCp1251(" золотых)"));
++  }
++
++void GameScript::execCompanion(const DlgChoice& dlg, Npc& player, Npc& npc) {
++  auto& h        = npc.handle();
++  const int32_t aivParty  = scriptConst("AIV_PARTYMEMBER",15);
++  const size_t  zsFollow  = findSymbolIndex("ZS_FOLLOW_PLAYER");
++  auto          setParty  = [&](bool v) {
++    if(aivParty>=0 && uint32_t(aivParty)<zenkit::INpc::aivar_count)
++      h.aivar[size_t(aivParty)] = v ? 1 : 0;
++    };
++  auto          follow    = [&]() {
++    if(zsFollow==size_t(-1))
++      return;
++    auto wp = npc.currentTaPoint();
++    npc.setRoutineAllDay(zsFollow, wp!=nullptr ? std::string_view(wp->name) : std::string_view(h.wp));
++    };
++  auto          endTalk   = [&]() {
++    npc.aiPush(AiQueue::aiStopProcessInfo(aiOutOrderId));
++    ++aiOutOrderId;
++    };
++
++  switch(dlg.scriptFn) {
++    case CompanionHire: {
++      const size_t  gold  = findSymbolIndex("ITMI_GOLD");
++      const int32_t price = hirePrice(npc);
++      if(gold==size_t(-1) || player.itemCount(gold)<size_t(price)) {
++        // Называет цену своим голосом и ждёт денег; диалог продолжается
++        companionSay(npc,player,string_frm("$GOLD_",int(price)));
++        return;
++        }
++      npc.addItem(gold,player,size_t(price));
++      companionSay(npc,player,"$ITookYourGold");
++      setParty(true);
++      follow();
++      Tempest::Log::i("[g2m] companion: hired \"",npc.displayName(),"\" level=",h.level," price=",price);
++      endTalk();
++      break;
++      }
++    case CompanionWait: {
++      const size_t zsStand = findSymbolIndex("ZS_STAND_ARMSCROSSED");
++      auto         wp      = world().findWayPoint(npc.position());
++      if(zsStand!=size_t(-1) && wp!=nullptr)
++        npc.setRoutineAllDay(zsStand, wp->name);
++      companionSay(npc,player,"$ABS_GOOD");
++      endTalk();
++      break;
++      }
++    case CompanionFollow:
++      follow();
++      companionSay(npc,player,"$ABS_GOOD");
++      endTalk();
++      break;
++    case CompanionDismiss:
++      setParty(false);
++      if(h.daily_routine>0)
++        npc.excRoutine(size_t(h.daily_routine));
++      companionSay(npc,player,"$ABS_GOOD");
++      Tempest::Log::i("[g2m] companion: dismissed \"",npc.displayName(),"\"");
++      endTalk();
++      break;
++    default:
++      break;
++    }
++  }
 diff --git a/common/game/fightalgo.cpp b/common/game/fightalgo.cpp
 index b1d951ff..8d5f5cdc 100644
 --- a/common/game/fightalgo.cpp
@@ -34,6 +215,71 @@ index b1d951ff..8d5f5cdc 100644
    auto  ws = npc.weaponState();
  
    if(hitFlg) {
+diff --git a/common/game/gamescript.cpp b/common/game/gamescript.cpp
+index 4b32af2b..a10d1cc5 100644
+--- a/common/game/gamescript.cpp
++++ b/common/game/gamescript.cpp
+@@ -920,6 +920,12 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
+       ch.sort     = info.nr;
+       choice.emplace_back(std::move(ch));
+       }
++    if(important==0) {
++      auto pl  = findNpc(player);
++      auto npc = findNpc(hnpc);
++      if(pl!=nullptr && npc!=nullptr)
++        companionChoices(*pl,*npc,choice);
++      }
+     if(!choice.empty()){
+       sort(choice);
+       return choice;
+@@ -954,6 +960,11 @@ std::vector<GameScript::DlgChoice> GameScript::updateDialog(const GameScript::Dl
+   }
+ 
+ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
++  if(dlg.handle==nullptr) {
++    // Gothic II Mobile: реплика без скрипта - найм напарника
++    execCompanion(dlg,player,npc);
++    return;
++    }
+   ScopeVar self (*vm.global_self(), npc.handlePtr());
+   ScopeVar other(*vm.global_other(), player.handlePtr());
+ 
+diff --git a/common/game/gamescript.h b/common/game/gamescript.h
+index 2cccb630..d6a5e085 100644
+--- a/common/game/gamescript.h
++++ b/common/game/gamescript.h
+@@ -121,6 +121,10 @@ class GameScript final {
+     auto updateDialog (const GameScript::DlgChoice &dlg, Npc &player, Npc &npc) -> std::vector<GameScript::DlgChoice>;
+     void exec(const DlgChoice &dlg, Npc &player, Npc &npc);
+ 
++    // Gothic II Mobile: напарники - «Пойдём со мной» в диалоге с безымянными людьми (companions.cpp)
++    void companionChoices(Npc& player, Npc& npc, std::vector<DlgChoice>& out);
++    void execCompanion   (const DlgChoice& dlg, Npc& player, Npc& npc);
++
+     void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
+     void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
+     void  printCannotBuyError         (Npc &npc);
+@@ -445,6 +449,20 @@ class GameScript final {
+     void exitsession         ();
+ 
+     void sort(std::vector<DlgChoice>& dlg);
++
++    enum : uint32_t {
++      CompanionHire    = 0xFFFFFF01u,
++      CompanionWait    = 0xFFFFFF02u,
++      CompanionFollow  = 0xFFFFFF03u,
++      CompanionDismiss = 0xFFFFFF04u,
++      };
++    int32_t scriptConst  (std::string_view name, int32_t def);
++    bool    isPartyMember(Npc& npc);
++    bool    isHired      (Npc& npc);
++    size_t  hiredCount   ();
++    int32_t hirePrice    (Npc& npc) const;
++    void    companionSay (Npc& npc, Npc& player, std::string_view svm);
++
+     void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
+     bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
+ 
 diff --git a/common/game/playercontrol.cpp b/common/game/playercontrol.cpp
 index aa165097..abf344f4 100644
 --- a/common/game/playercontrol.cpp
@@ -610,10 +856,10 @@ index 17a2ec63..cf8c4d46 100644
      accepted = true;
      }
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f17309..7db7b5be 100644
+index d9f17309..4f920c44 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,469 @@
+@@ -1,41 +1,447 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
@@ -622,6 +868,7 @@ index d9f17309..7db7b5be 100644
 +#include <cmath>
 +
  #include "game/playercontrol.h"
++#include "utils/cp1251.h"
 +#include "utils/gthfont.h"
 +#include "mainwindow.h"
 +#include "gothic.h"
@@ -630,29 +877,6 @@ index d9f17309..7db7b5be 100644
  using namespace Tempest;
  
 -TouchInput::TouchInput(PlayerControl& ctrl) : ctrl(ctrl) {
-+// Gothic II Mobile: подписи кнопок. Шрифты русской Gothic II - в кодировке Windows-1251.
-+static std::string toCp1251(std::string_view utf8) {
-+  std::string ret;
-+  for(size_t i=0; i<utf8.size(); ++i) {
-+    const uint8_t c = uint8_t(utf8[i]);
-+    if(c<0x80 || i+1>=utf8.size()) {
-+      ret.push_back(char(c));
-+      continue;
-+      }
-+    const uint32_t cp = ((c & 0x1Fu)<<6) | (uint8_t(utf8[i+1]) & 0x3Fu);
-+    ++i;
-+    if(cp>=0x410 && cp<=0x44F)
-+      ret.push_back(char(0xC0 + (cp-0x410)));
-+    else if(cp==0x401)
-+      ret.push_back(char(0xA8));
-+    else if(cp==0x451)
-+      ret.push_back(char(0xB8));
-+    else
-+      ret.push_back('?');
-+    }
-+  return ret;
-+  }
-+
 +TouchInput::TouchInput(MainWindow& owner, PlayerControl& ctrl) : owner(owner), ctrl(ctrl) {
 +  repeatTimer.timeout.bind(this,&TouchInput::onRepeat);
 +  }
@@ -663,8 +887,9 @@ index d9f17309..7db7b5be 100644
 +
 +uint8_t TouchInput::currentMode() const {
 +  return uint8_t(owner.touchMode());
-+  }
-+
+   }
+ 
+-void TouchInput::paintEvent(Tempest::PaintEvent& e) {
 +Rect TouchInput::rectOf(Ctl c) const {
 +  const float d   = dp();
 +  const int   pad = int(12*d);
@@ -798,9 +1023,8 @@ index d9f17309..7db7b5be 100644
 +      break;
 +    }
 +  return "";
-   }
- 
--void TouchInput::paintEvent(Tempest::PaintEvent& e) {
++  }
++
 +void TouchInput::paintEvent(PaintEvent& e) {
 +  const uint8_t m = currentMode();
 +  if(m!=lastMode) {
@@ -829,16 +1053,16 @@ index d9f17309..7db7b5be 100644
 +void TouchInput::drawButton(Painter& p, Ctl c, bool pressed, bool active) {
 +  const auto r = rectOf(c);
 +  const int  b = std::max(1, int(1.5f*dp()));
-+
+ 
+-  p.setBrush(Color(1,1,1, 0.2f));
+-  p.drawRect(10, h()-10 - 100, 100, 100);
 +  // Тёмная кожа и рамка старой бронзы, как панели игры
 +  if(active)
 +    p.setBrush(Color(0.42f, 0.31f, 0.12f, pressed ? 0.85f : 0.7f));
 +  else
 +    p.setBrush(Color(0.06f, 0.05f, 0.04f, pressed ? 0.7f : 0.42f));
 +  p.drawRect(r.x, r.y, r.w, r.h);
- 
--  p.setBrush(Color(1,1,1, 0.2f));
--  p.drawRect(10, h()-10 - 100, 100, 100);
++
 +  p.setBrush(Color(0.74f, 0.6f, 0.33f, pressed || active ? 0.95f : 0.6f));
 +  p.drawRect(r.x,       r.y,       r.w, b);
 +  p.drawRect(r.x,       r.y+r.h-b, r.w, b);
@@ -850,8 +1074,11 @@ index d9f17309..7db7b5be 100644
 +  const auto  txt  = label(c);
 +  const auto  sz   = fnt.textSize(txt);
 +  fnt.drawText(p, r.x+(r.w-sz.w)/2, r.y+(r.h+sz.h)/2, txt);
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
+-  auto r = Rect(10, h()-10-100, 100, 100);
+-  if(!r.contains(e.pos())) {
 +void TouchInput::drawJoystick(Painter& p) {
 +  const float d = dp();
 +  const int   R = int(56*d);
@@ -885,11 +1112,8 @@ index d9f17309..7db7b5be 100644
 +  const int k = int(float(R)*0.45f);
 +  p.setBrush(Color(0.74f, 0.6f, 0.33f, alpha+0.15f));
 +  p.drawRect(knob.x-k, knob.y-k, 2*k, 2*k);
-   }
- 
--void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
--  auto r = Rect(10, h()-10-100, 100, 100);
--  if(!r.contains(e.pos())) {
++  }
++
 +void TouchInput::mouseDownEvent(MouseEvent& e) {
 +  using M = MainWindow::TouchMode;
 +  const auto m = M(currentMode());
@@ -1058,6 +1282,17 @@ index d9f17309..7db7b5be 100644
 +    default:
 +      break;
 +    }
++  }
++
++void TouchInput::releaseAll() {
++  for(auto& f:fingers) {
++    // Кнопку оружия при смене экрана не нажимаем
++    if(f.ctl!=C_Weapon)
++      release(f.ctl, f);
++    f = Finger();
++    }
++  repeatCtl = C_None;
++  repeatTimer.stop();
    }
  
 -void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
@@ -1066,31 +1301,20 @@ index d9f17309..7db7b5be 100644
 -  if(std::abs(dp.x)>0) {
 -    const float scale = 4.f;
 -    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
-+void TouchInput::releaseAll() {
-+  for(auto& f:fingers) {
-+    // Кнопку оружия при смене экрана не нажимаем
-+    if(f.ctl!=C_Weapon)
-+      release(f.ctl, f);
-+    f = Finger();
-     }
-+  repeatCtl = C_None;
-+  repeatTimer.stop();
-   }
- 
--void TouchInput::mouseUpEvent(Tempest::MouseEvent& e) {
--  ctrl.onKeyReleased(KeyCodec::Forward, KeyCodec::Mapping::Primary);
 +void TouchInput::onRepeat() {
 +  if(repeatCtl==C_None) {
 +    repeatTimer.stop();
 +    return;
-+    }
+     }
 +  const uint64_t now = Application::tickCount();
 +  if(now<repeatNext)
 +    return;
 +  repeatNext = now+120;
 +  sendNav(repeatCtl);
-+  }
-+
+   }
+ 
+-void TouchInput::mouseUpEvent(Tempest::MouseEvent& e) {
+-  ctrl.onKeyReleased(KeyCodec::Forward, KeyCodec::Mapping::Primary);
 +void TouchInput::sendNav(Ctl c) {
 +  switch(c) {
 +    case C_Up:    owner.touchKey(Event::K_Up);    break;
@@ -1198,6 +1422,43 @@ index f46becce..8831d950 100644
 +    void           drawButton(Tempest::Painter& p, Ctl c, bool pressed, bool active);
 +    void           drawJoystick(Tempest::Painter& p);
 +  };
+diff --git a/common/utils/cp1251.h b/common/utils/cp1251.h
+new file mode 100644
+index 00000000..0edac343
+--- /dev/null
++++ b/common/utils/cp1251.h
+@@ -0,0 +1,31 @@
++#pragma once
++
++#include <cstdint>
++#include <string>
++#include <string_view>
++
++// Gothic II Mobile: строки наших кнопок и реплик. Шрифты и тексты русской Gothic II -
++// в кодировке Windows-1251, а исходники - в UTF-8: кириллица переводится, прочее - '?'.
++inline std::string toCp1251(std::string_view utf8) {
++  std::string ret;
++  for(size_t i=0; i<utf8.size(); ++i) {
++    const uint8_t c = uint8_t(utf8[i]);
++    if(c<0x80 || i+1>=utf8.size()) {
++      ret.push_back(char(c));
++      continue;
++      }
++    const uint32_t cp = ((c & 0x1Fu)<<6) | (uint8_t(utf8[i+1]) & 0x3Fu);
++    ++i;
++    if(cp>=0x410 && cp<=0x44F)
++      ret.push_back(char(0xC0 + (cp-0x410)));
++    else if(cp==0x401)
++      ret.push_back(char(0xA8));
++    else if(cp==0x451)
++      ret.push_back(char(0xB8));
++    else if(cp==0x2014)
++      ret.push_back(char(0x97)); // тире
++    else
++      ret.push_back('?');
++    }
++  return ret;
++  }
 diff --git a/common/utils/installdetect.cpp b/common/utils/installdetect.cpp
 index 1624d795..461c1e1f 100644
 --- a/common/utils/installdetect.cpp
@@ -1233,7 +1494,7 @@ index 1624d795..461c1e1f 100644
    if(path.empty())
      return u"";
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e0153980..6c349a5e 100644
+index e0153980..c5c96efc 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -1555,7 +1555,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
@@ -1294,23 +1555,47 @@ index e0153980..6c349a5e 100644
  bool Npc::isImmortal() const {
    return hnpc->flags & zenkit::NpcFlag::IMMORTAL;
    }
+@@ -4356,6 +4387,20 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+     });
+   }
+ 
++void Npc::setRoutineAllDay(size_t state, std::string_view point) {
++  // Как TA_Follow_Player в распорядках напарников из скриптов: 8-20 и 20-8
++  routines.clear();
++  addRoutine(gtime(8,0), gtime(20,0),uint32_t(state),point);
++  addRoutine(gtime(20,0),gtime(8,0), uint32_t(state),point);
++  }
++
++bool Npc::hasRoutineState(size_t state) const {
++  for(auto& i:routines)
++    if(i.callback.ptr==state)
++      return true;
++  return false;
++  }
++
+ void Npc::excRoutine(size_t callback) {
+   routines.clear();
+   owner.script().invokeState(this,currentOther,currentVictim,callback);
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 73099364..bc64b574 100644
+index 73099364..af43e6f1 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
-@@ -289,6 +289,11 @@ class Npc final {
+@@ -289,6 +289,14 @@ class Npc final {
  
      bool      isAttackAnim() const;
      bool      isPrehit() const;
 +    // Gothic II Mobile: окно серии ударов; автобой — герой дерётся по боевому ИИ, как NPC
 +    bool      isComboWindow() const;
 +    void      setAutoFight(bool f);
++    // Gothic II Mobile: напарник - один распорядок на весь день (следовать, ждать)
++    void      setRoutineAllDay(size_t state, std::string_view point);
++    bool      hasRoutineState(size_t state) const;
 +    bool      isAutoFight() const { return autoFight; }
 +    int32_t   fightTactic() const;
      bool      isImmortal() const;
  
      void      setPerceptionTime   (uint64_t time);
-@@ -629,6 +634,7 @@ class Npc final {
+@@ -629,6 +637,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;

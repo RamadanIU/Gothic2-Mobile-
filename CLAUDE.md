@@ -63,6 +63,8 @@ WineD3D + Zink, до 20 FPS в WineD3D + Gladio), Vulkan 1.3 нет — D7VK н�
 Gothic II (MIT) с портом на Android — нативно, без Wine, код движка у нас. Сделаны сенсорный слой
 (`TouchInput`), удержание «Удара» = серия ударов в окна комбо (`Pose::isComboWindow`) и **автобой**: герой
 дерётся по боевому ИИ NPC (`Npc::autoFight`, `PlayerControl::tickAutoFight`), пьёт зелье при < 25 % здоровья.
+Пользователь подтвердил: всё работает. **Напарники** (`companions.cpp`): безымянного NPC можно нанять в
+диалоге за 10 золотых/уровень — флаг `AIV_PARTYMEMBER` + `ZS_Follow_Player`, опыт за его убийства даёт сама игра.
 Патчи — `third_party/opengothic*.patch`, оболочка (экран запуска, папка игры) — `og-android/`. Подробности
 и что ждём от пользователя — docs/PROGRESS.md, последний раздел. Если проба удачна — переносить игру в
 основное приложение на OpenGothic (Winlator — запасной режим).
@@ -157,6 +159,8 @@ tools/fetch-winlator.sh   # клонирует закреплённый комм
   `tools/build-opengothic.sh --init-script "$PWD/tools/og-maven-mirror.gradle"`. Правки движка — в
   `third_party/opengothic` (и `lib/Tempest`), затем в патчи:
   `git diff --ignore-submodules=all > ../opengothic.patch` и `git -C lib/Tempest diff > ../opengothic-tempest.patch`.
+  Новые файлы движка перед этим — `git add -N <файл>` (не `-A`: каталог `build/` не в .gitignore движка),
+  после — `git reset -q`.
   Код с `-Werror` (неявное int→float — ошибка). Помечать правки «Gothic II Mobile:».
 - Правки Winlator делаются в `third_party/winlator-app`, затем сохраняются в патч (иначе пропадут):
   `cd third_party/winlator-app && git add -A -N && git diff --binary > ../winlator.patch`.
