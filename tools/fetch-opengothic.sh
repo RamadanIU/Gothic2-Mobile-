@@ -28,6 +28,7 @@ fi
 
 # Всегда с чистого состояния: локальные правки в third_party не сохраняются, только патчи.
 # Каталог сборки (build/) сохраняется, чтобы повторная сборка была быстрой.
+git -C "$DEST" reset -q --hard
 git -C "$DEST" checkout -q --force "$OPENGOTHIC_COMMIT"
 git -C "$DEST" clean -q -fd -e build/
 git -C "$DEST" submodule update -q --init --recursive --depth 1 --force
