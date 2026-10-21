@@ -1,0 +1,1320 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 24fcd186..46028b39 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -215,7 +215,17 @@ target_sources(Spacer PRIVATE ${SPACER_SOURCES} spacer/main.cpp)
+ target_include_directories(Spacer PRIVATE "spacer")
+ target_link_libraries(Spacer PRIVATE OpenGothic SpacerAssets)
+ 
+-if(ANDROID)
++if(ANDROID AND G2M_ANDROID_DIR)
++  # Gothic II Mobile: пробная сборка - своя оболочка (выбор папки игры, разрешение «Файлы»)
++  add_android_apk(OpenGothic-apk
++    PACKAGE_NAME gothic2.mobile.og
++    CODE Gothic2Notr
++    VERSION_CODE ${G2M_VERSION_CODE}
++    VERSION_NAME ${G2M_VERSION_NAME}
++    MANIFEST ${G2M_ANDROID_DIR}/AndroidManifest.xml
++    JAVA_DIRS ${G2M_ANDROID_DIR}/java
++    RESOURCE_DIRS ${G2M_ANDROID_DIR}/res)
++elseif(ANDROID)
+   add_android_apk(OpenGothic-apk
+     PACKAGE_NAME org.opengothic.app
+     CODE Gothic2Notr
+diff --git a/common/game/fightalgo.cpp b/common/game/fightalgo.cpp
+index b1d951ff..8d5f5cdc 100644
+--- a/common/game/fightalgo.cpp
++++ b/common/game/fightalgo.cpp
+@@ -31,7 +31,7 @@ void FightAlgo::save(Serialize &fout) {
+   }
+ 
+ void FightAlgo::fillQueue(Npc &npc, Npc &tg, GameScript& owner) {
+-  auto& ai = Gothic::fai()[size_t(npc.handle().fight_tactic)];
++  auto& ai = Gothic::fai()[size_t(npc.fightTactic())];
+   auto  ws = npc.weaponState();
+ 
+   if(hitFlg) {
+diff --git a/common/game/playercontrol.cpp b/common/game/playercontrol.cpp
+index aa165097..abf344f4 100644
+--- a/common/game/playercontrol.cpp
++++ b/common/game/playercontrol.cpp
+@@ -1,5 +1,7 @@
+ #include "playercontrol.h"
+ 
++#include <Tempest/Log>
++
+ #include <cmath>
+ 
+ #include "world/objects/npc.h"
+@@ -26,6 +28,10 @@ void PlayerControl::setupSettings() {
+     } else {
+     g2Ctrl = false;
+     }
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: сенсорные кнопки рассчитаны на управление Gothic II
++  g2Ctrl = (Gothic::inst().version().game==2);
++#endif
+   }
+ 
+ void PlayerControl::setTarget(Npc *other) {
+@@ -33,6 +39,8 @@ void PlayerControl::setTarget(Npc *other) {
+   auto pl = w ? w->player() : nullptr;
+   if(pl==nullptr || pl->isFinishingMove())
+     return;
++  if(autoFightOn)
++    return; // Gothic II Mobile: цель выбирает автобой
+   const auto ws    = pl->weaponState();
+   const bool melle = (ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H);
+   if(other==nullptr) {
+@@ -444,6 +452,220 @@ void PlayerControl::clearInput() {
+   std::memset(ctrl, 0,sizeof(ctrl));
+   std::memset(actrl,0,sizeof(actrl));
+   std::memset(wctrl,0,sizeof(wctrl));
++  // Gothic II Mobile: пальцы, лежащие на кнопках, снова нажмут их при следующем касании
++  touchFwdAct  = Action::Idle;
++  touchSideAct = Action::Idle;
++  touchSideAtk = 0;
++  touchAttack  = false;
++  touchBlock   = false;
++  }
++
++void PlayerControl::setTouchMove(int forward, int side) {
++  auto w     = Gothic::inst().world();
++  auto pl    = w ? w->player() : nullptr;
++  // С оружием в руках вбок - шаг в сторону (уклон), без оружия - поворот
++  bool fight = pl!=nullptr && pl->weaponState()!=WeaponState::NoWeapon;
++  auto fwd   = forward>0 ? Action::Forward : (forward<0 ? Action::Back : Action::Idle);
++  auto sd    = Action::Idle;
++  if(side<0)
++    sd = fight ? Action::Left  : Action::RotateL;
++  if(side>0)
++    sd = fight ? Action::Right : Action::RotateR;
++
++  if(fwd!=touchFwdAct) {
++    if(touchFwdAct!=Action::Idle)
++      onKeyReleased(touchFwdAct,KeyCodec::Mapping::Secondary);
++    touchFwdAct = fwd;
++    if(fwd!=Action::Idle)
++      onKeyPressed(fwd,Tempest::KeyEvent::K_NoKey,KeyCodec::Mapping::Secondary);
++    }
++  if(sd!=touchSideAct) {
++    if(touchSideAct!=Action::Idle)
++      onKeyReleased(touchSideAct,KeyCodec::Mapping::Secondary);
++    touchSideAct = sd;
++    if(sd!=Action::Idle)
++      onKeyPressed(sd,Tempest::KeyEvent::K_NoKey,KeyCodec::Mapping::Secondary);
++    }
++  }
++
++void PlayerControl::setTouchAttack(bool hold) {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  if(!hold) {
++    touchAttack  = false;
++    touchSideAtk = 0;
++    onKeyReleased(Action::ActionGeneric,KeyCodec::Mapping::Primary);
++    return;
++    }
++  const auto ws = pl ? pl->weaponState() : WeaponState::NoWeapon;
++  // Ближний бой: удары с серией ведёт tickTouchAttack. Остальное (разговор, подобрать,
++  // лук, магия) - как удержание «действия» на клавиатуре.
++  touchAttack  = (ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H);
++  touchFresh   = touchAttack;
++  touchSideAtk = 0;
++  if(!touchAttack)
++    onKeyPressed(Action::ActionGeneric,Tempest::KeyEvent::K_NoKey,KeyCodec::Mapping::Primary);
++  }
++
++void PlayerControl::touchSideAttack(int dir) {
++  if(touchAttack)
++    touchSideAtk = int8_t(dir<0 ? -1 : 1);
++  }
++
++void PlayerControl::setTouchBlock(bool hold) {
++  touchBlock = hold;
++  if(!hold)
++    actrl[ActBack] = false;
++  }
++
++void PlayerControl::setAutoFight(bool on) {
++  autoFight = on;
++  if(on)
++    return;
++  autoFightOn = false;
++  auto w = Gothic::inst().world();
++  if(auto pl = w ? w->player() : nullptr)
++    pl->setAutoFight(false);
++  }
++
++bool PlayerControl::drinkHealPotion() {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  if(pl==nullptr || pl->isDown())
++    return false;
++  // Сначала слабые зелья: сильные остаются на крайний случай
++  static const char* potions[] = {"ITPO_HEALTH_01", "ITPO_HEALTH_02", "ITPO_HEALTH_03", "ITPO_HEALTH_ADDON_04"};
++  for(auto name:potions) {
++    const size_t id = w->script().findSymbolIndex(name);
++    if(id==size_t(-1) || pl->itemCount(id)==0)
++      continue;
++    pl->useItem(id);
++    return true;
++    }
++  return false;
++  }
++
++void PlayerControl::applyTouchMove() {
++  // Удар и выход из серии сбрасывают движение (movement.reset) - палец на джойстике возвращает его.
++  // Пока держат «Удар» или «Блок», герой стоит: серия и блок не срываются бегом.
++  const bool hold = touchAttack || touchBlock;
++  if(touchFwdAct==Action::Idle && touchSideAct==Action::Idle && !hold)
++    return;
++  movement.forwardBackward.main   [1] = !hold && touchFwdAct ==Action::Forward;
++  movement.forwardBackward.reverse[1] = !hold && touchFwdAct ==Action::Back;
++  movement.strafeRightLeft.main   [1] = !hold && touchSideAct==Action::Right;
++  movement.strafeRightLeft.reverse[1] = !hold && touchSideAct==Action::Left;
++  movement.turnRightLeft.main     [1] = !hold && touchSideAct==Action::RotateR;
++  movement.turnRightLeft.reverse  [1] = !hold && touchSideAct==Action::RotateL;
++  }
++
++void PlayerControl::tickTouchAttack(Npc& pl) {
++  const auto ws = pl.weaponState();
++  if(ws!=WeaponState::Fist && ws!=WeaponState::W1H && ws!=WeaponState::W2H)
++    return;
++  if(touchBlock) {
++    actrl[ActBack] = true;
++    return;
++    }
++  if(!touchAttack)
++    return;
++  // Как удержание «действия»: цель зафиксирована, герой доворачивается к ней
++  ctrl [Action::ActionGeneric] = true;
++  actrl[ActGeneric]            = true;
++  if(pl.isAttackAnim() && !pl.isComboWindow())
++    return; // ждём окна серии: удар раньше времени сорвал бы комбо
++  // Добить оглушённого - только новым нажатием: удержание «Удара» никого не убивает само
++  if(auto tg = pl.target(); touchFresh && tg!=nullptr && !pl.isAttackAnim() && pl.canFinish(*tg))
++    actrl[ActKill] = true;
++  else if(touchSideAtk<0)
++    actrl[ActLeft] = true;
++  else if(touchSideAtk>0)
++    actrl[ActRight] = true;
++  else
++    actrl[ActForward] = true;
++  touchSideAtk = 0;
++  touchFresh   = false;
++  }
++
++Npc* PlayerControl::findAutoFightTarget(Npc& pl) const {
++  auto w = Gothic::inst().world();
++  if(w==nullptr)
++    return nullptr;
++  // Нападающий на героя - издалека; хищник, который ещё не напал, - только вблизи
++  static const float attackerDist = 1500.f;
++  static const float monsterDist  = 700.f;
++  auto isEnemy = [&pl](Npc& npc) {
++    if(&npc==&pl || npc.isDown())
++      return false;
++    const float qd = pl.qDistTo(npc);
++    if(npc.target()==&pl && npc.isAttack())
++      return qd<attackerDist*attackerDist;
++    if(npc.isMonster() && npc.isEnemy(pl))
++      return qd<monsterDist*monsterDist;
++    return false;
++    };
++
++  if(auto tg = pl.target(); tg!=nullptr && isEnemy(*tg))
++    return tg; // не перескакивать между врагами без причины
++
++  Npc*  ret  = nullptr;
++  float best = 0;
++  for(uint32_t i=0; i<w->npcCount(); ++i) {
++    auto npc = w->npcById(i);
++    if(npc==nullptr || !isEnemy(*npc))
++      continue;
++    const float qd = pl.qDistTo(*npc);
++    if(ret==nullptr || qd<best) {
++      ret  = npc;
++      best = qd;
++      }
++    }
++  return ret;
++  }
++
++bool PlayerControl::tickAutoFight(Npc& pl) {
++  // Палец на джойстике или кнопке боя - герой слушается игрока; отпустил - автобой продолжает
++  const bool manual = touchAttack || touchBlock || touchFwdAct!=Action::Idle || touchSideAct!=Action::Idle ||
++                      movement.forwardBackward.any() || movement.strafeRightLeft.any() || movement.turnRightLeft.any();
++  Npc* tg = nullptr;
++  if(autoFight && !manual && !dlg.isActive() && !pl.isSwim() && !pl.isDive())
++    tg = findAutoFightTarget(pl);
++
++  const auto ws    = pl.weaponState();
++  const bool melee = (ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H);
++  if(tg!=nullptr && ws==WeaponState::NoWeapon) {
++    // Оружие достаём, только если на героя уже напали: убранный меч - тоже решение игрока
++    if(tg->target()==&pl && tg->isAttack())
++      wctrl[WeaponMele] = true;
++    tg = nullptr;
++    }
++
++  if(tg==nullptr || !melee) {
++    if(autoFightOn) {
++      autoFightOn = false;
++      pl.setAutoFight(false);
++      Tempest::Log::i("[g2m] autofight: idle");
++      }
++    return false;
++    }
++
++  if(!autoFightOn || pl.target()!=tg)
++    Tempest::Log::i("[g2m] autofight: target=", tg->displayName(), " tactic=", pl.fightTactic());
++  autoFightOn = true;
++  pl.setTarget(tg);
++  pl.setAutoFight(true);
++
++  // Здоровья меньше четверти - зелье, не чаще раза в 4 с
++  const uint64_t now = Gothic::inst().world()->tickCount();
++  if(pl.attribute(ATR_HITPOINTS)*4<pl.attribute(ATR_HITPOINTSMAX) && now>autoHealTime) {
++    autoHealTime = now+4000;
++    drinkHealPotion();
++    }
++
++  rotMouse     = 0;
++  rotMouseY    = 0;
++  runAngleDest = 0;
++  return true;
+   }
+ 
+ void PlayerControl::marvinF8(uint64_t dt) {
+@@ -675,6 +897,12 @@ void PlayerControl::implMove(uint64_t dt) {
+       }
+     }
+ 
++  // Gothic II Mobile: автобой ведёт героя сам; иначе - удержание «Удара» и джойстик
++  if(tickAutoFight(pl))
++    return;
++  tickTouchAttack(pl);
++  applyTouchMove();
++
+   if(!pl.isInState(ScriptFn()) || dlg.isActive()) {
+     runAngleDest = 0;
+     return;
+diff --git a/common/game/playercontrol.h b/common/game/playercontrol.h
+index fb8d6259..c55715d2 100644
+--- a/common/game/playercontrol.h
++++ b/common/game/playercontrol.h
+@@ -48,6 +48,15 @@ class PlayerControl final {
+     bool  tickMove(uint64_t dt);
+     bool  tickCameraMove(uint64_t dt);
+ 
++    // Gothic II Mobile: сенсорное управление и автобой
++    void  setTouchMove(int forward, int side);
++    void  setTouchAttack(bool hold);
++    void  touchSideAttack(int dir);
++    void  setTouchBlock(bool hold);
++    void  setAutoFight(bool on);
++    bool  isAutoFight() const { return autoFight; }
++    bool  drinkHealPotion();
++
+   private:
+     enum WeaponAction : uint8_t {
+       WeaponClose,
+@@ -153,6 +162,17 @@ class PlayerControl final {
+     int            rotationAni    = 0;
+     bool           g2Ctrl         = false;
+ 
++    // Gothic II Mobile: состояние сенсорного управления
++    Action         touchFwdAct    = Action::Idle;
++    Action         touchSideAct   = Action::Idle;
++    int8_t         touchSideAtk   = 0;
++    bool           touchAttack    = false;
++    bool           touchFresh     = false;
++    bool           touchBlock     = false;
++    bool           autoFight      = false;
++    bool           autoFightOn    = false;
++    uint64_t       autoHealTime   = 0;
++
+     DialogMenu&    dlg;
+     InventoryMenu& inv;
+ 
+@@ -177,6 +197,11 @@ class PlayerControl final {
+     void           setAnimRotate (Npc& pl, float rotation, int anim, bool force, uint64_t dt);
+     void           processAutoRotate(Npc& pl, float& rot, uint64_t dt);
+ 
++    void           applyTouchMove();
++    void           tickTouchAttack(Npc& pl);
++    bool           tickAutoFight(Npc& pl);
++    Npc*           findAutoFightTarget(Npc& pl) const;
++
+ 
+     //////////////////////////////////
+     // Helper functions for movement
+diff --git a/common/graphics/mesh/pose.cpp b/common/graphics/mesh/pose.cpp
+index 9a4f1665..9d0e67da 100644
+--- a/common/graphics/mesh/pose.cpp
++++ b/common/graphics/mesh/pose.cpp
+@@ -790,6 +790,25 @@ uint16_t Pose::comboLength() const {
+   return combo.len();
+   }
+ 
++bool Pose::isComboWindow(uint64_t tickCount) const {
++  // Gothic II Mobile: та же проверка, что в continueCombo, но без побочных эффектов
++  if(combo.isBreak())
++    return false;
++  for(auto& i:lay) {
++    if(!i.seq->isAttackAnim())
++      continue;
++    auto&  d  = *i.seq->data;
++    size_t id = combo.len()*2;
++    if(d.defWindow.size()==0 || d.defHitEnd.size()==0)
++      continue;
++    if(id+1>=d.defWindow.size())
++      return false;
++    uint64_t t = tickCount-i.sAnim;
++    return d.defWindow[id+0]<t && t<=d.defWindow[id+1];
++    }
++  return false;
++  }
++
+ const Tempest::Matrix4x4 Pose::rootNode() const {
+   size_t id = 0;
+   if(skeleton->rootNodes.size())
+diff --git a/common/graphics/mesh/pose.h b/common/graphics/mesh/pose.h
+index 216d392b..f0244f84 100644
+--- a/common/graphics/mesh/pose.h
++++ b/common/graphics/mesh/pose.h
+@@ -74,6 +74,8 @@ class Pose final {
+ 
+     auto               continueCombo(const AnimationSolver &solver, const Animation::Sequence *sq, BodyState bs, uint64_t tickCount) -> const Animation::Sequence*;
+     uint16_t           comboLength() const;
++    // Gothic II Mobile: удар сейчас продолжит серию (окно комбо открыто)
++    bool               isComboWindow(uint64_t tickCount) const;
+ 
+     float              translateY() const { return trY; }
+     auto               rootNode() const -> const Tempest::Matrix4x4;
+diff --git a/common/mainwindow.cpp b/common/mainwindow.cpp
+index 52b66d3a..1d2e485c 100644
+--- a/common/mainwindow.cpp
++++ b/common/mainwindow.cpp
+@@ -34,7 +34,7 @@ MainWindow::MainWindow(Device& device)
+     dialogs(inventory),document(keycodec),
+     console(*this),
+ #if defined(__MOBILE_PLATFORM__)
+-    mobileUi(player),
++    mobileUi(*this,player),
+ #endif
+     player(dialogs,inventory) {
+   Gothic::inst().onSettingsChanged.bind(this,&MainWindow::onSettings);
+@@ -304,6 +304,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
+   }
+ 
+ void MainWindow::mouseDownEvent(MouseEvent &event) {
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: касание мимо сенсорного слоя - не удар и не «действие»
++  (void)event;
++  return;
++#endif
+   if(event.button<sizeof(mouseP))
+     mouseP[event.button]=true;
+   auto act     = keycodec.tr(event);
+@@ -312,6 +317,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
+   }
+ 
+ void MainWindow::mouseUpEvent(MouseEvent &event) {
++#if defined(__MOBILE_PLATFORM__)
++  (void)event;
++  return;
++#endif
+   auto act     = keycodec.tr(event);
+   auto mapping = keycodec.mapping(event);
+   player.onKeyReleased(act,mapping);
+@@ -333,6 +342,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
+   }
+ 
+ void MainWindow::processMouse(MouseEvent& event, bool enable) {
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: камеру крутит сенсорный слой (touchLook), касание - не мышь
++  (void)event;
++  (void)enable;
++  return;
++#endif
+   auto center = Point(w()/2,h()/2);
+   if(enable && event.pos()!=center && hasFocus()) {
+     dMouse += (event.pos()-center);
+@@ -344,21 +359,23 @@ void MainWindow::tickMouse(uint64_t dt) {
+   auto camera = Gothic::inst().camera();
+   if(dialogs.hasContent() || Gothic::inst().isPause() || camera==nullptr || camera->isCutscene()) {
+     dMouse = Point();
++    dTouch = Point();
+     return;
+     }
+ 
+   const bool enableMouse = Gothic::inst().settingsGetI("GAME","enableMouse");
+   if(enableMouse==0) {
+     dMouse = Point();
+-    return;
+     }
+ 
+-  if(dMouse==Point())
++  if(dMouse==Point() && dTouch==Point())
+     return;
+ 
+   const bool  camLookaroundInverse = Gothic::inst().settingsGetI("GAME","camLookaroundInverse");
+   const float mouseSensitivity     = Gothic::inst().settingsGetF("GAME","mouseSensitivity")/MouseUtil::mouseSysSpeed();
+   PointF dpScaled = PointF(float(dMouse.x)*mouseSensitivity,float(dMouse.y)*mouseSensitivity);
++  // Gothic II Mobile: палец на экране - без системной чувствительности мыши
++  dpScaled += PointF(float(dTouch.x),float(dTouch.y));
+   dpScaled.x/=float(w());
+   dpScaled.y/=float(h());
+   if(camLookaroundInverse)
+@@ -381,6 +398,7 @@ void MainWindow::tickMouse(uint64_t dt) {
+     }
+ 
+   dMouse = Point();
++  dTouch = Point();
+   }
+ 
+ void MainWindow::onSettings() {
+@@ -529,6 +547,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+   auto act     = keycodec.tr(event);
+   auto mapping = keycodec.mapping(event);
+ 
++  implMenuAction(act);
++  player.onKeyReleased(act, mapping);
++  }
++
++bool MainWindow::implMenuAction(KeyCodec::Action act) {
+   std::string_view menuEv;
+   if(act==KeyCodec::Escape)
+     menuEv = Gothic::inst().menuMain();
+@@ -543,6 +566,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+     if(auto pl = Gothic::inst().player())
+       rootMenu.setPlayer(*pl);
+     clearInput();
++    return true;
+     }
+   else if(act==KeyCodec::Inventory && !dialogs.isActive()) {
+     if(inventory.isActive()) {
+@@ -553,10 +577,42 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+         inventory.open(*pl);
+       }
+     clearInput();
++    return true;
+     }
+-  player.onKeyReleased(act, mapping);
++  return false;
+   }
+ 
++#if defined(__MOBILE_PLATFORM__)
++MainWindow::TouchMode MainWindow::touchMode() const {
++  if(rootMenu.isActive() || Gothic::inst().checkLoading()!=Gothic::LoadState::Idle)
++    return TouchMode::Hidden;
++  if(video.isActive() || chapter.isActive())
++    return TouchMode::Skip;
++  if(Gothic::inst().world()==nullptr)
++    return TouchMode::Hidden;
++  if(dialogs.isActive() || inventory.isActive() || document.isActive())
++    return TouchMode::Navigation;
++  if(auto c = Gothic::inst().camera(); c!=nullptr && c->isCutscene())
++    return TouchMode::Skip;
++  return TouchMode::World;
++  }
++
++void MainWindow::touchKey(Event::KeyType k) {
++  KeyEvent down(k,Event::M_NoModifier,Event::KeyDown);
++  keyDownEvent(down);
++  KeyEvent up(k,Event::M_NoModifier,Event::KeyUp);
++  keyUpEvent(up);
++  }
++
++void MainWindow::touchMenu(KeyCodec::Action act) {
++  implMenuAction(act);
++  }
++
++void MainWindow::touchLook(int dx, int dy) {
++  dTouch += Point(dx,dy);
++  }
++#endif
++
+ void MainWindow::focusEvent(FocusEvent &event) {
+   if(!event.in)
+     return;
+diff --git a/common/mainwindow.h b/common/mainwindow.h
+index 3fb27136..7b193a86 100644
+--- a/common/mainwindow.h
++++ b/common/mainwindow.h
+@@ -49,6 +49,20 @@ class MainWindow : public Tempest::Window {
+ 
+     float uiScale() const;
+ 
++#if defined(__MOBILE_PLATFORM__)
++    // Gothic II Mobile: что показывает сенсорный слой и как он передаёт ввод игре
++    enum class TouchMode : uint8_t {
++      Hidden,     // меню игры (у него своё касание), загрузка
++      World,      // мир: джойстик, камера, бой
++      Navigation, // диалог, сумка, торговля, документ: стрелки, «Выбрать», «Назад»
++      Skip,       // ролик, заставка главы, сцена: «Пропустить»
++      };
++    TouchMode touchMode() const;
++    void      touchKey (Tempest::Event::KeyType k);
++    void      touchMenu(KeyCodec::Action act);
++    void      touchLook(int dx, int dy);
++#endif
++
+   private:
+     void paintEvent     (Tempest::PaintEvent& event) override;
+     void resizeEvent    (Tempest::SizeEvent & event) override;
+@@ -89,6 +103,7 @@ class MainWindow : public Tempest::Window {
+     void setFullscreen(bool fs);
+ 
+     void processMouse(Tempest::MouseEvent& event, bool enable);
++    bool implMenuAction(KeyCodec::Action act);
+     void tickMouse(uint64_t dt);
+     void onSettings();
+ 
+@@ -157,6 +172,7 @@ class MainWindow : public Tempest::Window {
+ 
+     Tempest::Widget*          uiKeyUp=nullptr;
+     Tempest::Point            dMouse;
++    Tempest::Point            dTouch;
+     PlayerControl             player;
+     uint64_t                  lastTick=0;
+ 
+diff --git a/common/ui/gamemenu.cpp b/common/ui/gamemenu.cpp
+index 17a2ec63..cf8c4d46 100644
+--- a/common/ui/gamemenu.cpp
++++ b/common/ui/gamemenu.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <ctime>
+ 
+ #include "utils/string_frm.h"
+ #include "world/objects/npc.h"
+@@ -224,6 +225,15 @@ struct GameMenu::SavNameDialog : Dialog {
+ 
+   void mouseDownEvent(MouseEvent& e) override { e.accept(); }
+   void mouseUpEvent  (MouseEvent&) override {
++#if defined(__MOBILE_PLATFORM__)
++    // Gothic II Mobile: клавиатуры нет - пустое имя сохранения заменяется датой и временем
++    if(text.empty()) {
++      const std::time_t now = std::time(nullptr);
++      char buf[32] = {};
++      std::strftime(buf, sizeof(buf), "%d.%m.%Y %H:%M", std::localtime(&now));
++      text = buf;
++      }
++#endif
+     close();
+     accepted = true;
+     }
+diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
+index d9f17309..7db7b5be 100644
+--- a/common/ui/touchinput.cpp
++++ b/common/ui/touchinput.cpp
+@@ -1,41 +1,469 @@
+ #include "touchinput.h"
+ 
++#include <Tempest/Application>
+ #include <Tempest/Painter>
+ 
++#include <cmath>
++
+ #include "game/playercontrol.h"
++#include "utils/gthfont.h"
++#include "mainwindow.h"
++#include "gothic.h"
++#include "resources.h"
+ 
+ using namespace Tempest;
+ 
+-TouchInput::TouchInput(PlayerControl& ctrl) : ctrl(ctrl) {
++// Gothic II Mobile: подписи кнопок. Шрифты русской Gothic II - в кодировке Windows-1251.
++static std::string toCp1251(std::string_view utf8) {
++  std::string ret;
++  for(size_t i=0; i<utf8.size(); ++i) {
++    const uint8_t c = uint8_t(utf8[i]);
++    if(c<0x80 || i+1>=utf8.size()) {
++      ret.push_back(char(c));
++      continue;
++      }
++    const uint32_t cp = ((c & 0x1Fu)<<6) | (uint8_t(utf8[i+1]) & 0x3Fu);
++    ++i;
++    if(cp>=0x410 && cp<=0x44F)
++      ret.push_back(char(0xC0 + (cp-0x410)));
++    else if(cp==0x401)
++      ret.push_back(char(0xA8));
++    else if(cp==0x451)
++      ret.push_back(char(0xB8));
++    else
++      ret.push_back('?');
++    }
++  return ret;
++  }
++
++TouchInput::TouchInput(MainWindow& owner, PlayerControl& ctrl) : owner(owner), ctrl(ctrl) {
++  repeatTimer.timeout.bind(this,&TouchInput::onRepeat);
++  }
++
++float TouchInput::dp() const {
++  return std::max(1.f, owner.uiScale());
++  }
++
++uint8_t TouchInput::currentMode() const {
++  return uint8_t(owner.touchMode());
++  }
++
++Rect TouchInput::rectOf(Ctl c) const {
++  const float d   = dp();
++  const int   pad = int(12*d);
++  const int   big = int(96*d);
++  const int   btn = int(64*d);
++  const int   tw  = int(88*d);
++  const int   th  = int(44*d);
++  const int   W   = w();
++  const int   H   = h();
++
++  const Rect atk  = Rect(W-pad-big, H-pad-big, big, big);
++  const int  autoW = int(float(btn)*1.7f);
++  const Rect aut  = Rect(W-pad-autoW, atk.y-2*(pad+btn), autoW, btn);
++
++  // крестовина экранов со списками
++  const int  cx = pad + btn + btn/2 + pad;
++  const int  cy = H - pad - btn - btn/2 - pad;
++
++  switch(c) {
++    case C_Attack:
++    case C_Select:
++      return atk;
++    case C_Block:
++      return Rect(atk.x-pad-btn, H-pad-btn, btn, btn);
++    case C_Jump:
++      return Rect(W-pad-btn, atk.y-pad-btn, btn, btn);
++    case C_Weapon:
++      return Rect(atk.x-pad-btn, atk.y-pad-btn, btn, btn);
++    case C_Auto:
++      return aut;
++    case C_Potion:
++      return Rect(aut.x-pad-btn, aut.y, btn, btn);
++    case C_Menu:
++    case C_Back:
++      return Rect(pad, pad, tw, th);
++    case C_Bag:
++      return Rect(pad+(tw+pad), pad, tw, th);
++    case C_Log:
++      return Rect(pad+(tw+pad)*2, pad, tw, th);
++    case C_Hero:
++      return Rect(pad+(tw+pad)*3, pad, tw, th);
++    case C_Skip:
++      return Rect(W-pad-int(float(tw)*1.4f), pad, int(float(tw)*1.4f), th);
++    case C_Up:
++      return Rect(cx-btn/2, cy-btn/2-btn-pad/2, btn, btn);
++    case C_Down:
++      return Rect(cx-btn/2, cy+btn/2+pad/2, btn, btn);
++    case C_Left:
++      return Rect(cx-btn/2-btn-pad/2, cy-btn/2, btn, btn);
++    case C_Right:
++      return Rect(cx+btn/2+pad/2, cy-btn/2, btn, btn);
++    case C_None:
++    case C_Joy:
++    case C_Look:
++    case C_Count:
++      break;
++    }
++  return Rect();
++  }
++
++bool TouchInput::isShown(Ctl c) const {
++  using M = MainWindow::TouchMode;
++  const auto m = MainWindow::TouchMode(currentMode());
++  switch(c) {
++    case C_Attack:
++    case C_Block:
++    case C_Jump:
++    case C_Weapon:
++    case C_Auto:
++    case C_Potion:
++    case C_Menu:
++    case C_Bag:
++    case C_Log:
++    case C_Hero:
++      return m==M::World;
++    case C_Up:
++    case C_Down:
++    case C_Left:
++    case C_Right:
++    case C_Select:
++    case C_Back:
++      return m==M::Navigation;
++    case C_Skip:
++      return m==M::Skip;
++    case C_None:
++    case C_Joy:
++    case C_Look:
++    case C_Count:
++      break;
++    }
++  return false;
++  }
++
++TouchInput::Ctl TouchInput::hitTest(Point p) const {
++  // Небольшой запас вокруг кнопки: палец крупнее нарисованной рамки
++  const int slop = int(6*dp());
++  for(uint8_t i=C_Attack; i<C_Count; ++i) {
++    const Ctl c = Ctl(i);
++    if(!isShown(c))
++      continue;
++    auto r = rectOf(c);
++    if(Rect(r.x-slop, r.y-slop, r.w+2*slop, r.h+2*slop).contains(p))
++      return c;
++    }
++  return C_None;
++  }
++
++std::string TouchInput::label(Ctl c) const {
++  switch(c) {
++    case C_Attack: return toCp1251("Удар");
++    case C_Block:  return toCp1251("Блок");
++    case C_Jump:   return toCp1251("Прыжок");
++    case C_Weapon: return toCp1251("Оружие");
++    case C_Auto:   return toCp1251(ctrl.isAutoFight() ? "Автобой: вкл" : "Автобой");
++    case C_Potion: return toCp1251("Зелье");
++    case C_Menu:   return toCp1251("Меню");
++    case C_Bag:    return toCp1251("Сумка");
++    case C_Log:    return toCp1251("Журнал");
++    case C_Hero:   return toCp1251("Герой");
++    case C_Up:     return "^";
++    case C_Down:   return "v";
++    case C_Left:   return "<";
++    case C_Right:  return ">";
++    case C_Select: return toCp1251("Выбрать");
++    case C_Back:   return toCp1251("Назад");
++    case C_Skip:   return toCp1251("Пропустить");
++    case C_None:
++    case C_Joy:
++    case C_Look:
++    case C_Count:
++      break;
++    }
++  return "";
+   }
+ 
+-void TouchInput::paintEvent(Tempest::PaintEvent& e) {
++void TouchInput::paintEvent(PaintEvent& e) {
++  const uint8_t m = currentMode();
++  if(m!=lastMode) {
++    // Экран сменился (открылся диалог, сумка, меню) - всё, что держали пальцы, отпускается
++    releaseAll();
++    lastMode = m;
++    }
++  if(MainWindow::TouchMode(m)==MainWindow::TouchMode::Hidden)
++    return;
++
+   Painter p(e);
++  for(uint8_t i=C_Attack; i<C_Count; ++i) {
++    const Ctl c = Ctl(i);
++    if(!isShown(c))
++      continue;
++    bool pressed = false;
++    for(auto& f:fingers)
++      if(f.ctl==c)
++        pressed = true;
++    drawButton(p, c, pressed, c==C_Auto && ctrl.isAutoFight());
++    }
++  if(MainWindow::TouchMode(m)==MainWindow::TouchMode::World)
++    drawJoystick(p);
++  }
++
++void TouchInput::drawButton(Painter& p, Ctl c, bool pressed, bool active) {
++  const auto r = rectOf(c);
++  const int  b = std::max(1, int(1.5f*dp()));
++
++  // Тёмная кожа и рамка старой бронзы, как панели игры
++  if(active)
++    p.setBrush(Color(0.42f, 0.31f, 0.12f, pressed ? 0.85f : 0.7f));
++  else
++    p.setBrush(Color(0.06f, 0.05f, 0.04f, pressed ? 0.7f : 0.42f));
++  p.drawRect(r.x, r.y, r.w, r.h);
+ 
+-  p.setBrush(Color(1,1,1, 0.2f));
+-  p.drawRect(10, h()-10 - 100, 100, 100);
++  p.setBrush(Color(0.74f, 0.6f, 0.33f, pressed || active ? 0.95f : 0.6f));
++  p.drawRect(r.x,       r.y,       r.w, b);
++  p.drawRect(r.x,       r.y+r.h-b, r.w, b);
++  p.drawRect(r.x,       r.y,       b,   r.h);
++  p.drawRect(r.x+r.w-b, r.y,       b,   r.h);
++
++  const auto  type = (pressed || active) ? Resources::FontType::Hi : Resources::FontType::Normal;
++  auto&       fnt  = Resources::font(type, Gothic::interfaceScale(this));
++  const auto  txt  = label(c);
++  const auto  sz   = fnt.textSize(txt);
++  fnt.drawText(p, r.x+(r.w-sz.w)/2, r.y+(r.h+sz.h)/2, txt);
++  }
++
++void TouchInput::drawJoystick(Painter& p) {
++  const float d = dp();
++  const int   R = int(56*d);
++  const int   b = std::max(1, int(1.5f*d));
++
++  Point center = Point(int(12*d)+R+int(24*d), h()-int(12*d)-R-int(24*d));
++  Point knob   = center;
++  float alpha  = 0.25f;
++  for(auto& f:fingers) {
++    if(f.ctl!=C_Joy)
++      continue;
++    center = f.start;
++    auto dv = f.last-f.start;
++    float len = std::sqrt(float(dv.x*dv.x + dv.y*dv.y));
++    if(len>float(R)) {
++      dv.x = int(float(dv.x)*float(R)/len);
++      dv.y = int(float(dv.y)*float(R)/len);
++      }
++    knob  = center+dv;
++    alpha = 0.6f;
++    }
++
++  p.setBrush(Color(0.06f, 0.05f, 0.04f, alpha*0.6f));
++  p.drawRect(center.x-R, center.y-R, 2*R, 2*R);
++  p.setBrush(Color(0.74f, 0.6f, 0.33f, alpha));
++  p.drawRect(center.x-R,     center.y-R,     2*R, b);
++  p.drawRect(center.x-R,     center.y+R-b,   2*R, b);
++  p.drawRect(center.x-R,     center.y-R,     b,   2*R);
++  p.drawRect(center.x+R-b,   center.y-R,     b,   2*R);
++
++  const int k = int(float(R)*0.45f);
++  p.setBrush(Color(0.74f, 0.6f, 0.33f, alpha+0.15f));
++  p.drawRect(knob.x-k, knob.y-k, 2*k, 2*k);
+   }
+ 
+-void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
+-  auto r = Rect(10, h()-10-100, 100, 100);
+-  if(!r.contains(e.pos())) {
++void TouchInput::mouseDownEvent(MouseEvent& e) {
++  using M = MainWindow::TouchMode;
++  const auto m = M(currentMode());
++  if(m==M::Hidden || e.mouseID<0 || size_t(e.mouseID)>=fingers.size()) {
+     e.ignore();
+     return;
+     }
+ 
+-  mpos = e.pos();
+-  ctrl.onKeyPressed(KeyCodec::Forward, KeyEvent::K_NoKey, KeyCodec::Mapping::Primary);
++  Ctl c = hitTest(e.pos());
++  if(c==C_None && m==M::World) {
++    // Левая часть экрана под верхними кнопками - джойстик, остальное - обзор
++    const int top = int(64*dp());
++    c = (e.x<w()*45/100 && e.y>top) ? C_Joy : C_Look;
++    }
++
++  auto& f  = fingers[size_t(e.mouseID)];
++  f        = Finger();
++  f.ctl    = c;
++  f.start  = e.pos();
++  f.last   = e.pos();
++  f.downAt = Application::tickCount();
++  // Касание мимо кнопок на экранах со списками поглощается: случайный тап не применит предмет
++  press(c, f);
++  update();
++  }
++
++void TouchInput::mouseDragEvent(MouseEvent& e) {
++  if(e.mouseID<0 || size_t(e.mouseID)>=fingers.size())
++    return;
++  auto& f  = fingers[size_t(e.mouseID)];
++  auto pos = e.pos();
++  switch(f.ctl) {
++    case C_Joy:
++      joystick(f, pos);
++      break;
++    case C_Look:
++      owner.touchLook(pos.x-f.last.x, pos.y-f.last.y);
++      break;
++    case C_Attack: {
++      // Свайп вбок по «Удару» - боковой удар; ещё свайп - ещё удар
++      const int dx = pos.x-f.start.x;
++      const int dy = pos.y-f.start.y;
++      if(std::abs(dx)>int(36*dp()) && std::abs(dx)>std::abs(dy)) {
++        ctrl.touchSideAttack(dx<0 ? -1 : 1);
++        f.start = pos;
++        }
++      break;
++      }
++    default:
++      break;
++    }
++  f.last = pos;
++  update();
++  }
++
++void TouchInput::mouseUpEvent(MouseEvent& e) {
++  if(e.mouseID<0 || size_t(e.mouseID)>=fingers.size())
++    return;
++  auto& f = fingers[size_t(e.mouseID)];
++  release(f.ctl, f);
++  f = Finger();
++  update();
++  }
++
++void TouchInput::joystick(Finger& f, Point pos) {
++  // Вперёд/назад и вбок - отдельные оси с мёртвой зоной; как стрелки клавиатуры в Gothic
++  const float R  = 56*dp();
++  const float dx = float(pos.x-f.start.x)/R;
++  const float dy = float(pos.y-f.start.y)/R;
++  const int   fw = dy<-0.3f ? 1 : (dy>0.3f ? -1 : 0);
++  const int   sd = dx<-0.45f ? -1 : (dx>0.45f ? 1 : 0);
++  ctrl.setTouchMove(fw, sd);
++  }
++
++void TouchInput::press(Ctl c, Finger& f) {
++  (void)f;
++  switch(c) {
++    case C_Attack:
++      ctrl.setTouchAttack(true);
++      break;
++    case C_Block:
++      ctrl.setTouchBlock(true);
++      break;
++    case C_Jump:
++      ctrl.onKeyPressed(KeyCodec::Jump, Event::K_NoKey, KeyCodec::Mapping::Primary);
++      break;
++    case C_Auto:
++      ctrl.setAutoFight(!ctrl.isAutoFight());
++      Gothic::inst().onPrint(toCp1251(ctrl.isAutoFight() ? "Автобой включён" : "Автобой выключен"));
++      break;
++    case C_Potion:
++      if(!ctrl.drinkHealPotion())
++        Gothic::inst().onPrint(toCp1251("Нет зелий лечения"));
++      break;
++    case C_Menu:
++      owner.touchKey(Event::K_ESCAPE);
++      break;
++    case C_Bag:
++      owner.touchMenu(KeyCodec::Inventory);
++      break;
++    case C_Log:
++      owner.touchMenu(KeyCodec::Log);
++      break;
++    case C_Hero:
++      owner.touchMenu(KeyCodec::Status);
++      break;
++    case C_Up:
++    case C_Down:
++    case C_Left:
++    case C_Right:
++      sendNav(c);
++      // Держать стрелку - листать список
++      repeatCtl  = c;
++      repeatNext = Application::tickCount()+400;
++      repeatTimer.start(50);
++      break;
++    case C_Select:
++      owner.touchKey(Event::K_Return);
++      break;
++    case C_Back:
++    case C_Skip:
++      owner.touchKey(Event::K_ESCAPE);
++      break;
++    case C_None:
++    case C_Joy:
++    case C_Look:
++    case C_Weapon:
++    case C_Count:
++      break;
++    }
++  }
++
++void TouchInput::release(Ctl c, Finger& f) {
++  switch(c) {
++    case C_Joy:
++      ctrl.setTouchMove(0, 0);
++      break;
++    case C_Attack:
++      ctrl.setTouchAttack(false);
++      break;
++    case C_Block:
++      ctrl.setTouchBlock(false);
++      break;
++    case C_Jump:
++      ctrl.onKeyReleased(KeyCodec::Jump, KeyCodec::Mapping::Primary);
++      break;
++    case C_Weapon: {
++      // Коснуться - меч (или последнее оружие), подержать - лук
++      const bool longPress = Application::tickCount()-f.downAt>=450;
++      const auto act       = longPress ? KeyCodec::WeaponBow : KeyCodec::Weapon;
++      ctrl.onKeyPressed (act, Event::K_NoKey, KeyCodec::Mapping::Primary);
++      ctrl.onKeyReleased(act, KeyCodec::Mapping::Primary);
++      break;
++      }
++    case C_Up:
++    case C_Down:
++    case C_Left:
++    case C_Right:
++      if(repeatCtl==c) {
++        repeatCtl = C_None;
++        repeatTimer.stop();
++        }
++      break;
++    default:
++      break;
++    }
+   }
+ 
+-void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
+-  auto dp = e.pos() - mpos;
+-  mpos = e.pos();
+-  if(std::abs(dp.x)>0) {
+-    const float scale = 4.f;
+-    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
++void TouchInput::releaseAll() {
++  for(auto& f:fingers) {
++    // Кнопку оружия при смене экрана не нажимаем
++    if(f.ctl!=C_Weapon)
++      release(f.ctl, f);
++    f = Finger();
+     }
++  repeatCtl = C_None;
++  repeatTimer.stop();
+   }
+ 
+-void TouchInput::mouseUpEvent(Tempest::MouseEvent& e) {
+-  ctrl.onKeyReleased(KeyCodec::Forward, KeyCodec::Mapping::Primary);
++void TouchInput::onRepeat() {
++  if(repeatCtl==C_None) {
++    repeatTimer.stop();
++    return;
++    }
++  const uint64_t now = Application::tickCount();
++  if(now<repeatNext)
++    return;
++  repeatNext = now+120;
++  sendNav(repeatCtl);
++  }
++
++void TouchInput::sendNav(Ctl c) {
++  switch(c) {
++    case C_Up:    owner.touchKey(Event::K_Up);    break;
++    case C_Down:  owner.touchKey(Event::K_Down);  break;
++    case C_Left:  owner.touchKey(Event::K_Left);  break;
++    case C_Right: owner.touchKey(Event::K_Right); break;
++    default: break;
++    }
+   }
+diff --git a/common/ui/touchinput.h b/common/ui/touchinput.h
+index f46becce..8831d950 100644
+--- a/common/ui/touchinput.h
++++ b/common/ui/touchinput.h
+@@ -1,21 +1,86 @@
+ #pragma once
+ 
+ #include <Tempest/Widget>
++#include <Tempest/Timer>
+ 
++#include <array>
++#include <string>
++
++class MainWindow;
+ class PlayerControl;
+ 
++// Gothic II Mobile: сенсорное управление поверх игры.
++// Мир: джойстик слева (плавающий), обзор пальцем справа, «Удар» (держать - серия ударов в окно комбо,
++// свайп вбок - боковой удар), «Блок», «Прыжок», «Оружие» (долго - лук), «Автобой», «Зелье»,
++// сверху - «Меню», «Сумка», «Журнал», «Герой».
++// Диалог, сумка, торговля: стрелки, «Выбрать», «Назад». Ролик и сцена: «Пропустить».
+ class TouchInput : public Tempest::Widget {
+   public:
+-    TouchInput(PlayerControl& ctrl);
++    TouchInput(MainWindow& owner, PlayerControl& ctrl);
+ 
+-    void paintEvent(Tempest::PaintEvent& e);
+-    void mouseDownEvent(Tempest::MouseEvent& e);
+-    void mouseDragEvent(Tempest::MouseEvent& e);
+-    void mouseUpEvent(Tempest::MouseEvent& e);
++    void paintEvent    (Tempest::PaintEvent& e) override;
++    void mouseDownEvent(Tempest::MouseEvent& e) override;
++    void mouseDragEvent(Tempest::MouseEvent& e) override;
++    void mouseUpEvent  (Tempest::MouseEvent& e) override;
+ 
+   private:
++    enum Ctl : uint8_t {
++      C_None,
++      C_Joy,
++      C_Look,
++      // мир
++      C_Attack,
++      C_Block,
++      C_Jump,
++      C_Weapon,
++      C_Auto,
++      C_Potion,
++      C_Menu,
++      C_Bag,
++      C_Log,
++      C_Hero,
++      // экраны со списками
++      C_Up,
++      C_Down,
++      C_Left,
++      C_Right,
++      C_Select,
++      C_Back,
++      // ролик
++      C_Skip,
++      C_Count
++      };
++
++    struct Finger {
++      Ctl            ctl = C_None;
++      Tempest::Point start;
++      Tempest::Point last;
++      uint64_t       downAt = 0;
++      };
++
++    MainWindow&    owner;
+     PlayerControl& ctrl;
+ 
+-    Tempest::Point mpos;
+-  };
++    std::array<Finger,10> fingers = {};
++    uint8_t        lastMode   = 0;
++    Ctl            repeatCtl  = C_None;
++    uint64_t       repeatNext = 0;
++    Tempest::Timer repeatTimer;
+ 
++    float          dp() const;
++    uint8_t        currentMode() const;
++    Tempest::Rect  rectOf(Ctl c) const;
++    Ctl            hitTest(Tempest::Point p) const;
++    bool           isShown(Ctl c) const;
++    std::string    label(Ctl c) const;
++
++    void           press  (Ctl c, Finger& f);
++    void           release(Ctl c, Finger& f);
++    void           releaseAll();
++    void           onRepeat();
++    void           sendNav(Ctl c);
++    void           joystick(Finger& f, Tempest::Point pos);
++
++    void           drawButton(Tempest::Painter& p, Ctl c, bool pressed, bool active);
++    void           drawJoystick(Tempest::Painter& p);
++  };
+diff --git a/common/utils/installdetect.cpp b/common/utils/installdetect.cpp
+index 1624d795..461c1e1f 100644
+--- a/common/utils/installdetect.cpp
++++ b/common/utils/installdetect.cpp
+@@ -1,6 +1,7 @@
+ #include "installdetect.h"
+ 
+ #include <Tempest/Platform>
++#include <Tempest/TextCodec>
+ 
+ #ifdef __ANDROID__
+ #include <Tempest/AndroidApi>
+@@ -13,6 +14,7 @@
+ #endif
+ 
+ #include <cstring>
++#include <fstream>
+ #include "utils/fileutil.h"
+ 
+ InstallDetect::InstallDetect() {
+@@ -36,6 +38,13 @@ std::u16string InstallDetect::detectG2() {
+     return appDir;
+   return u"";
+ #elif defined(__ANDROID__)
++  {
++    // Gothic II Mobile: папку игры выбирает экран запуска и пишет её путь в gothic_path.txt
++    std::ifstream fin(androidInternalDataPath()/"gothic_path.txt");
++    std::string   line;
++    if(fin && std::getline(fin,line) && !line.empty())
++      return Tempest::TextCodec::toUtf16(line);
++  }
+   auto path = Tempest::AndroidApi::externalDataPath().u16string();
+   if(path.empty())
+     return u"";
+diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
+index e0153980..6c349a5e 100644
+--- a/common/world/objects/npc.cpp
++++ b/common/world/objects/npc.cpp
+@@ -1555,7 +1555,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
+   }
+ 
+ bool Npc::implAttack(uint64_t dt) {
+-  if(currentTarget==nullptr || isPlayer() || isTalk())
++  if(currentTarget==nullptr || (isPlayer() && !autoFight) || isTalk())
+     return false;
+ 
+   if(currentTarget->isDown()){
+@@ -1580,8 +1580,11 @@ bool Npc::implAttack(uint64_t dt) {
+     return true;
+     }
+ 
+-  if(!fghAlgo.hasInstructions())
+-    return false;
++  if(!fghAlgo.hasInstructions()) {
++    // Gothic II Mobile: героем не управляет скрипт ZS_Attack (AI_Attack) - следующий ход берём сами
++    if(!isPlayer() || !fghAlgo.fetchInstructions(*this,*currentTarget,owner.script()))
++      return false;
++    }
+ 
+   if(bs==BS_LIE) {
+     setAnim(Npc::Anim::Idle);
+@@ -4158,6 +4161,34 @@ bool Npc::isPrehit() const {
+   return visual.pose().isPrehit(owner.tickCount());
+   }
+ 
++bool Npc::isComboWindow() const {
++  return visual.pose().isComboWindow(owner.tickCount());
++  }
++
++void Npc::setAutoFight(bool f) {
++  if(autoFight==f)
++    return;
++  autoFight   = f;
++  faiWaitTime = 0;
++  fghAlgo.onClearTarget();
++  if(!f)
++    clearGoTo();
++  }
++
++int32_t Npc::fightTactic() const {
++  if(!isPlayer())
++    return hnpc->fight_tactic;
++  // Gothic II Mobile: у героя своей тактики нет - берём человеческую по владению оружием
++  const auto ws    = weaponState();
++  const auto skill = talentSkill(ws==WeaponState::W2H ? TALENT_2H : TALENT_1H);
++  const char* names[] = {"FAI_HUMAN_MASTER", "FAI_HUMAN_STRONG", "FAI_HUMAN_NORMAL"};
++  for(size_t i=(skill>=2 ? 0 : (skill==1 ? 1 : 2)); i<std::size(names); ++i) {
++    if(auto s = owner.script().findSymbol(names[i]))
++      return s->get_int();
++    }
++  return hnpc->fight_tactic;
++  }
++
+ bool Npc::isImmortal() const {
+   return hnpc->flags & zenkit::NpcFlag::IMMORTAL;
+   }
+diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
+index 73099364..bc64b574 100644
+--- a/common/world/objects/npc.h
++++ b/common/world/objects/npc.h
+@@ -289,6 +289,11 @@ class Npc final {
+ 
+     bool      isAttackAnim() const;
+     bool      isPrehit() const;
++    // Gothic II Mobile: окно серии ударов; автобой — герой дерётся по боевому ИИ, как NPC
++    bool      isComboWindow() const;
++    void      setAutoFight(bool f);
++    bool      isAutoFight() const { return autoFight; }
++    int32_t   fightTactic() const;
+     bool      isImmortal() const;
+ 
+     void      setPerceptionTime   (uint64_t time);
+@@ -629,6 +634,7 @@ class Npc final {
+ 
+     MoveAlgo                       mvAlgo;
+     FightAlgo                      fghAlgo;
++    bool                           autoFight = false;
+     uint64_t                       lastEventTime=0;
+ 
+     float                          angleY   = 0.f;

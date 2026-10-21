@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(./gradlew:*)",
-      "Bash(tools/fetch-winlator.sh:*)"
+      "Bash(tools/fetch-winlator.sh:*)",
+      "Bash(tools/fetch-opengothic.sh:*)",
+      "Bash(tools/build-opengothic.sh:*)"
     ]
   }
 }

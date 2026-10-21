@@ -59,6 +59,14 @@ WineD3D + Zink, до 20 FPS в WineD3D + Gladio), Vulkan 1.3 нет — D7VK н�
 режима распознаётся (`GameExit.GRAPHICS_UNSUPPORTED`), на слабом процессоре — предупреждение перед первой
 игрой (`DevicePerformance`). Исправлен вылет при выходе из игры (двойная остановка среды).
 
+**Пробная сборка на OpenGothic (2026-10-21, отдельное приложение `gothic2.mobile.og`):** открытый движок
+Gothic II (MIT) с портом на Android — нативно, без Wine, код движка у нас. Сделаны сенсорный слой
+(`TouchInput`), удержание «Удара» = серия ударов в окна комбо (`Pose::isComboWindow`) и **автобой**: герой
+дерётся по боевому ИИ NPC (`Npc::autoFight`, `PlayerControl::tickAutoFight`), пьёт зелье при < 25 % здоровья.
+Патчи — `third_party/opengothic*.patch`, оболочка (экран запуска, папка игры) — `og-android/`. Подробности
+и что ждём от пользователя — docs/PROGRESS.md, последний раздел. Если проба удачна — переносить игру в
+основное приложение на OpenGothic (Winlator — запасной режим).
+
 **Интерфейс — в стиле игры, без следов эмулятора** (docs/PROGRESS.md, «Интерфейс в стиле игры»):
 значок — золотая готическая «G», шрифты Alegreya/Alegreya SC (OFL), палитра тьма/кожа/бронза/золото,
 экраны и панели собираются из `ui/gothic` (`Gothic`, `GothicScreens`, `GothicPanels`, рисованные
@@ -106,6 +114,8 @@ WineD3D + Zink, до 20 FPS в WineD3D + Gladio), Vulkan 1.3 нет — D7VK н�
 
 ## Следующие действия (по порядку)
 
+0. **Пробная сборка на OpenGothic** — по ответу пользователя (запуск, FPS, мерцание, бой, автобой) решить,
+   переходить ли на OpenGothic. Дальше в пробе: магия с кнопок, тап по врагу/NPC, выбор ответа касанием.
 1. **Первый запуск на телефоне пользователя.** Пользователь не настраивает Winlator сам: ставит APK,
    жмёт «Играть», при проблеме — Настройки → экспорт журнала диагностики (в нём и вывод Wine).
    По журналу чинить: путь rootfs, драйвер (Vortek/Turnip), ddraw (WineD3D/D7VK), звук, ввод.
@@ -140,6 +150,14 @@ tools/fetch-winlator.sh   # клонирует закреплённый комм
 ./gradlew :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease
 ```
 
+- **Пробная сборка на OpenGothic** (`build/og/gothic2-og.apk`, ≈ полчаса с нуля): NDK `27.0.12077973`,
+  `apt-get install glslang-tools`, свежие заголовки Vulkan (у Ubuntu старые — движку нужен
+  `VK_EXT_descriptor_heap`): `git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers` и
+  `include/` → `/opt/vulkan-sdk/include`. Затем `tools/fetch-opengothic.sh` и
+  `tools/build-opengothic.sh --init-script "$PWD/tools/og-maven-mirror.gradle"`. Правки движка — в
+  `third_party/opengothic` (и `lib/Tempest`), затем в патчи:
+  `git diff --ignore-submodules=all > ../opengothic.patch` и `git -C lib/Tempest diff > ../opengothic-tempest.patch`.
+  Код с `-Werror` (неявное int→float — ошибка). Помечать правки «Gothic II Mobile:».
 - Правки Winlator делаются в `third_party/winlator-app`, затем сохраняются в патч (иначе пропадут):
   `cd third_party/winlator-app && git add -A -N && git diff --binary > ../winlator.patch`.
   Каждую правку помечать комментарием «Gothic II Mobile:».

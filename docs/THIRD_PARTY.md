@@ -16,6 +16,10 @@
 | Контур буквы «G» из шрифта UnifrakturMaguntia (значок, эмблема, значок уведомления) | fonts.google.com | OFL-1.1 | только контур одной буквы, перерисованный в векторный ресурс (сам шрифт в APK не входит); указан в «Сведениях о лицензиях» |
 | AndroidX (core, appcompat, activity, preference) | developer.android.com | Apache-2.0 | используется |
 | Kotlin stdlib | kotlinlang.org | Apache-2.0 | используется |
+| OpenGothic (пробная APK `gothic2.mobile.og`) | github.com/Try/OpenGothic, коммит `01540fe2` | MIT | **только пробная сборка**; изменения — `third_party/opengothic.patch` и `third_party/opengothic-tempest.patch` |
+| Tempest, ZenKit, dmusic (подмодули OpenGothic) | github.com/Try/Tempest, github.com/GothicKit | MIT | пробная сборка |
+| Bullet3, TinySoundFont, RapidJSON, zlib, libpng, stb, SPIRV-Cross, minivorbis (подмодули OpenGothic/Tempest) | см. их репозитории | Zlib / MIT / Apache-2.0 / Public Domain | пробная сборка |
+| OpenAL Soft (в Tempest, статически) | github.com/kcat/openal-soft | LGPL-2.0-or-later | пробная сборка; **до выпуска решить**: статическая компоновка LGPL требует дать возможность пересобрать (объектные файлы) или собрать OpenAL Soft отдельной `.so` |
 
 Компоненты среды берутся из Winlator 11.2 как есть (его `assets`), кроме замены пути rootfs при
 распаковке. Архивы `*.tzst` в APK не входят: приложение скачивает их с GitHub закреплённого коммита
