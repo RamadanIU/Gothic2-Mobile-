@@ -1,26 +1,3 @@
-diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 24fcd186..46028b39 100644
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -215,7 +215,17 @@ target_sources(Spacer PRIVATE ${SPACER_SOURCES} spacer/main.cpp)
- target_include_directories(Spacer PRIVATE "spacer")
- target_link_libraries(Spacer PRIVATE OpenGothic SpacerAssets)
- 
--if(ANDROID)
-+if(ANDROID AND G2M_ANDROID_DIR)
-+  # Gothic II Mobile: пробная сборка - своя оболочка (выбор папки игры, разрешение «Файлы»)
-+  add_android_apk(OpenGothic-apk
-+    PACKAGE_NAME gothic2.mobile.og
-+    CODE Gothic2Notr
-+    VERSION_CODE ${G2M_VERSION_CODE}
-+    VERSION_NAME ${G2M_VERSION_NAME}
-+    MANIFEST ${G2M_ANDROID_DIR}/AndroidManifest.xml
-+    JAVA_DIRS ${G2M_ANDROID_DIR}/java
-+    RESOURCE_DIRS ${G2M_ANDROID_DIR}/res)
-+elseif(ANDROID)
-   add_android_apk(OpenGothic-apk
-     PACKAGE_NAME org.opengothic.app
-     CODE Gothic2Notr
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
 index 00000000..bd6c3ef5

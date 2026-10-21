@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- Заставка Android 12+: медальон с «G» на тьме вместо значка на системном фоне. -->
-    <style name="Theme.Gothic2" parent="Base.Theme.Gothic2">
-        <item name="android:windowSplashScreenBackground">@color/gothic_ink</item>
-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_emblem</item>
-    </style>
-</resources>

@@ -1,34 +1,9 @@
 [versions]
 agp = "8.10.1"
-kotlin = "2.1.21"
 junit = "4.13.2"
-androidx-core = "1.16.0"
-androidx-appcompat = "1.7.1"
-androidx-activity = "1.10.1"
-androidx-preference = "1.2.1"
-androidx-documentfile = "1.1.0"
-# Зависимости Winlator 11.2 (модуль :winlator) — версии как в его build.gradle.
-material = "1.4.0"
-zstd-jni = "1.5.2-3"
-xz = "1.7"
-commons-compress = "1.20"
-androidx-lifecycle-process = "2.5.1"
 
 [libraries]
 junit = { module = "junit:junit", version.ref = "junit" }
-androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidx-core" }
-androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "androidx-appcompat" }
-androidx-activity-ktx = { module = "androidx.activity:activity-ktx", version.ref = "androidx-activity" }
-androidx-preference-ktx = { module = "androidx.preference:preference-ktx", version.ref = "androidx-preference" }
-androidx-documentfile = { module = "androidx.documentfile:documentfile", version.ref = "androidx-documentfile" }
-material = { module = "com.google.android.material:material", version.ref = "material" }
-zstd-jni = { module = "com.github.luben:zstd-jni", version.ref = "zstd-jni" }
-xz = { module = "org.tukaani:xz", version.ref = "xz" }
-commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commons-compress" }
-androidx-lifecycle-process = { module = "androidx.lifecycle:lifecycle-process", version.ref = "androidx-lifecycle-process" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-android-library = { id = "com.android.library", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
-kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

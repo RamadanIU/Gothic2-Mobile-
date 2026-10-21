@@ -1,212 +1,125 @@
 # CLAUDE.md — контекст проекта для новой сессии
 
-Этот файл читается автоматически в начале каждой сессии Claude Code. Здесь — всё, чтобы
-продолжить работу с нуля. Подробности: `docs/PROGRESS.md` (журнал решений и сделанного),
-`docs/ROADMAP.md` (этапы с чекбоксами), `docs/PLAN.md` (принятые решения по разделам плана).
+Этот файл читается автоматически в начале каждой сессии Claude Code. Здесь — всё, чтобы продолжить
+работу с нуля. Подробности: `docs/ARCHITECTURE.md` (как устроено), `docs/PROGRESS.md` (журнал решений и
+сделанного), `docs/ROADMAP.md` (что дальше), `docs/PLAN.md` (принятые решения).
 
 ## Что за проект
 
-Android-приложение «Gothic II для Android»: запускает **лицензионную Gothic II** локально на телефоне
-(без root, без облака) через встроенную среду класса Winlator (Wine WoW64 + Box64 + графика),
-которую пользователь не видит. Снаружи — только игра и сенсорное управление, сделанное под Gothic.
+Android-приложение «Gothic II»: запускает **лицензионную Gothic II игрока** прямо на телефоне (без root,
+без облака). Игру исполняет **OpenGothic** — открытый движок Gothic II, написанный заново сообществом
+(github.com/Try/OpenGothic, MIT): нативно на ARM64 + Vulkan, читает файлы оригинальной игры. Поверх — наши
+патчи движка: сенсорное управление, серии ударов, автобой, напарники, настройки графики, «Взять всё».
 
-- **Цель — Gothic II: Золотое издание** (Gold) с двумя вариантами запуска: «Ночь Ворона» и
-  классическая Gothic II без дополнения. Отдельная Classic больше не продаётся; её дисковая версия
-  поддерживается как дополнительная сборка (`g2-classic-ru`).
-- У владельца репозитория есть **купленная оригинальная Gold-копия из GOG** (офлайн-установщик
-  `setup.exe` + 3 `.bin`, ≈2,6 ГБ). В чат её не передать. Перед импортом установщик нужно распаковать
-  в папку с `System` и `Data` (способы — docs/SUPPORTED_BUILDS.md).
-- **Пиратские копии не используем** (ни для тестов, ни для релиза): не скачивать, не предлагать,
-  не поддерживать NoCD/взломанные EXE. Сборка закрепляется по **отчёту о сборке** — текстовому файлу
-  с SHA-256, который пользователь формирует на телефоне из своей копии (см. ниже).
+- **Решение 2026-10-21 (пользователь):** основной проект — OpenGothic. Прежняя версия на эмуляции Windows
+  (Winlator: Wine + Box64 + D7VK, модули `:app`/`:core`/`:winlator` на Kotlin) убрана из сборки и лежит в
+  истории git — коммит `b3f4769`, см. docs/LEGACY_WINLATOR.md. Не возвращать её без просьбы пользователя.
+- Игра — **Gothic II: Золотое издание / «Ночь Ворона»**, русская копия GOG игрока (проверена на телефоне).
+  Классика без аддона пока не поддерживается. Установщик GOG нужно сначала распаковать в папку с `System`,
+  `Data`, `_work` (docs/SUPPORTED_BUILDS.md).
+- **Пиратские копии не используем** (ни для тестов, ни для релиза): не скачивать, не предлагать, не
+  поддерживать взломанные файлы. Игровых файлов у нас нет: проверяет на своём телефоне только пользователь.
+  Скрипты игры для справки — восстановленные исходники MDK (github.com/VaanaCZ/gothic-2-addon-scripts,
+  ветка `2.7-RU`), только для чтения в scratchpad, в репозиторий не класть.
 - Язык общения и документации — **русский**.
 
-## Текущее состояние (на 2026-10-14)
+## Текущее состояние (2026-10-21)
 
-**Сборка игры пользователя закреплена:** `g2-gold-gog` в `app/src/main/assets/supported_builds.ini`
-(GOG «Gold Classic» от THQ Nordic с GD3D11, Union, SystemPack, DSOAL, `Gothic2c.exe` — подробности в
-docs/SUPPORTED_BUILDS.md). Язык — русский. Включены оба варианта: «Ночь Ворона» (`-game:GothicGame.ini`)
-и классика (`Gothic2c.exe` без аргументов; как `Gothic2c.bat`, на время игры прячет архивы аддона и
-подменяет `Paths.d` — ключ `rename=` и `VariantLayout` с откатом после сбоя; сохранения — `Saves_GII`).
+Работает на телефоне пользователя (Adreno 740): запуск из папки игрока, русский текст, без мерцания.
+Пользователь подтвердил управление, бой, автобой; напарники и новая графика ждут проверки.
 
+- **Приложение** (`app/`, Java, пакет `gothic2.mobile.og`): `LauncherActivity` — разрешение «Файлы», поиск
+  папки игры (`GameFolder`), выбор вручную через SAF, «Играть», раздел «Графика» (`GraphicsSettings` →
+  `files/g2m.ini`), «Сохранить журнал в «Загрузки»» (`gothic2-log.txt`), «Сведения о лицензиях»
+  (`LicensesActivity`). `GameActivity` — `NativeActivity` движка (`libGothic2Notr.so`) во весь экран.
+- **Движок** (`third_party/opengothic`, скачивает `tools/fetch-opengothic.sh`; патчи
+  `third_party/opengothic.patch` и `opengothic-tempest.patch`):
+  - сенсорный слой `common/ui/touchinput.*` (джойстик, обзор, «Удар»/«Блок»/«Прыжок»/«Оружие»/«Автобой»/
+    «Зелье», меню; в диалоге и сумке — стрелки, «Выбрать», «Назад», «Взять всё»; «Пропустить»);
+  - удержание «Удара» = удар только в окно комбо (`Pose::isComboWindow`, `PlayerControl::tickTouchAttack`);
+  - автобой по боевому ИИ игры (`Npc::autoFight`, `fightTactic`, `PlayerControl::tickAutoFight`), зелья;
+  - напарники (`common/game/companions.cpp`): найм безымянных NPC в диалоге за 10 золотых/уровень,
+    `AIV_PARTYMEMBER` + `ZS_Follow_Player`, опыт за их убийства даёт сама игра (`ZS_Dead`);
+  - графика из `g2m.ini` (`Gothic::Gothic`): FPS, внутреннее разрешение, тени (выкл/512–2048), отражения,
+    лучи солнца, дальность прорисовки и отсечение мелочи (`visibility_pass.comp`); рендер ждёт видеокарту;
+  - «Взять всё» (`InventoryMenu::takeAll`), путь к игре из `gothic_path.txt` (`InstallDetect`), имя сохранения
+    по умолчанию — дата, кнопка «Назад» телефона = Esc (Tempest).
+- Сохранения движка — `files/save_slot_N.sav` в каталоге приложения (формат OpenGothic; с сохранениями
+  оригинальной игры не совместимы). Удаление приложения их удаляет.
+- Id `gothic2.mobile.og` оставлен от пробной сборки намеренно: обновление ставится поверх неё, сохранения
+  остаются. Не менять без переноса сохранений.
 
-**Игра запускается прямо из папки игрока** (2026-10-15, по просьбе пользователя): выбор папки через SAF →
-путь файловой системы (`StoragePaths`, только внутренняя память) → разрешение «Файлы» (READ/WRITE_EXTERNAL_STORAGE,
-работает благодаря targetSdk 28, как у Winlator) → `GameFolder.prepare` → `settings.gameDir`. Корень игры везде —
-`app.gameRoot()` (папка игрока или копия `files/game`). Копия в приложение (`GameImporter`) — запасной путь
-(карта памяти, облако). При переходе с копии сохранения переносятся в папку, копию предлагается удалить.
+## Следующие действия
 
-**Одна игра на процесс** (как в Winlator, который после игры перезапускает приложение): после выхода из
-игры процесс завершается (`GothicApplication.endGameProcess`), а если лаунчер открыт в процессе, где уже
-была игра, — перезапускает процесс (`restartProcess`). Вторая игра в том же процессе вылетала при
-загрузке. Сбой определяется по выводу Wine (`GameExit`), а не по длительности игры.
-
-**Среда исполнения — Winlator 11.2, встроенный в приложение** (модуль `:winlator`, docs/ARCHITECTURE.md,
-раздел «Среда исполнения»). «Играть» → при первом запуске загрузка файлов Wine с GitHub (≈100 МБ,
-SHA-256) и установка (1–3 мин) → контейнер
-«Gothic II» с диском D: = папка игры → экран игры (наследник `XServerDisplayActivity`) с нашим
-сенсорным управлением поверх. **Игра работает на телефоне пользователя** (Adreno 740) в режиме
-**D7VK + Turnip** (по умолчанию на Adreno): стабильно 30 FPS (ограничение), фризов почти нет, главный
-поток Gothic ~45 % ядра. Для этого: ошибка D7VK 1.11 в `GetCaps` исправляется одним байтом
-(`BinaryFix`), OpenGL встроенного ddraw — Zink (с Gladio — «maximum texture size»). В WineD3D + Zink
-было ~10 FPS (98 % ядра). Сетка чёрных блоков и белые/чёрные кадры — гонка копирования кадра в
-X-сервере Winlator (исправлено ожиданием в `Texture.copyFromSource`, чёрное мерцание ушло).
-Журнал: строки `[frames]` и `[cpu]` — как читать, см. docs/PROGRESS.md.
-
-**Второй телефон — realme C71 (Unisoc T7250, Mali-G57, 2026-10-18):** слабый процессор (2–6 FPS в
-WineD3D + Zink, до 20 FPS в WineD3D + Gladio), Vulkan 1.3 нет — D7VK не запускается. Режимы графики
-теперь фильтруются по телефону (`GraphicsMode.supportedOn`, Mali → Gladio по умолчанию), сбой быстрого
-режима распознаётся (`GameExit.GRAPHICS_UNSUPPORTED`), на слабом процессоре — предупреждение перед первой
-игрой (`DevicePerformance`). Исправлен вылет при выходе из игры (двойная остановка среды).
-
-**Пробная сборка на OpenGothic (2026-10-21, отдельное приложение `gothic2.mobile.og`):** открытый движок
-Gothic II (MIT) с портом на Android — нативно, без Wine, код движка у нас. Сделаны сенсорный слой
-(`TouchInput`), удержание «Удара» = серия ударов в окна комбо (`Pose::isComboWindow`) и **автобой**: герой
-дерётся по боевому ИИ NPC (`Npc::autoFight`, `PlayerControl::tickAutoFight`), пьёт зелье при < 25 % здоровья.
-Пользователь подтвердил: всё работает. **Напарники** (`companions.cpp`): безымянного NPC можно нанять в
-диалоге за 10 золотых/уровень — флаг `AIV_PARTYMEMBER` + `ZS_Follow_Player`, опыт за его убийства даёт сама игра.
-**Графика** задаётся на экране запуска (`GraphicsSettings` → `files/g2m.ini`): меню видео игры OpenGothic почти не
-читает; добавлены дальность прорисовки и отсечение мелочи в `visibility_pass.comp`, тени выкл/512–2048, FPS, разрешение;
-на телефоне рендер ждёт видеокарту, а не крутит цикл. «Взять всё» у сундука и тела (`InventoryMenu::takeAll`).
-Патчи — `third_party/opengothic*.patch`, оболочка (экран запуска, папка игры) — `og-android/`. Подробности
-и что ждём от пользователя — docs/PROGRESS.md, последний раздел. Если проба удачна — переносить игру в
-основное приложение на OpenGothic (Winlator — запасной режим).
-
-**Интерфейс — в стиле игры, без следов эмулятора** (docs/PROGRESS.md, «Интерфейс в стиле игры»):
-значок — золотая готическая «G», шрифты Alegreya/Alegreya SC (OFL), палитра тьма/кожа/бронза/золото,
-экраны и панели собираются из `ui/gothic` (`Gothic`, `GothicScreens`, `GothicPanels`, рисованные
-`GothicDrawables`). До первого кадра игры `GameActivity` показывает экран загрузки как в лаунчере.
-Названия Wine/Winlator/D7VK/Turnip и т. п. игрок видит только в «Сведениях о лицензиях».
-
-Готово и покрыто тестами (141 тест в `core`, 17 в `app`), lint без ошибок, debug/release APK собираются:
-- ввод: единый арбитр (`InputArbiter`), джойстик с гистерезисом, камера, распределение пальцев
-  (`TouchRouter`), раскладка и её редактор, геймпад. **Управление без ручных режимов** (2026-10-15,
-  docs/PROGRESS.md): главная кнопка со свайпами (действие/удар/выстрел/блок, в меню — «Выбрать»),
-  одна кнопка Esc, «Оружие» с колесом слотов, в меню джойстик — стрелки; режим без адаптера
-  угадывает `ModeController` по отправленным клавишам и по камере на экране меню;
-- сохранения: поколения копий с SHA-256, восстановление, ZIP импорт/экспорт, копия только после
-  подтверждённого завершения записи; раздельно по вариантам игры;
-- игра: проверка сборки по SHA-256 EXE (`BuildVerifier`), атомарный импорт с откатом (`GameImporter`),
-  варианты запуска (`GameVariant`), **отчёт о сборке** (`BuildFingerprint`);
-- среда: Winlator (`GameLauncher`, `GameActivity`, `XServerInputSink`, `WinlatorBackend`), замена пути
-  rootfs при распаковке (`PathRelocator`), профили устройств → WineD3D или D7VK, `GOTHIC.INI`;
-  игра только на быстрых ядрах (`CpuCores`, сродство через `cpuList` контейнера);
-  журнал пишется всегда и сразу (без очереди) в «Загрузки/Gothic2Mobile/logs[-debug]»: `session.log`,
-  вывод Wine/Box64 с прокруткой (`wine.head/.1/.log`), logcat процесса (`logcat.log`, прошлый — `logcat-prev.log`);
-  разрешение «Файлы» спрашивается один раз (`LogLocation`), без него — Android/data/<пакет>/files/logs;
-- мост с игровым адаптером: протокол, рукопожатие с токеном, Unix-сокет в приватном каталоге;
-- Android: импорт через SAF, экран игры, вывод 4:3 с полями, экран восстановления, перегрев, настройки.
-
-**Не готово (главное):**
-1. **Мерцание в D7VK (2026-10-15):** вернулись чёрные линии и иногда белые вспышки на весь кадр. Путь кадра в
-   X-сервере перепроверен (docs/PROGRESS.md, последний раздел), закрыта гонка «экран читает — копия пишет»
-   (`Texture.markScreenRead`). Догадки о причине в отрисовке — в «Настройки → Мерцание: вариант исправления»
-   (`FlickerFix`: без UBWC/LRZ, глубина 24 бита, строгий режим); ждём, какой вариант поможет, и снимок/видео.
-   **Белое мерцание при повороте камеры** (только джойстик камеры = движение мыши; чёрные пятна и фризы
-   ушли после `TU_DEBUG=sysmem`). Сделано: X-сервер не перерисовывает экран на движение мыши, пока курсор
-   игры скрыт (`GLRenderer.onPointerMove`), ждёт проверки. Если останется — дело в обработке мыши Wine/игрой.
-   **Вылет при сохранении в классике** — не было каталога `Saves_GII` (теперь создаётся при запуске,
-   docs/PROGRESS.md, 2026-10-15), ждёт проверки.
-   **Вылет после установки APK поверх старого** — причина не найдена, нужен журнал после вылета.
-   **Выход из игры** (2026-10-15): ложный «сбой» после выхода и вылет «Играть снова» — исправлено, ждёт проверки;
-   **игра из папки игрока** — ждёт проверки на телефоне (разрешение «Файлы», скорость загрузки с FUSE).
-   «Ограничение FPS» действует только в режимах D7VK (dxvk.conf); в WineD3D ~10 FPS.
-2. Не подтверждены в игре: клавиши (`KeyBindings`), ключи `GothicIniWriter.Keys`, доставка мыши
-   (`injectPointerMoveDelta`), длительности ударов (`CombatTiming`), выбор графики (WineD3D/D7VK).
-3. Игровой адаптер внутри процесса Gothic (C++) не написан.
-4. `runtime_components.ini`, `ComponentInstaller`, `LaunchSpecBuilder`, `RendererSetup` в `core` остались от
-   прежней схемы и при запуске не используются — убрать или переиспользовать после первого запуска.
-
-## Следующие действия (по порядку)
-
-0. **Пробная сборка на OpenGothic** — по ответу пользователя (запуск, FPS, мерцание, бой, автобой) решить,
-   переходить ли на OpenGothic. Дальше в пробе: магия с кнопок, тап по врагу/NPC, выбор ответа касанием.
-1. **Первый запуск на телефоне пользователя.** Пользователь не настраивает Winlator сам: ставит APK,
-   жмёт «Играть», при проблеме — Настройки → экспорт журнала диагностики (в нём и вывод Wine).
-   По журналу чинить: путь rootfs, драйвер (Vortek/Turnip), ddraw (WineD3D/D7VK), звук, ввод.
-2. После запуска — этап 1 по docs/TEST_PLAN.md: клавиши, мышь-камера, удары, сохранение/загрузка,
-   классика; 30–60 минут игры.
-3. Игровой адаптер (этап 4) и стабилизация (этап 5).
-
-Без телефона и игры можно продолжать только то, что не требует запуска: тесты, UI, документацию.
+1. Ждём от пользователя: нагрев и плавность на новой графике, напарники, «Взять всё» (docs/PROGRESS.md,
+   последний раздел «Ожидается от пользователя»).
+2. Дальше — docs/ROADMAP.md: магия с кнопок, касание по врагу/NPC/ответу, кнопка отряда, надёжные сохранения,
+   классика, слабые телефоны, OpenAL Soft (LGPL) перед выпуском.
 
 ## Сборка в облачной сессии
 
-В контейнере нет Android SDK — установить (≈2 мин):
+В контейнере нет Android SDK — установить (≈3 мин):
 
 ```bash
 mkdir -p /opt/android-sdk/cmdline-tools && cd /tmp && \
 curl -sS -o cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip && \
 unzip -q cmdtools.zip -d /opt/android-sdk/tmp && mv /opt/android-sdk/tmp/cmdline-tools /opt/android-sdk/cmdline-tools/latest && \
-yes | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=/opt/android-sdk "platforms;android-35" "build-tools;35.0.0" "platform-tools" >/dev/null
+yes | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=/opt/android-sdk \
+  "platforms;android-35" "build-tools;35.0.0" "platform-tools" "ndk;27.0.12077973" "cmake;3.22.1" >/dev/null
 echo "sdk.dir=/opt/android-sdk" > local.properties   # файл в .gitignore
 ```
 
-Ещё нужны NDK и CMake (нативный код Winlator) и исходники Winlator:
+Движку нужны `glslangValidator` и **свежие заголовки Vulkan** (в Ubuntu и NDK старые — нужен
+`VK_EXT_descriptor_heap`):
 
 ```bash
-yes | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=/opt/android-sdk "ndk;24.0.8215888" "cmake;3.22.1" >/dev/null
-tools/fetch-winlator.sh   # клонирует закреплённый коммит в third_party/winlator-app и накладывает патч
+apt-get install -y glslang-tools
+git clone -q --depth 1 https://github.com/KhronosGroup/Vulkan-Headers /tmp/vkh && \
+  mkdir -p /opt/vulkan-sdk && cp -r /tmp/vkh/include /opt/vulkan-sdk/   # путь: vulkan.sdk в local.properties, VULKAN_SDK или /opt/vulkan-sdk
+tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмодулями → third_party/opengothic + наши патчи
 ```
 
-Проверка перед каждым пушем:
+Проверка перед каждым пушем (сборка движка с нуля ≈ 30 мин, дальше — минуты):
 
 ```bash
-./gradlew :core:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-- **Пробная сборка на OpenGothic** (`build/og/gothic2-og.apk`, ≈ полчаса с нуля): NDK `27.0.12077973`,
-  `apt-get install glslang-tools`, свежие заголовки Vulkan (у Ubuntu старые — движку нужен
-  `VK_EXT_descriptor_heap`): `git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers` и
-  `include/` → `/opt/vulkan-sdk/include`. Затем `tools/fetch-opengothic.sh` и
-  `tools/build-opengothic.sh --init-script "$PWD/tools/og-maven-mirror.gradle"`. Правки движка — в
-  `third_party/opengothic` (и `lib/Tempest`), затем в патчи:
-  `git diff --ignore-submodules=all > ../opengothic.patch` и `git -C lib/Tempest diff > ../opengothic-tempest.patch`.
-  Новые файлы движка перед этим — `git add -N <файл>` (не `-A`: каталог `build/` не в .gitignore движка),
-  после — `git reset -q`.
-  Код с `-Werror` (неявное int→float — ошибка). Помечать правки «Gothic II Mobile:».
-- Правки Winlator делаются в `third_party/winlator-app`, затем сохраняются в патч (иначе пропадут):
-  `cd third_party/winlator-app && git add -A -N && git diff --binary > ../winlator.patch`.
-  Каждую правку помечать комментарием «Gothic II Mobile:».
-- `.claude/settings.json` разрешает `./gradlew` и `tools/fetch-winlator.sh` без вопросов.
-- APK ≈ 24 МБ: архивы Wine (`*.tzst`) в APK не кладутся, приложение их скачивает (`RemoteAssets`).
-  Лимит отправки файла пользователю здесь — 30 МБ. После `ignoreAssetsPattern`/крупных изменений
-  собирать APK начисто (удалить `app/build/outputs/apk`): инкрементальная упаковка оставляет «дыры».
-  Debug подписывается общим ключом `app/debug.keystore` — новый APK ставится поверх старого.
-
-- Maven Central иногда отвечает **429** — повторить через 15–30 с; если не проходит минутами —
-  зеркало Google: `./gradlew --init-script tools/maven-mirror.gradle …` (сборку проекта не меняет).
+- APK для пользователя: `app/build/outputs/apk/debug/app-debug.apk` (≈ 27 МБ, только arm64-v8a; лимит
+  отправки файла здесь — 30 МБ). Движок и в debug собирается как Release (отладочный — сотни МБ).
+  Подпись — общий `app/debug.keystore`: новый APK ставится поверх старого.
+- **Правки движка** — в `third_party/opengothic` (и `lib/Tempest`), затем в патчи (иначе пропадут при
+  следующем `fetch-opengothic.sh`):
+  ```bash
+  cd third_party/opengothic
+  git add -N common/game/companions.cpp common/utils/cp1251.h   # и другие новые файлы; не -A: build/ не в .gitignore движка
+  git diff --ignore-submodules=all > ../opengothic.patch && git reset -q
+  git -C lib/Tempest diff > ../opengothic-tempest.patch
+  ```
+  Каждую правку помечать комментарием «Gothic II Mobile:». Движок собирается с `-Werror`
+  (неявное int→float, лишняя ветка switch — ошибка). Быстрая проверка компиляции без APK — отдельная сборка
+  CMake в `third_party/opengothic/build/android` (`cmake --build … --target Gothic2Notr`).
+- Maven Central иногда отвечает **429** — повторить или `./gradlew --init-script tools/maven-mirror.gradle …`.
 - Эмулятор в контейнере не работает (нет KVM) — на устройстве проверяет только пользователь.
 - GitHub Actions в репозитории не получает раннер (ограничение аккаунта): CI в PR красный не из-за кода.
-- Debug-APK для пользователя: `app/build/outputs/apk/debug/app-debug.apk` (только arm64-v8a).
 
 ## Правила кода (выучено на ошибках)
 
-- `core` — чистый Kotlin/JVM, но работает **на Android (minSdk 29)**: не использовать API Java 11+
-  (`Files.readString/writeString`, `InputStream.transferTo`, `Path.of`). Вместо них — `kotlin.io.path`
-  (`readText`, `writeText`). **`appendText` не создаёт файл** (только APPEND) — для дописывания
-  `Files.write(path, bytes, CREATE, APPEND)`; из-за этого журнал диагностики долго был пустым.
-  Lint проверяет и `core` (`checkDependencies = true`).
-- Внутри `View.apply { }` имя `overlay` перекрывается `View.getOverlay()` — поле оверлея в
-  `GameActivity` называется `touchOverlay`; не называть поля именами свойств `View`.
-- Тесты `core` запускаются с `LC_ALL=C.UTF-8` (нелатинские имена файлов) — уже в `core/build.gradle.kts`.
-- Импорты сортированы: сначала проектные/androidx, затем `java.*`, `javax.*`, `kotlin.*`.
-- Комментарии и строки интерфейса — по-русски, в стиле окружающего кода; ссылки на план — «раздел N плана».
-- Любой внешний ввод (архивы, ZIP сохранений, строки моста, папка игры) считается недоверенным:
-  проверка путей (`FileOps.isSafeRelative`), лимиты размеров, атомарная запись через временный каталог.
+- **Шрифты игры — Windows-1251.** Строки наших кнопок и реплик в движке переводить через
+  `utils/cp1251.h` (`toCp1251`), иначе вместо кириллицы мусор.
+- Настройки видео в меню игры OpenGothic почти не читает (только `zVidBrightness/Contrast/Gamma`,
+  `zEnvMappingEnabled`, `zCloudShadowScale` = SSAO, `zFogRadial` = лучи солнца, `zWindEnabled`, `zMaxFps`,
+  `[INTERNAL] vidResIndex`). Новую графику — через `g2m.ini` и экран запуска, а не через меню игры.
+- Новые возможности по возможности делать **механикой самой игры** (скрипты, перцепции, флаги aivar), сверив
+  имена с восстановленными скриптами: так работают сохранения, опыт и реакции NPC.
+- Касание мимо кнопок не должно становиться ударом или выбором: `TouchInput` забирает касания в мире и на
+  экранах со списками; `MainWindow::mouse*` на телефоне ничего не делают.
+- Код экрана запуска — Java без AndroidX; логику без Android выносить в отдельные классы (`GameFolder`,
+  `GraphicsSettings`) и покрывать тестами (`app/src/test`): статические поля `Activity` с `Color` и т. п.
+  ломают модульные тесты.
+- Любой внешний ввод (папка игры, путь SAF) — недоверенный: не-файловые тома SAF отклоняются (`docIdToPath`).
 - Никаких игровых файлов в репозитории (`.gitignore` исключает `*.vdf`, `*.mod`, `game-data/`).
-- Имя пакета приложения (`gradle.properties`, `gothic2.applicationId` + суффикс debug) не длиннее
-  23 символов: из него строится путь rootfs той же длины, что у Winlator.
-- **Ресурсы Winlator сливаются с нашими.** Ресурс библиотеки с более точным квалификатором
-  (`-v26`, язык `-ru`) перекрывает наш с тем же именем: так `mipmap-anydpi-v26/ic_launcher` и
-  `values-ru/app_name` Winlator подменяли значок и название. Свои ресурсы называть уникально
-  (`gothic_*`, `game_title`); переопределяя ресурс Winlator — во всех его квалификаторах
-  (`values*/winlator_overrides.xml`). Проверять APK: `aapt2 dump badging`/`dump resources`.
-- В интерфейсе — никаких названий среды (Wine, Winlator, Box64, D7VK, Turnip…): режимы графики —
-  «Vulkan/OpenGL — быстрый/совместимый». Новые экраны — из `ui/gothic`; диалоги — `GothicPanels`
-  (слой поверх экрана, а не системный диалог: тот выводит из полноэкранного режима).
-- Шрифт темы (`android:fontFamily`) перекрывает шрифт из `textAppearance` — в стилях текста менять
-  только насыщенность (`textFontWeight`), а другой шрифт задавать прямо в разметке или в коде.
+- Комментарии и строки интерфейса — по-русски, в стиле окружающего кода.
 
 ## Git и PR
 
