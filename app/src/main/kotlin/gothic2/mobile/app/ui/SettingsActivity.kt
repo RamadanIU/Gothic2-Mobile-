@@ -14,6 +14,7 @@ import gothic2.mobile.app.R
 import gothic2.mobile.app.app
 import gothic2.mobile.app.storage.DiagnosticsShare
 import gothic2.mobile.app.storage.DocumentExport
+import gothic2.mobile.app.storage.LogLocation
 import gothic2.mobile.app.ui.gothic.Gothic
 import gothic2.mobile.app.ui.gothic.GothicPanels
 import gothic2.mobile.app.ui.gothic.GothicScreens
@@ -100,6 +101,15 @@ class SettingsActivity : AppCompatActivity() {
             })
         }
 
+        /** Разрешение «Файлы» из настроек — если при первом запуске игрок отказал. */
+        private val logPermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            val app = requireContext().app
+            app.background.execute {
+                app.updateLogLocation()
+                activity?.runOnUiThread { if (isAdded) updateLogsLocation() }
+            }
+        }
+
         private val exportLog = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
             if (uri == null) return@registerForActivityResult
             val resolver = requireContext().contentResolver
@@ -130,12 +140,28 @@ class SettingsActivity : AppCompatActivity() {
                 app.settings.layoutOverrides = emptyMap()
                 Gothic.toast(requireContext(), R.string.layout_reset_done)
             }
+            updateLogsLocation()
+            click("logs_location") {
+                if (!LogLocation.hasStoragePermission(requireContext())) logPermission.launch(LogLocation.STORAGE_PERMISSIONS)
+            }
             click("send_diagnostics") { DiagnosticsShare.share(requireActivity()) }
             click("export_diagnostics") { exportLog.launch("gothic2-diagnostics.txt") }
             click("reimport_game") {
                 startActivity(Intent(requireContext(), LauncherActivity::class.java).putExtra(LauncherActivity.EXTRA_REIMPORT, true))
             }
             click("licenses") { startActivity(Intent(requireContext(), LicensesActivity::class.java)) }
+        }
+
+        /** Где лежит журнал; без разрешения «Файлы» — подсказка, что нажатием его можно дать. */
+        private fun updateLogsLocation() {
+            val context = requireContext()
+            val dir = context.app.diagnostics.dir
+            findPreference<Preference>("logs_location")?.summary =
+                if (LogLocation.hasStoragePermission(context)) {
+                    getString(R.string.logs_location, dir.toString())
+                } else {
+                    getString(R.string.logs_location_no_permission, dir.toString())
+                }
         }
 
         override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -153,8 +179,8 @@ class SettingsActivity : AppCompatActivity() {
         override fun onDisplayPreferenceDialog(preference: Preference) {
             if (preference !is ListPreference) return super.onDisplayPreferenceDialog(preference)
             val values = preference.entryValues ?: return
-            // Режим графики, пока игрок его не выбирал, — действующий по видеокарте.
-            val current = preference.value ?: requireContext().app.settings.graphicsMode.id.takeIf { preference.key == "graphics_mode" }
+            // Режим графики — действующий: по видеокарте, пока игрок не выбрал сам или если выбранный здесь не работает.
+            val current = if (preference.key == "graphics_mode") requireContext().app.settings.graphicsMode.id else preference.value
             GothicPanels.choose(
                 panels,
                 preference.title,
@@ -190,12 +216,16 @@ class SettingsActivity : AppCompatActivity() {
             pref.value = app.selectedVariant(build)?.id
         }
 
-        /** Пока игрок не выбрал режим сам, показывается режим по видеокарте — без записи в настройки. */
+        /**
+         * Пока игрок не выбрал режим сам, показывается режим по видеокарте — без записи в настройки.
+         * В списке — только режимы, которые работают на этом телефоне (GraphicsMode.supportedOn).
+         */
         private fun setupGraphicsPreference() {
             val pref = findPreference<ListPreference>("graphics_mode") ?: return
-            pref.summaryProvider = Preference.SummaryProvider<ListPreference> { p ->
-                p.entry ?: requireContext().app.settings.graphicsMode.title
-            }
+            val modes = requireContext().app.settings.availableGraphicsModes
+            pref.entries = modes.map { it.title }.toTypedArray()
+            pref.entryValues = modes.map { it.id }.toTypedArray()
+            pref.summaryProvider = Preference.SummaryProvider<ListPreference> { requireContext().app.settings.graphicsMode.title }
         }
 
         private fun showBackups() {

@@ -5,12 +5,31 @@ import androidx.core.content.edit
 import androidx.preference.PreferenceManager
 import gothic2.mobile.app.BuildConfig
 import gothic2.mobile.app.runtime.FlickerFix
+import gothic2.mobile.app.runtime.GpuInfo
 import gothic2.mobile.app.runtime.GraphicsMode
 import gothic2.mobile.core.config.UserSettings
 
 /** Хранение пользовательских настроек и состояния импорта. */
 class SettingsStore(context: Context) {
     private val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+    private val appContext = context.applicationContext
+
+    init {
+        migrateOverlayOpacity()
+    }
+
+    /**
+     * Ключ «overlay_opacity» занят Winlator: тот читает его как Float из тех же настроек, а мы писали
+     * Int — экран игры падал при создании (ClassCastException в XServerDisplayActivity.setupUI), и
+     * после этого каждый запуск вылетал снова. Значение переносится под свой ключ, чужой удаляется.
+     */
+    private fun migrateOverlayOpacity() {
+        val old = prefs.all[KEY_WINLATOR_OPACITY] ?: return
+        prefs.edit(commit = true) {
+            if (old is Int && !prefs.contains(KEY_OPACITY)) putInt(KEY_OPACITY, old)
+            remove(KEY_WINLATOR_OPACITY)
+        }
+    }
 
     var importedBuildId: String?
         get() = prefs.getString(KEY_BUILD, null)
@@ -54,10 +73,44 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_GAME_DIR, null)
         set(v) = prefs.edit { putString(KEY_GAME_DIR, v) }
 
-    /** Режим графики; пока игрок не выбрал сам — по видеокарте (GraphicsMode.defaultFor). */
+    /** Разрешение «Файлы» для журналов уже спрашивали (спрашиваем один раз, при первом запуске). */
+    var logPermissionAsked: Boolean
+        get() = prefs.getBoolean(KEY_LOG_PERMISSION, false)
+        set(v) = prefs.edit { putBoolean(KEY_LOG_PERMISSION, v) }
+
+    /**
+     * Режим графики; пока игрок не выбрал сам или выбранный не работает на этом телефоне — по
+     * видеокарте (GraphicsMode.defaultFor).
+     */
     var graphicsMode: GraphicsMode
-        get() = GraphicsMode.of(prefs.getString(KEY_GRAPHICS, null), gpuName)
+        get() = GraphicsMode.of(prefs.getString(KEY_GRAPHICS, null), gpuName, vulkan13)
         set(v) = prefs.edit { putString(KEY_GRAPHICS, v.id) }
+
+    /** Режимы графики, которые работают на этом телефоне (список в настройках). */
+    val availableGraphicsModes: List<GraphicsMode>
+        get() = GraphicsMode.available(gpuName, vulkan13)
+
+    /** Vulkan 1.3 у системного драйвера, и быстрый режим через него не падал ([vulkanFailed]). */
+    val vulkan13: Boolean
+        get() = !vulkanFailed && GpuInfo.hasVulkan13(appContext)
+
+    /**
+     * D7VK через системный драйвер не нашёл устройство Vulkan, хотя система сообщает 1.3:
+     * больше этот режим не предлагаем (GraphicsMode.supportedOn).
+     */
+    var vulkanFailed: Boolean
+        get() = prefs.getBoolean(KEY_VULKAN_FAILED, false)
+        set(v) = prefs.edit { putBoolean(KEY_VULKAN_FAILED, v) }
+
+    /** Прошлая игра закрылась, потому что быстрый режим не поддерживается: экран сбоя объясняет это. */
+    var graphicsFallbackNotice: Boolean
+        get() = prefs.getBoolean(KEY_GRAPHICS_NOTICE, false)
+        set(v) = prefs.edit { putBoolean(KEY_GRAPHICS_NOTICE, v) }
+
+    /** Предупреждение о слабом телефоне уже показано (DevicePerformance). */
+    var weakDeviceWarned: Boolean
+        get() = prefs.getBoolean(KEY_WEAK_WARNED, false)
+        set(v) = prefs.edit { putBoolean(KEY_WEAK_WARNED, v) }
 
     /** Вариант против мерцания в режимах D7VK (пункт «Мерцание» в настройках). */
     val flickerFix: FlickerFix
@@ -77,7 +130,7 @@ class SettingsStore(context: Context) {
             invertY = prefs.getBoolean("invert_y", false),
             leftHanded = prefs.getBoolean("left_handed", false),
             buttonScale = prefs.getInt("button_scale", 100) / 100f,
-            overlayOpacity = prefs.getInt("overlay_opacity", 60) / 100f,
+            overlayOpacity = prefs.getInt(KEY_OPACITY, 60) / 100f,
             masterVolume = prefs.getInt("volume", 100) / 100f,
             haptics = prefs.getBoolean("haptics", true),
         )
@@ -94,6 +147,12 @@ class SettingsStore(context: Context) {
         const val KEY_GRAPHICS = "graphics_mode"
         const val KEY_GPU = "gpu_name"
         const val KEY_FLICKER = "flicker_fix"
+        const val KEY_VULKAN_FAILED = "vulkan_failed"
+        const val KEY_GRAPHICS_NOTICE = "graphics_fallback_notice"
+        const val KEY_WEAK_WARNED = "weak_device_warned"
         const val KEY_GAME_DIR = "game_dir"
+        const val KEY_LOG_PERMISSION = "log_permission_asked"
+        const val KEY_OPACITY = "gothic_overlay_opacity"
+        private const val KEY_WINLATOR_OPACITY = "overlay_opacity"
     }
 }
