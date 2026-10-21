@@ -1,15 +1,18 @@
-diff --git a/Engine/cmake/android/build.gradle.in b/Engine/cmake/android/build.gradle.in
-index 2a75ab6..9ecbadc 100644
---- a/Engine/cmake/android/build.gradle.in
-+++ b/Engine/cmake/android/build.gradle.in
-@@ -99,5 +99,7 @@ android {
-     }
-     lint {
-         disable 'ChromeOsAbiSupport'
-+        // Gothic II Mobile: пробная сборка с targetSdk 28 (разрешение «Файлы»), lint - отдельно
-+        checkReleaseBuilds false
-     }
- }
+diff --git a/Engine/CMakeLists.txt b/Engine/CMakeLists.txt
+index 6763126..8cd3597 100644
+--- a/Engine/CMakeLists.txt
++++ b/Engine/CMakeLists.txt
+@@ -173,7 +173,9 @@ if(TEMPEST_BUILD_VULKAN)
+     endif()
+   endif()
+ 
+-  target_include_directories(${PROJECT_NAME} PRIVATE "$ENV{VULKAN_SDK}/include")
++  # Gothic II Mobile: путь к свежим заголовкам Vulkan передаёт сборка Gradle (-DTEMPEST_VULKAN_SDK)
++  set(TEMPEST_VULKAN_SDK "$ENV{VULKAN_SDK}" CACHE PATH "Vulkan SDK (include/vulkan)")
++  target_include_directories(${PROJECT_NAME} PRIVATE "${TEMPEST_VULKAN_SDK}/include")
+   if(WIN32)
+     target_link_libraries(${PROJECT_NAME} PRIVATE vulkan-1)
+   else()
 diff --git a/Engine/system/api/androidapi.cpp b/Engine/system/api/androidapi.cpp
 index 96b7829..b10c79c 100644
 --- a/Engine/system/api/androidapi.cpp

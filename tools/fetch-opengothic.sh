@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Скачивает исходники OpenGothic (MIT) закреплённой версии с подмодулями и накладывает наши патчи.
-# Результат — third_party/opengothic (в .gitignore): из него собирается пробная APK
-# (tools/build-opengothic.sh, docs/PROGRESS.md — «Пробная сборка на OpenGothic»).
+# Результат — third_party/opengothic (в .gitignore): его собирает модуль :app через CMake
+# (./gradlew :app:assembleDebug; docs/ARCHITECTURE.md).
 #
 # Запуск один раз после клонирования репозитория и после смены opengothic.commit:
 #   tools/fetch-opengothic.sh

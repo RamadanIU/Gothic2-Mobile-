@@ -744,3 +744,30 @@ C71 (Mali-G57, без Vulkan 1.3) она, скорее всего, не запу
 Новый APK поверх. На экране запуска — раздел «Графика» (по умолчанию «Сбалансированно»). Поиграть 10–15 минут:
 греется ли меньше, плавно ли; заметно ли пропадание травы и предметов вдали (если мешает — «Трава и мелкие
 предметы: далеко»); если всё ещё греется — «Экономно». Проверить «Взять всё» у сундука и тела.
+
+## 2026-10-21 — Основной проект: OpenGothic; эмуляция Windows убрана
+
+Пользователь: «новый движок настолько понравился, что эмуляция Windows больше не нужна — сделай основным его».
+- **Сборка.** Модуль `:app` теперь сам собирает движок: `externalNativeBuild` → `third_party/opengothic/CMakeLists.txt`
+  (CMake 3.22.1, NDK 27, цель `Gothic2Notr`, `-DTEMPEST_ANDROID_GRADLE_BUILD=ON`, движок всегда Release). Оболочка
+  из `og-android/` переехала в `app/src/main` (Java). Генератор проекта Tempest (`add_android_apk`) и
+  `tools/build-opengothic.sh` больше не нужны; из патчей убраны их правки (CMake `G2M_*`, шаблон Gradle). Заголовки
+  Vulkan — параметром `-DTEMPEST_VULKAN_SDK` (local.properties `vulkan.sdk`, `VULKAN_SDK` или `/opt/vulkan-sdk`).
+- **Id и версия.** `gothic2.mobile.og`, как у пробы: новый APK ставится поверх неё, сохранения и графика остаются.
+  `versionCode = 100 + число коммитов` (последняя проба — 76). Название — «Gothic II».
+- **Убрано из сборки:** Kotlin-приложение на Winlator, `:core`, `:winlator`, `third_party/winlator.patch`,
+  `tools/fetch-winlator.sh`. Всё — в истории git, последний коммит `b3f4769`; что там может пригодиться —
+  docs/LEGACY_WINLATOR.md. Документация (README, ARCHITECTURE, PLAN, ROADMAP, TEST_PLAN, SUPPORTED_BUILDS,
+  THIRD_PARTY, LEGAL, CLAUDE.md) переписана под OpenGothic; журнал PROGRESS.md сохранён целиком.
+- **Лицензии.** Экран «Сведения о лицензиях» (`LicensesActivity`): тексты с копирайтами собирает задача
+  `generateLicenses` из исходников движка (OpenGothic, Tempest, ZenKit, dmusic, Bullet, TinySoundFont, RapidJSON,
+  miniz, libsquish, zlib, libpng, SPIRV-Cross, minivorbis, OpenAL Soft); значок — OFL. OpenAL Soft (LGPL) собран
+  статически — до публичного выпуска решить (docs/THIRD_PARTY.md).
+- **Тесты оболочки** (`app/src/test`): `GraphicsSettings` (ключи `g2m.ini`, наборы, перебор вариантов),
+  `GameFolder` (папка игры без учёта регистра, поиск, пропуск `Android/`, пути SAF; не-файловые тома — `null`).
+
+### Ожидается от пользователя
+Поставить новый APK поверх «Gothic II · проба» (значок станет «Gothic II»): сохранения и графика должны остаться.
+Старое приложение «Gothic II» на эмуляции Windows (`gothic2.mobile.dev`/`gothic2.mobile`) больше не нужно — его
+можно удалить: вместе с ним удалятся его Wine-файлы (≈1 ГБ) и резервные копии сохранений оригинальной игры
+(новому движку они всё равно не подходят); папка игры не затрагивается.
