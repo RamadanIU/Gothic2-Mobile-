@@ -27,6 +27,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Экран запуска пробной сборки: разрешение «Файлы», поиск папки игры (System, Data, _work),
@@ -47,6 +49,9 @@ public class LauncherActivity extends Activity {
     private Button permission;
     private String gamePath;
     private boolean searching;
+    private GraphicsSettings graphics;
+    private TextView graphicsSummary;
+    private final List<Runnable> graphicsRefresh = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -78,6 +83,9 @@ public class LauncherActivity extends Activity {
             new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER)));
         col.addView(button("Сохранить журнал в «Загрузки»", v -> saveLog()));
 
+        graphics = new GraphicsSettings(prefs());
+        addGraphicsSection(col, pad);
+
         TextView help = text(
             "Управление\n"
                 + "• Слева — джойстик: вперёд/назад; вбок — поворот, с оружием — шаг в сторону.\n"
@@ -92,7 +100,10 @@ public class LauncherActivity extends Activity {
                 + "«Пойдём со мной — поможешь в бою?». Цена — 10 золотых за уровень, не больше трёх напарников. "
                 + "Напарник идёт следом и дерётся с врагами, опыт за убитых им — тебе. "
                 + "Ещё раз заговорить — «Подожди меня здесь» или «Дальше я сам».\n"
-                + "• Диалог и сумка: стрелки, «Выбрать», «Назад». Кнопка «Назад» телефона — Esc.\n\n"
+                + "• Диалог и сумка: стрелки, «Выбрать», «Назад»; у сундука и тела — «Взять всё». "
+                + "Кнопка «Назад» телефона — Esc.\n"
+                + "• Графика задаётся здесь, на экране запуска: настройки видео в меню самой игры "
+                + "написаны для старого движка и почти не действуют.\n\n"
                 + "Сохранения этой пробы хранятся в самом приложении (удаление приложения их удалит) "
                 + "и с сохранениями обычной игры не совместимы.",
             14, DIM);
@@ -150,10 +161,52 @@ public class LauncherActivity extends Activity {
         refresh();
     }
 
+    /** «Графика»: готовые наборы и отдельные параметры; касание кнопки — следующий вариант. */
+    private void addGraphicsSection(LinearLayout col, int pad) {
+        TextView title = text("Графика", 20, GOLD);
+        title.setTypeface(Typeface.SERIF, Typeface.BOLD);
+        title.setPadding(0, pad, 0, 0);
+        col.addView(title);
+        graphicsSummary = text("", 14, DIM);
+        col.addView(graphicsSummary);
+
+        LinearLayout presets = new LinearLayout(this);
+        presets.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < GraphicsSettings.PRESET_NAMES.length; i++) {
+            final int preset = i;
+            Button b = button(GraphicsSettings.PRESET_NAMES[i], v -> {
+                graphics.applyPreset(preset);
+                refreshGraphics();
+            });
+            LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) b.getLayoutParams();
+            lp.width = 0;
+            lp.weight = 1;
+            if (i > 0) lp.leftMargin = pad / 3;
+            presets.addView(b);
+        }
+        col.addView(presets);
+
+        for (GraphicsSettings.Option o : GraphicsSettings.ALL) {
+            Button b = button("", v -> {
+                graphics.cycle(o);
+                refreshGraphics();
+            });
+            graphicsRefresh.add(() -> b.setText(graphics.label(o)));
+            col.addView(b);
+        }
+        refreshGraphics();
+    }
+
+    private void refreshGraphics() {
+        graphicsSummary.setText(graphics.summary());
+        for (Runnable r : graphicsRefresh) r.run();
+    }
+
     private void startGame() {
         if (gamePath == null) return;
         try (OutputStream out = new FileOutputStream(new File(getFilesDir(), "gothic_path.txt"))) {
             out.write(gamePath.getBytes(StandardCharsets.UTF_8));
+            graphics.write(getFilesDir());
         } catch (IOException e) {
             Toast.makeText(this, "Не удалось записать путь: " + e.getMessage(), Toast.LENGTH_LONG).show();
             return;
