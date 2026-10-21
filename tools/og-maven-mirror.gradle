@@ -1,0 +1,11 @@
+// Зеркало Maven Central от Google для пробной сборки на OpenGothic (tools/build-opengothic.sh).
+// Её проект создаёт Tempest: плагин Android берётся через buildscript { repositories }, а не через
+// settings, поэтому общий tools/maven-mirror.gradle сюда не подходит. Зеркало ставится первым.
+def mirror = 'https://maven-central.storage-download.googleapis.com/maven2/'
+beforeProject { project ->
+    [project.buildscript.repositories, project.repositories].each { repos ->
+        def m = repos.maven { url mirror }
+        repos.remove(m)
+        repos.addFirst(m)
+    }
+}

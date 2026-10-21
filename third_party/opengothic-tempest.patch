@@ -1,0 +1,52 @@
+diff --git a/Engine/cmake/android/build.gradle.in b/Engine/cmake/android/build.gradle.in
+index 2a75ab6..9ecbadc 100644
+--- a/Engine/cmake/android/build.gradle.in
++++ b/Engine/cmake/android/build.gradle.in
+@@ -99,5 +99,7 @@ android {
+     }
+     lint {
+         disable 'ChromeOsAbiSupport'
++        // Gothic II Mobile: пробная сборка с targetSdk 28 (разрешение «Файлы»), lint - отдельно
++        checkReleaseBuilds false
+     }
+ }
+diff --git a/Engine/system/api/androidapi.cpp b/Engine/system/api/androidapi.cpp
+index 96b7829..b10c79c 100644
+--- a/Engine/system/api/androidapi.cpp
++++ b/Engine/system/api/androidapi.cpp
+@@ -52,6 +52,8 @@ struct TouchPoint {
+   Point   movePos, moveLast;
+   };
+ static std::vector<TouchPoint> touches;
++// Gothic II Mobile: системная кнопка «Назад» - Esc игры (иначе NativeActivity закрывается)
++static bool                    backPressed = false;
+ 
+ static void pressTouch(int32_t id, Point pos) {
+   size_t slot = 0;
+@@ -172,6 +174,11 @@ void AndroidApi::onAppCmd(void*, int32_t cmd) {
+ 
+ int32_t AndroidApi::onInputEvent(const void* input) {
+   const auto event = static_cast<const AInputEvent*>(input);
++  if(AInputEvent_getType(event)==AINPUT_EVENT_TYPE_KEY && AKeyEvent_getKeyCode(event)==AKEYCODE_BACK) {
++    if(AKeyEvent_getAction(event)==AKEY_EVENT_ACTION_UP)
++      backPressed = true;
++    return 1;
++    }
+   if(AInputEvent_getType(event)!=AINPUT_EVENT_TYPE_MOTION ||
+      (AInputEvent_getSource(event) & AINPUT_SOURCE_TOUCHSCREEN)!=AINPUT_SOURCE_TOUCHSCREEN)
+     return 0;
+@@ -209,6 +216,14 @@ int32_t AndroidApi::onInputEvent(const void* input) {
+ bool AndroidApi::processTouchEvents(AppCallBack& cb) {
+   if(mainWindow==nullptr || isExit.load())
+     return false;
++  if(backPressed) {
++    backPressed = false;
++    KeyEvent down(Event::K_ESCAPE,Event::M_NoModifier,Event::KeyDown);
++    SystemApi::dispatchKeyDown(*mainWindow,down,AKEYCODE_BACK);
++    KeyEvent up(Event::K_ESCAPE,Event::M_NoModifier,Event::KeyUp);
++    SystemApi::dispatchKeyUp(*mainWindow,up,AKEYCODE_BACK);
++    return true;
++    }
+   // Dispatch a copy: handlers may poll recursively and change touches
+   for(size_t i=0; i<touches.size(); ++i) {
+     auto& t = touches[i];
