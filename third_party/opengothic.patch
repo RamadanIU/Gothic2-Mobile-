@@ -596,6 +596,70 @@ index fb8d6259..c55715d2 100644
  
      //////////////////////////////////
      // Helper functions for movement
+diff --git a/common/gothic.cpp b/common/gothic.cpp
+index 56c5d589..14729d02 100644
+--- a/common/gothic.cpp
++++ b/common/gothic.cpp
+@@ -149,6 +149,24 @@ Gothic::Gothic(GameModDescriptor desc) {
+     iniFile->set("INTERNAL", "vidResIndex", 0); // full-res
+     }
+   {
++  // Gothic II Mobile: графику задаёт экран запуска (files/g2m.ini): настройки видео самой игры
++  // написаны для старого движка, OpenGothic читает из них только часть
++  IniFile g2m(u"g2m.ini");
++  if(g2m.has("GRAPHICS")) {
++    opts.fpsLimit         = std::max(0, g2m.getI("GRAPHICS","fpsLimit",opts.fpsLimit));
++    opts.shadowResolution = uint32_t(std::clamp(g2m.getI("GRAPHICS","shadowResolution",2048), 0, 2048));
++    opts.viewDistance     = std::max(0.f, g2m.getF("GRAPHICS","viewDistance",0))*100.f;
++    opts.detailRatio      = std::clamp(g2m.getF("GRAPHICS","detailRatio",0), 0.f, 0.05f);
++    iniFile->set("INTERNAL",    "vidResIndex",        std::clamp(g2m.getI("GRAPHICS","resolution",0), 0, 2));
++    iniFile->set("ENGINE",      "zEnvMappingEnabled", g2m.getI("GRAPHICS","reflections",1)!=0 ? 1 : 0);
++    iniFile->set("RENDERER_D3D","zFogRadial",         g2m.getI("GRAPHICS","sunshafts",1)!=0 ? 1 : 0);
++    iniFile->set("ENGINE",      "zCloudShadowScale",  g2m.getI("GRAPHICS","ssao",0)!=0 ? 1 : 0);
++    iniFile->set("ENGINE",      "zWindEnabled",       g2m.getI("GRAPHICS","wind",1)!=0 ? 1 : 0);
++    Tempest::Log::i("[g2m] graphics: fps=",opts.fpsLimit," res=",iniFile->getI("INTERNAL","vidResIndex"),
++                    " shadows=",int(opts.shadowResolution)," view=",int(opts.viewDistance/100.f),"m detail=",opts.detailRatio);
++    }
++  }
++  {
+   defaults.reset(new IniFile());
+   defaults->set("GAME", "enableMouse",         1);
+   defaults->set("GAME", "mouseSensitivity",    0.5f);
+diff --git a/common/gothic.h b/common/gothic.h
+index 2654cc42..d991c5e8 100644
+--- a/common/gothic.h
++++ b/common/gothic.h
+@@ -71,6 +71,11 @@ class Gothic final {
+       bool     showHealthBar     = true;
+       uint8_t  showManaBar       = 2;
+       uint8_t  showSwimBar       = 1;
++
++      // Gothic II Mobile: настройки графики с экрана запуска (g2m.ini)
++      uint32_t shadowResolution  = 2048; // 0 - без теней
++      float    viewDistance      = 0;    // дальность прорисовки, см; 0 - без ограничения
++      float    detailRatio       = 0;    // мелочь дальше radius/detailRatio не рисуется; 0 - всё
+       };
+ 
+     auto         version() const -> const VersionInfo&;
+diff --git a/common/graphics/drawcommands.cpp b/common/graphics/drawcommands.cpp
+index 1bf78979..00616c0f 100644
+--- a/common/graphics/drawcommands.cpp
++++ b/common/graphics/drawcommands.cpp
+@@ -286,10 +286,13 @@ void DrawCommands::visibilityPass(Encoder<CommandBuffer>& cmd, int pass) {
+     const size_t visClustersSz = maxPayload*sizeof(uint32_t)*4;
+     usesSsbo(view.visClusters, visClustersSz);
+ 
+-    struct Push { uint32_t firstMeshlet; uint32_t meshletCount; float znear; } push = {};
++    struct Push { uint32_t firstMeshlet; uint32_t meshletCount; float znear; float viewDist; float detailRatio; } push = {};
+     push.firstMeshlet = 0;
+     push.meshletCount = uint32_t(clusters.size());
+     push.znear        = scene.znear;
++    // Gothic II Mobile: дальность прорисовки и мелочь вдали - из настроек экрана запуска
++    push.viewDist     = Gothic::options().viewDistance;
++    push.detailRatio  = Gothic::options().detailRatio;
+ 
+     auto* pso = &Shaders::inst().visibilityPassSh;
+     if(viewport==SceneGlobals::V_Main)
 diff --git a/common/graphics/mesh/pose.cpp b/common/graphics/mesh/pose.cpp
 index 9a4f1665..9d0e67da 100644
 --- a/common/graphics/mesh/pose.cpp
@@ -639,8 +703,63 @@ index 216d392b..f0244f84 100644
  
      float              translateY() const { return trY; }
      auto               rootNode() const -> const Tempest::Matrix4x4;
+diff --git a/common/graphics/renderer.cpp b/common/graphics/renderer.cpp
+index 03a64b20..3b56b9f2 100644
+--- a/common/graphics/renderer.cpp
++++ b/common/graphics/renderer.cpp
+@@ -111,6 +111,7 @@ Renderer::~Renderer() {
+   }
+ 
+ void Renderer::setupSettings() {
++  settings.shadowResolution   = Gothic::options().shadowResolution;
+   settings.zEnvMappingEnabled = Gothic::settingsGetI("ENGINE","zEnvMappingEnabled")!=0;
+   settings.zCloudShadowScale  = Gothic::settingsGetI("ENGINE","zCloudShadowScale") !=0;
+   settings.zFogRadial         = Gothic::settingsGetI("RENDERER_D3D","zFogRadial")!=0;
+@@ -435,7 +436,9 @@ void Renderer::resetShadowmap() {
+       if(settings.rtsmEnabled && !(sky.quality!=None && i==1))
+         continue; //TODO: support vsm in gi code
+       }
+-    shadowMap[i] = device.zbuffer(shadowFormat, settings.shadowResolution, settings.shadowResolution);
++    // Gothic II Mobile: без теней - карта 1x1, проходы теней отключаются (DrawCommands::isViewEnabled)
++    const uint32_t res = std::max(1u, settings.shadowResolution);
++    shadowMap[i] = device.zbuffer(shadowFormat, res, res);
+     }
+   }
+ 
+@@ -1768,7 +1771,7 @@ void Renderer::drawUnderwater(Encoder<CommandBuffer>& cmd, const WorldView& wvie
+ 
+ void Renderer::drawShadowMap(Encoder<CommandBuffer>& cmd, uint8_t fId, WorldView& view) {
+   for(uint8_t i=0; i<Resources::ShadowLayers; ++i) {
+-    if(shadowMap[i].isEmpty())
++    if(shadowMap[i].isEmpty() || settings.shadowResolution==0)
+       continue;
+     cmd.setDebugMarker(string_frm("ShadowMap #",i));
+     cmd.setFramebuffer({}, {shadowMap[i], 0.f, Tempest::Preserve});
+@@ -1816,7 +1819,8 @@ void Renderer::drawShadowResolve(Encoder<CommandBuffer>& cmd, const WorldView& w
+     }
+   else {
+     for(size_t r=0; r<Resources::ShadowLayers; ++r) {
+-      if(shadowMap[r].isEmpty())
++      // Gothic II Mobile: без теней карты 1x1, а в direct_light нет слотов 4 и 5
++      if(shadowMap[r].isEmpty() || settings.shadowResolution==0)
+         continue;
+       cmd.setBinding(4+r, shadowMap[r], Resources::shadowSampler());
+       }
+diff --git a/common/graphics/renderer.h b/common/graphics/renderer.h
+index 912ea337..e80688b0 100644
+--- a/common/graphics/renderer.h
++++ b/common/graphics/renderer.h
+@@ -124,7 +124,7 @@ class Renderer final {
+     void togglePathtrace();
+ 
+     struct Settings {
+-      const uint32_t shadowResolution   = 2048;
++      uint32_t       shadowResolution   = 2048; // Gothic II Mobile: из настроек экрана запуска
+       bool           vsmEnabled         = false;
+       bool           rtsmEnabled        = false;
+       bool           swrEnabled         = false;
 diff --git a/common/mainwindow.cpp b/common/mainwindow.cpp
-index 52b66d3a..1d2e485c 100644
+index 52b66d3a..c3fd493c 100644
 --- a/common/mainwindow.cpp
 +++ b/common/mainwindow.cpp
 @@ -34,7 +34,7 @@ MainWindow::MainWindow(Device& device)
@@ -742,7 +861,7 @@ index 52b66d3a..1d2e485c 100644
      }
    else if(act==KeyCodec::Inventory && !dialogs.isActive()) {
      if(inventory.isActive()) {
-@@ -553,10 +577,42 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -553,10 +577,50 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
          inventory.open(*pl);
        }
      clearInput();
@@ -781,16 +900,42 @@ index 52b66d3a..1d2e485c 100644
 +void MainWindow::touchLook(int dx, int dy) {
 +  dTouch += Point(dx,dy);
 +  }
++
++bool MainWindow::touchCanTakeAll() const {
++  return inventory.canTakeAll();
++  }
++
++void MainWindow::touchTakeAll() {
++  inventory.takeAll();
++  }
 +#endif
 +
  void MainWindow::focusEvent(FocusEvent &event) {
    if(!event.in)
      return;
+@@ -1245,11 +1309,17 @@ void MainWindow::render(){
+     tickCamera(dt);
+ 
+     auto& sync = fence[cmdId];
++#if defined(__MOBILE_PLATFORM__)
++    // Gothic II Mobile: ждать видеокарту, а не крутить цикл: холостой цикл держал ядро процессора
++    // занятым на 100 % (игровая логика до 200 раз в секунду) и грел телефон
++    sync.wait();
++#else
+     if(!sync.wait(0)) {
+       // GPU rendering is not done, pass to next frame
+       std::this_thread::yield();
+       return;
+       }
++#endif
+     Resources::resetRecycled(cmdId);
+ 
+     if(video.isActive()) {
 diff --git a/common/mainwindow.h b/common/mainwindow.h
-index 3fb27136..7b193a86 100644
+index 3fb27136..81148845 100644
 --- a/common/mainwindow.h
 +++ b/common/mainwindow.h
-@@ -49,6 +49,20 @@ class MainWindow : public Tempest::Window {
+@@ -49,6 +49,22 @@ class MainWindow : public Tempest::Window {
  
      float uiScale() const;
  
@@ -806,12 +951,14 @@ index 3fb27136..7b193a86 100644
 +    void      touchKey (Tempest::Event::KeyType k);
 +    void      touchMenu(KeyCodec::Action act);
 +    void      touchLook(int dx, int dy);
++    bool      touchCanTakeAll() const;
++    void      touchTakeAll();
 +#endif
 +
    private:
      void paintEvent     (Tempest::PaintEvent& event) override;
      void resizeEvent    (Tempest::SizeEvent & event) override;
-@@ -89,6 +103,7 @@ class MainWindow : public Tempest::Window {
+@@ -89,6 +105,7 @@ class MainWindow : public Tempest::Window {
      void setFullscreen(bool fs);
  
      void processMouse(Tempest::MouseEvent& event, bool enable);
@@ -819,7 +966,7 @@ index 3fb27136..7b193a86 100644
      void tickMouse(uint64_t dt);
      void onSettings();
  
-@@ -157,6 +172,7 @@ class MainWindow : public Tempest::Window {
+@@ -157,6 +174,7 @@ class MainWindow : public Tempest::Window {
  
      Tempest::Widget*          uiKeyUp=nullptr;
      Tempest::Point            dMouse;
@@ -855,11 +1002,58 @@ index 17a2ec63..cf8c4d46 100644
      close();
      accepted = true;
      }
+diff --git a/common/ui/inventorymenu.cpp b/common/ui/inventorymenu.cpp
+index b532ab81..7025e591 100644
+--- a/common/ui/inventorymenu.cpp
++++ b/common/ui/inventorymenu.cpp
+@@ -163,6 +163,28 @@ bool InventoryMenu::ransack(Npc &pl, Npc &tr) {
+   return true;
+   }
+ 
++bool InventoryMenu::canTakeAll() const {
++  return player!=nullptr && ((state==State::Chest && chest!=nullptr) || (state==State::Ransack && trader!=nullptr));
++  }
++
++void InventoryMenu::takeAll() {
++  if(!canTakeAll())
++    return;
++  // Сначала список: перенос меняет инвентарь, по которому идём
++  const bool       fromChest = (state==State::Chest);
++  const Inventory& from      = fromChest ? chest->inventory() : trader->inventory();
++  std::vector<std::pair<size_t,size_t>> items;
++  for(auto it = from.iterator(fromChest ? Inventory::T_Inventory : Inventory::T_Ransack); it.isValid(); ++it)
++    items.emplace_back(it->clsId(), it.count());
++  for(auto& [cls,count]:items) {
++    if(fromChest)
++      player->addItem(cls,*chest,count); else
++      player->addItem(cls,*trader,count);
++    }
++  adjustScroll();
++  update();
++  }
++
+ void InventoryMenu::open(Npc &pl, Interactive &ch) {
+   if(pl.isDown())
+     return;
+diff --git a/common/ui/inventorymenu.h b/common/ui/inventorymenu.h
+index d4ddb41f..885a936c 100644
+--- a/common/ui/inventorymenu.h
++++ b/common/ui/inventorymenu.h
+@@ -44,6 +44,9 @@ class InventoryMenu : public Tempest::Widget {
+     void  open(Npc& pl);
+     void  trade(Npc& pl,Npc& tr);
+     bool  ransack(Npc& pl,Npc& tr);
++    // Gothic II Mobile: «Взять всё» из сундука или с тела
++    bool  canTakeAll() const;
++    void  takeAll();
+     void  open(Npc& pl,Interactive& chest);
+     State isOpen() const;
+     bool  isActive() const;
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f17309..4f920c44 100644
+index d9f17309..4ffe30c3 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,447 @@
+@@ -1,41 +1,457 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
@@ -922,6 +1116,10 @@ index d9f17309..4f920c44 100644
 +      return aut;
 +    case C_Potion:
 +      return Rect(aut.x-pad-btn, aut.y, btn, btn);
++    case C_TakeAll: {
++      // над «Выбрать», шириной с неё
++      return Rect(atk.x, atk.y-pad-btn, atk.w, btn);
++      }
 +    case C_Menu:
 +    case C_Back:
 +      return Rect(pad, pad, tw, th);
@@ -972,6 +1170,8 @@ index d9f17309..4f920c44 100644
 +    case C_Select:
 +    case C_Back:
 +      return m==M::Navigation;
++    case C_TakeAll:
++      return m==M::Navigation && owner.touchCanTakeAll();
 +    case C_Skip:
 +      return m==M::Skip;
 +    case C_None:
@@ -1015,6 +1215,7 @@ index d9f17309..4f920c44 100644
 +    case C_Right:  return ">";
 +    case C_Select: return toCp1251("Выбрать");
 +    case C_Back:   return toCp1251("Назад");
++    case C_TakeAll:return toCp1251("Взять всё");
 +    case C_Skip:   return toCp1251("Пропустить");
 +    case C_None:
 +    case C_Joy:
@@ -1239,6 +1440,9 @@ index d9f17309..4f920c44 100644
 +    case C_Skip:
 +      owner.touchKey(Event::K_ESCAPE);
 +      break;
++    case C_TakeAll:
++      owner.touchTakeAll();
++      break;
 +    case C_None:
 +    case C_Joy:
 +    case C_Look:
@@ -1325,10 +1529,10 @@ index d9f17309..4f920c44 100644
 +    }
    }
 diff --git a/common/ui/touchinput.h b/common/ui/touchinput.h
-index f46becce..8831d950 100644
+index f46becce..97797a54 100644
 --- a/common/ui/touchinput.h
 +++ b/common/ui/touchinput.h
-@@ -1,21 +1,86 @@
+@@ -1,21 +1,88 @@
  #pragma once
  
  #include <Tempest/Widget>
@@ -1344,7 +1548,8 @@ index f46becce..8831d950 100644
 +// Мир: джойстик слева (плавающий), обзор пальцем справа, «Удар» (держать - серия ударов в окно комбо,
 +// свайп вбок - боковой удар), «Блок», «Прыжок», «Оружие» (долго - лук), «Автобой», «Зелье»,
 +// сверху - «Меню», «Сумка», «Журнал», «Герой».
-+// Диалог, сумка, торговля: стрелки, «Выбрать», «Назад». Ролик и сцена: «Пропустить».
++// Диалог, сумка, торговля: стрелки, «Выбрать», «Назад»; сундук и тело - ещё «Взять всё».
++// Ролик и сцена: «Пропустить».
  class TouchInput : public Tempest::Widget {
    public:
 -    TouchInput(PlayerControl& ctrl);
@@ -1382,6 +1587,7 @@ index f46becce..8831d950 100644
 +      C_Right,
 +      C_Select,
 +      C_Back,
++      C_TakeAll,
 +      // ролик
 +      C_Skip,
 +      C_Count
@@ -1603,3 +1809,33 @@ index 73099364..af43e6f1 100644
      uint64_t                       lastEventTime=0;
  
      float                          angleY   = 0.f;
+diff --git a/shader/materials/visibility_pass.comp b/shader/materials/visibility_pass.comp
+index 378d837a..570542f8 100644
+--- a/shader/materials/visibility_pass.comp
++++ b/shader/materials/visibility_pass.comp
+@@ -23,6 +23,8 @@ layout(push_constant, std430) uniform UboPush {
+   uint      firstMeshlet;
+   int       meshletCount;
+   float     znear;
++  float     viewDist;
++  float     detailRatio;
+   } push;
+ 
+ Instance pullInstance(uint i) {
+@@ -182,6 +184,16 @@ void runCluster(const uint clusterId) {
+   if(!frustrumTest(cluster.sphere))
+     return;
+ 
++  // Gothic II Mobile: дальше дальности прорисовки - ничего; мелкие предметы (трава, кусты, камни) -
++  // по угловому размеру. Кластеры ландшафта (instanceId 0xFFFFFFFF) по размеру не отсекаются.
++  if(push.viewDist>0 || push.detailRatio>0) {
++    const float dist = distance(cluster.sphere.xyz, scene.camPos) - cluster.sphere.w;
++    if(push.viewDist>0 && dist>push.viewDist)
++      return;
++    if(push.detailRatio>0 && cluster.instanceId!=0xFFFFFFFF && cluster.sphere.w<dist*push.detailRatio)
++      return;
++    }
++
+ #if defined(MAIN_VIEW)
+   vec4  aabb     = vec4(0);
+   float depthMin = 1;
