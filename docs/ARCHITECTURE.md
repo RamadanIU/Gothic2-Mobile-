@@ -28,7 +28,12 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
 
 | Что | Где (в патче) |
 |---|---|
-| Сенсорный слой: джойстик, обзор, кнопки мира, навигация в диалогах/сумке, «Пропустить» | `common/ui/touchinput.*`, `MainWindow::touch*` |
+| Сенсорный слой (docs/CONTROLS.md): раскладка по дугам, главная кнопка по обстановке, колёса оружия и отряда, касание по NPC/реплике/ячейке, взлом, «Пропустить» | `common/ui/touchinput.*`, `MainWindow::touch*`, `DialogMenu::touchChoice*`, `InventoryMenu::touch*` |
+| Рисованные значки и подложки кнопок (сглаживание по полю расстояний, без текстур в APK) | `common/ui/touchicons.*` |
+| Полоски здоровья/маны/дыхания слева вверху (не под пальцами) | `MainWindow::paintEvent`, `touchHudBottom` |
+| Цель касанием: фокус боя держится на выбранном NPC | `PlayerControl::setTouchTarget/applyTouchTarget` |
+| «Собрать»: обход бесхозных вещей и мёртвых в 8 м | `PlayerControl::tickGather/findGatherTarget` |
+| Отряд: приказы, «не нападать» (`aivar[95]`), защита героя через `B_Attack` | `companions.cpp` (`squadOrder`, `tickSquad`), `GameScript::invokeAttack` |
 | Касание мимо слоя — не удар; Esc — системная «Назад» | `MainWindow::mouse*`, `Tempest androidapi.cpp` |
 | Удержание «Удара»: удар только в открытое окно комбо | `Pose::isComboWindow`, `PlayerControl::tickTouchAttack` |
 | Автобой: герой по боевому ИИ NPC (таблицы `Fight.dat`), выбор цели, зелья | `Npc::autoFight`, `Npc::fightTactic`, `PlayerControl::tickAutoFight` |
@@ -44,8 +49,10 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
 
 Tempest превращает касания в события мыши с номером пальца (`mouseID`). `TouchInput` — верхний слой над
 игрой (ниже только меню игры, у которого своё касание): в мире он забирает все касания (кнопки, джойстик,
-обзор), на экранах со списками — тоже, чтобы случайный тап не применил предмет. Действия героя идут прямо в
-`PlayerControl` (не через клавиши), навигация и Esc — синтетическими клавишами в `MainWindow`.
+обзор, касание по NPC), на экранах со списками — тоже: касание по реплике или ячейке передаётся в
+`DialogMenu`/`InventoryMenu` только как осознанный выбор (выделить, затем подтвердить). Действия героя идут
+прямо в `PlayerControl` (не через клавиши), навигация и Esc — синтетическими клавишами в `MainWindow`.
+Раскладка и жесты — docs/CONTROLS.md.
 Управление на телефоне — всегда схема Gothic II (`g2Ctrl`).
 
 ## Сборка
