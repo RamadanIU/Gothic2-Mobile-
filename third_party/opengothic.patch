@@ -1,9 +1,9 @@
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
-index 00000000..bd6c3ef5
+index 0000000..eb7456a
 --- /dev/null
 +++ b/common/game/companions.cpp
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,389 @@
 +#include "gamescript.h"
 +
 +#include <Tempest/Log>
@@ -24,6 +24,9 @@ index 00000000..bd6c3ef5
 +// Цена - 10 золотых за уровень, напарник называет её озвученной фразой ($GOLD_*).
 +
 +static const size_t MaxHired = 3;
++// Приказ «не нападать» хранится в свободной ячейке aivar (скрипты игры используют 0..80 и 88):
++// сохраняется и загружается вместе с NPC
++static const size_t AivStance = 95;
 +
 +static bool isAmbient(const zenkit::INpc& h) {
 +  switch(h.type) {
@@ -148,6 +151,8 @@ index 00000000..bd6c3ef5
 +      npc.addItem(gold,player,size_t(price));
 +      companionSay(npc,player,"$ITookYourGold");
 +      setParty(true);
++      // Новичок слушает тот же приказ, что и остальной отряд
++      setStance(npc,squadPassive());
 +      follow();
 +      Tempest::Log::i("[g2m] companion: hired \"",npc.displayName(),"\" level=",h.level," price=",price);
 +      endTalk();
@@ -169,6 +174,7 @@ index 00000000..bd6c3ef5
 +      break;
 +    case CompanionDismiss:
 +      setParty(false);
++      h.aivar[AivStance] = 0;
 +      if(h.daily_routine>0)
 +        npc.excRoutine(size_t(h.daily_routine));
 +      companionSay(npc,player,"$ABS_GOOD");
@@ -179,8 +185,216 @@ index 00000000..bd6c3ef5
 +      break;
 +    }
 +  }
++
++bool GameScript::isPassive(Npc& npc) {
++  return npc.handle().aivar[AivStance]!=0;
++  }
++
++void GameScript::setStance(Npc& npc, bool passive) {
++  npc.handle().aivar[AivStance] = passive ? 1 : 0;
++  }
++
++void GameScript::squadMembers(std::vector<Npc*>& out) {
++  out.clear();
++  auto& w = world();
++  for(uint32_t i=0; i<w.npcCount(); ++i) {
++    auto npc = w.npcById(i);
++    if(npc!=nullptr && !npc->isDead() && isHired(*npc))
++      out.push_back(npc);
++    }
++  }
++
++bool GameScript::squadPassive() {
++  std::vector<Npc*> sq;
++  squadMembers(sq);
++  for(auto i:sq)
++    if(isPassive(*i))
++      return true;
++  return false;
++  }
++
++bool GameScript::squadIsWaiting(Npc& npc) {
++  return !npc.hasRoutineState(findSymbolIndex("ZS_FOLLOW_PLAYER"));
++  }
++
++bool GameScript::squadCanFight(Npc& enemy) {
++  if(enemy.isDown() || enemy.isPlayer() || isPartyMember(enemy))
++    return false;
++  if(enemy.guild()>GIL_SEPERATOR_HUM)
++    return true;
++  auto& h = enemy.handle();
++  // Арена и поединки из диалога (AR_NONE) герой выигрывает сам: иначе скрипты не засчитают победу
++  // (AIV_DefeatedByPlayer, дуэли наёмников)
++  const int32_t aivArena  = scriptConst("AIV_ARENAFIGHT",45);
++  const int32_t afRunning = scriptConst("AF_RUNNING",1);
++  if(aivArena>=0 && uint32_t(aivArena)<zenkit::INpc::aivar_count && h.aivar[size_t(aivArena)]==afRunning)
++    return false;
++  const int32_t aivReason = scriptConst("AIV_ATTACKREASON",9);
++  if(aivReason>=0 && uint32_t(aivReason)<zenkit::INpc::aivar_count && h.aivar[size_t(aivReason)]==scriptConst("AR_NONE",0))
++    return false;
++  return true;
++  }
++
++int32_t GameScript::attackReason(Npc& npc, Npc& enemy) {
++  // Зверь - как в скриптах (AR_MonsterVsHuman). Враг по гильдии - насмерть (AR_GuildEnemy), остальных
++  // людей напарник только сбивает с ног (AR_GuardStopsFight): сюжетные NPC не погибнут от его руки
++  if(enemy.guild()>GIL_SEPERATOR_HUM)
++    return scriptConst("AR_MONSTERVSHUMAN",4);
++  if(personAttitude(npc,enemy)==ATT_HOSTILE)
++    return scriptConst("AR_GUILDENEMY",14);
++  return scriptConst("AR_GUARDSTOPSFIGHT",12);
++  }
++
++Npc* GameScript::squadEnemy(Npc& npc, Npc& player, bool following) {
++  // Тот, кто бьёт героя или напарника. Следующий за героем вступается в радиусе 15 м,
++  // ждущий на месте - только за тех, кто рядом с ним
++  const float range = following ? 1500.f : 800.f;
++  Npc*        ret   = nullptr;
++  float       best  = 0;
++  world().detectNpc(npc.position(), range, [&](Npc& o) {
++    if(&o==&npc || &o==&player || !o.isAttack())
++      return;
++    auto tg = o.target();
++    if(tg==nullptr || (tg!=&player && !isHired(*tg)))
++      return;
++    if(!squadCanFight(o))
++      return;
++    if(following && player.qDistTo(o)>1500.f*1500.f)
++      return;
++    const float qd = npc.qDistTo(o);
++    if(ret==nullptr || qd<best) {
++      ret  = &o;
++      best = qd;
++      }
++    });
++  return ret;
++  }
++
++void GameScript::tickSquad() {
++  if(Gothic::inst().version().game!=2)
++    return;
++  auto& w  = world();
++  auto* pl = w.player();
++  if(pl==nullptr)
++    return;
++  const uint64_t now = tickCount();
++  if(now<squadTickTime)
++    return;
++  squadTickTime = now+400;
++
++  const size_t zsFollow = findSymbolIndex("ZS_FOLLOW_PLAYER");
++  for(uint32_t i=0; i<w.npcCount(); ++i) {
++    auto npc = w.npcById(i);
++    if(npc==nullptr || npc->isDown() || !isHired(*npc))
++      continue;
++    if(isPassive(*npc)) {
++      // Сам не начинает: ни врагов вокруг, ни чужих драк. Перцепции заново включает каждое
++      // новое состояние распорядка - поэтому каждый раз
++      npc->setPerceptionDisable(PERC_ASSESSENEMY);
++      npc->setPerceptionDisable(PERC_ASSESSFIGHTSOUND);
++      continue;
++      }
++    if(npc->isAttack() || npc->isTalk())
++      continue;
++    const bool following = npc->hasRoutineState(zsFollow);
++    if(auto enemy = squadEnemy(*npc,*pl,following)) {
++      const int32_t ar = attackReason(*npc,*enemy);
++      Tempest::Log::i("[g2m] squad: \"",npc->displayName(),"\" defends against \"",enemy->displayName(),"\" ar=",ar);
++      invokeAttack(*npc,*enemy,ar);
++      }
++    }
++  }
++
++void GameScript::squadOrder(SquadOrder ord, Npc* target) {
++  auto* pl = world().player();
++  if(pl==nullptr)
++    return;
++  std::vector<Npc*> sq;
++  squadMembers(sq);
++  if(sq.empty())
++    return;
++
++  const size_t zsFollow = findSymbolIndex("ZS_FOLLOW_PLAYER");
++  const size_t zsStand  = findSymbolIndex("ZS_STAND_ARMSCROSSED");
++  // Отвечает голосом один - ближайший, а не хор
++  Npc* voice = nullptr;
++  for(auto npc:sq)
++    if(!npc->isDown() && (voice==nullptr || pl->qDistTo(*npc)<pl->qDistTo(*voice)))
++      voice = npc;
++
++  size_t done = 0;
++  for(auto npc:sq) {
++    if(npc->isDown() || npc->isTalk())
++      continue;
++    auto& h = npc->handle();
++    switch(ord) {
++      case SquadOrder::Follow: {
++        if(zsFollow==size_t(-1))
++          break;
++        auto wp = npc->currentTaPoint();
++        npc->setRoutineAllDay(zsFollow, wp!=nullptr ? std::string_view(wp->name) : std::string_view(h.wp));
++        // Бросить бой и идти к герою
++        npc->clearAiQueue();
++        npc->setTarget(nullptr);
++        npc->resumeAiRoutine();
++        ++done;
++        break;
++        }
++      case SquadOrder::Wait: {
++        auto wp = world().findWayPoint(npc->position());
++        if(zsStand==size_t(-1) || wp==nullptr)
++          break;
++        npc->setRoutineAllDay(zsStand, wp->name);
++        if(!npc->isAttack()) {
++          npc->clearAiQueue();
++          npc->resumeAiRoutine();
++          }
++        ++done;
++        break;
++        }
++      case SquadOrder::Attack: {
++        if(target==nullptr || target==npc || target->isDown() || isHired(*target) || target->isPlayer())
++          break;
++        invokeAttack(*npc,*target,attackReason(*npc,*target));
++        ++done;
++        break;
++        }
++      case SquadOrder::Passive: {
++        setStance(*npc,true);
++        npc->setPerceptionDisable(PERC_ASSESSENEMY);
++        npc->setPerceptionDisable(PERC_ASSESSFIGHTSOUND);
++        if(npc->isAttack()) {
++          // Начатый бой бросают
++          npc->clearAiQueue();
++          npc->setTarget(nullptr);
++          npc->resumeAiRoutine();
++          }
++        ++done;
++        break;
++        }
++      case SquadOrder::Defend: {
++        setStance(*npc,false);
++        // Состояние распорядка заново включит перцепции врагов и драк
++        if(!npc->isAttack()) {
++          npc->clearAiQueue();
++          npc->resumeAiRoutine();
++          }
++        ++done;
++        break;
++        }
++      }
++    }
++
++  if(done==0)
++    return;
++  if(voice!=nullptr && ord!=SquadOrder::Attack)
++    companionSay(*voice,*pl,"$ABS_GOOD");
++  static const char* names[] = {"follow", "wait", "attack", "passive", "defend"};
++  Tempest::Log::i("[g2m] squad: order=",names[int(ord)]," members=",int(done),
++                  target!=nullptr ? " target=" : "", target!=nullptr ? target->displayName() : "");
++  }
 diff --git a/common/game/fightalgo.cpp b/common/game/fightalgo.cpp
-index b1d951ff..8d5f5cdc 100644
+index b1d951f..8d5f5cd 100644
 --- a/common/game/fightalgo.cpp
 +++ b/common/game/fightalgo.cpp
 @@ -31,7 +31,7 @@ void FightAlgo::save(Serialize &fout) {
@@ -193,7 +407,7 @@ index b1d951ff..8d5f5cdc 100644
  
    if(hitFlg) {
 diff --git a/common/game/gamescript.cpp b/common/game/gamescript.cpp
-index 4b32af2b..a10d1cc5 100644
+index 4b32af2..ba0f409 100644
 --- a/common/game/gamescript.cpp
 +++ b/common/game/gamescript.cpp
 @@ -920,6 +920,12 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
@@ -221,11 +435,39 @@ index 4b32af2b..a10d1cc5 100644
    ScopeVar self (*vm.global_self(), npc.handlePtr());
    ScopeVar other(*vm.global_other(), player.handlePtr());
  
+@@ -1118,6 +1129,18 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
+   return ret;
+   }
+ 
++void GameScript::invokeAttack(Npc& npc, Npc& target, int32_t reason) {
++  // Gothic II Mobile: напасть так же, как это делают скрипты игры (B_Attack -> ZS_Attack): с репликой,
++  // выбором оружия и концом боя по правилам причины нападения
++  auto* fn = vm.find_symbol_by_name("B_ATTACK");
++  if(fn==nullptr || fn->type()!=zenkit::DaedalusDataType::FUNCTION)
++    return;
++  ScopeCtx ctx  (*this, npc.processPolicy());
++  ScopeVar self (*vm.global_self(),  npc.handlePtr());
++  ScopeVar other(*vm.global_other(), target.handlePtr());
++  vm.call_function<void>(fn, npc.handlePtr(), target.handlePtr(), reason, int32_t(0));
++  }
++
+ void GameScript::invokeItem(Npc *npc, ScriptFn fn) {
+   if(fn==size_t(-1) || fn == 0)
+     return;
+@@ -1472,6 +1495,8 @@ uint64_t GameScript::tickCount() const {
+ void GameScript::tick(uint64_t dt) {
+   if(dma!=nullptr)
+     dma->tick(dt);
++  // Gothic II Mobile: напарники защищают героя, приказы отряду
++  tickSquad();
+   }
+ 
+ uint32_t GameScript::rand(uint32_t max) {
 diff --git a/common/game/gamescript.h b/common/game/gamescript.h
-index 2cccb630..d6a5e085 100644
+index 2cccb63..18efec6 100644
 --- a/common/game/gamescript.h
 +++ b/common/game/gamescript.h
-@@ -121,6 +121,10 @@ class GameScript final {
+@@ -121,6 +121,27 @@ class GameScript final {
      auto updateDialog (const GameScript::DlgChoice &dlg, Npc &player, Npc &npc) -> std::vector<GameScript::DlgChoice>;
      void exec(const DlgChoice &dlg, Npc &player, Npc &npc);
  
@@ -233,10 +475,27 @@ index 2cccb630..d6a5e085 100644
 +    void companionChoices(Npc& player, Npc& npc, std::vector<DlgChoice>& out);
 +    void execCompanion   (const DlgChoice& dlg, Npc& player, Npc& npc);
 +
++    // Gothic II Mobile: отряд - приказы нанятым напарникам с кнопки «Отряд» (companions.cpp)
++    enum class SquadOrder : uint8_t {
++      Follow,   // ко мне: идти следом, бросить бой
++      Wait,     // ждать здесь
++      Attack,   // напасть на цель героя
++      Passive,  // не нападать самим (защищаться - можно)
++      Defend,   // защищать героя и друг друга
++      };
++    void   squadOrder  (SquadOrder ord, Npc* target);
++    void   squadMembers(std::vector<Npc*>& out);
++    bool   squadPassive();
++    bool   squadIsWaiting(Npc& npc);
++    bool   isPassive   (Npc& npc);
++    // В бою с ним напарники помогают: не дуэль, не арена, не свой
++    bool   squadCanFight(Npc& enemy);
++    void   invokeAttack(Npc& npc, Npc& target, int32_t reason);
++
      void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
      void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
      void  printCannotBuyError         (Npc &npc);
-@@ -445,6 +449,20 @@ class GameScript final {
+@@ -445,6 +466,24 @@ class GameScript final {
      void exitsession         ();
  
      void sort(std::vector<DlgChoice>& dlg);
@@ -253,23 +512,48 @@ index 2cccb630..d6a5e085 100644
 +    size_t  hiredCount   ();
 +    int32_t hirePrice    (Npc& npc) const;
 +    void    companionSay (Npc& npc, Npc& player, std::string_view svm);
++    void    tickSquad    ();
++    void    setStance    (Npc& npc, bool passive);
++    int32_t attackReason (Npc& npc, Npc& enemy);
++    Npc*    squadEnemy   (Npc& npc, Npc& player, bool following);
 +
      void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
      bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
  
+@@ -486,6 +525,7 @@ class GameScript final {
+     size_t                                                      gilCount=0;
+     std::vector<int32_t>                                        gilAttitudes;
+     int                                                         aiOutOrderId=0;
++    uint64_t                                                    squadTickTime=0;
+ 
+     PerDist                                                     perceptionRanges;
+ 
 diff --git a/common/game/playercontrol.cpp b/common/game/playercontrol.cpp
-index aa165097..abf344f4 100644
+index aa16509..d6066b6 100644
 --- a/common/game/playercontrol.cpp
 +++ b/common/game/playercontrol.cpp
-@@ -1,5 +1,7 @@
+@@ -1,13 +1,20 @@
  #include "playercontrol.h"
  
 +#include <Tempest/Log>
 +
++#include <algorithm>
  #include <cmath>
++#include <cstring>
++#include <iterator>
  
  #include "world/objects/npc.h"
-@@ -26,6 +28,10 @@ void PlayerControl::setupSettings() {
+ #include "world/objects/item.h"
+ #include "world/objects/interactive.h"
++#include "world/aiqueue.h"
+ #include "world/world.h"
+ #include "ui/dialogmenu.h"
+ #include "ui/inventorymenu.h"
++#include "utils/cp1251.h"
+ #include "gothic.h"
+ 
+ PlayerControl::PlayerControl(DialogMenu& dlg, InventoryMenu &inv)
+@@ -26,6 +33,10 @@ void PlayerControl::setupSettings() {
      } else {
      g2Ctrl = false;
      }
@@ -280,7 +564,7 @@ index aa165097..abf344f4 100644
    }
  
  void PlayerControl::setTarget(Npc *other) {
-@@ -33,6 +39,8 @@ void PlayerControl::setTarget(Npc *other) {
+@@ -33,6 +44,8 @@ void PlayerControl::setTarget(Npc *other) {
    auto pl = w ? w->player() : nullptr;
    if(pl==nullptr || pl->isFinishingMove())
      return;
@@ -289,7 +573,17 @@ index aa165097..abf344f4 100644
    const auto ws    = pl->weaponState();
    const bool melle = (ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H);
    if(other==nullptr) {
-@@ -444,6 +452,220 @@ void PlayerControl::clearInput() {
+@@ -271,6 +284,9 @@ void PlayerControl::drawVobRay(DbgPainter& p) const {
+ 
+ void PlayerControl::tickFocus() {
+   currentFocus = findFocus(&currentFocus);
++#if defined(__MOBILE_PLATFORM__)
++  applyTouchTarget();
++#endif
+   setTarget(currentFocus.npc);
+ 
+   if(!ctrl[Action::ActionGeneric])
+@@ -444,6 +460,532 @@ void PlayerControl::clearInput() {
    std::memset(ctrl, 0,sizeof(ctrl));
    std::memset(actrl,0,sizeof(actrl));
    std::memset(wctrl,0,sizeof(wctrl));
@@ -301,11 +595,19 @@ index aa165097..abf344f4 100644
 +  touchBlock   = false;
 +  }
 +
-+void PlayerControl::setTouchMove(int forward, int side) {
++void PlayerControl::setTouchMove(int forward, int side, bool run) {
 +  auto w     = Gothic::inst().world();
 +  auto pl    = w ? w->player() : nullptr;
 +  // С оружием в руках вбок - шаг в сторону (уклон), без оружия - поворот
 +  bool fight = pl!=nullptr && pl->weaponState()!=WeaponState::NoWeapon;
++  // Джойстик чуть сдвинут - шаг, до края - бег. Отпустили - снова бег: так по умолчанию в игре.
++  // Подкрадывание включается своей кнопкой и джойстиком не меняется
++  if(pl!=nullptr && (pl->walkMode()&WalkBit::WM_Sneak)!=WalkBit::WM_Sneak) {
++    const bool walk   = !run && (forward!=0 || side!=0);
++    const bool isWalk = (pl->walkMode()&WalkBit::WM_Walk)==WalkBit::WM_Walk;
++    if(walk!=isWalk)
++      pl->setWalkMode(pl->walkMode()^WalkBit::WM_Walk);
++    }
 +  auto fwd   = forward>0 ? Action::Forward : (forward<0 ? Action::Back : Action::Idle);
 +  auto sd    = Action::Idle;
 +  if(side<0)
@@ -369,21 +671,325 @@ index aa165097..abf344f4 100644
 +    pl->setAutoFight(false);
 +  }
 +
-+bool PlayerControl::drinkHealPotion() {
++// Сначала слабые зелья: сильные остаются на крайний случай
++static const char* const healPotions[] = {"ITPO_HEALTH_01", "ITPO_HEALTH_02", "ITPO_HEALTH_03", "ITPO_HEALTH_ADDON_04"};
++static const char* const manaPotions[] = {"ITPO_MANA_01",   "ITPO_MANA_02",   "ITPO_MANA_03",   "ITPO_MANA_ADDON_04"};
++
++bool PlayerControl::drinkPotion(const char* const* names, size_t count) {
 +  auto w  = Gothic::inst().world();
 +  auto pl = w ? w->player() : nullptr;
 +  if(pl==nullptr || pl->isDown())
 +    return false;
-+  // Сначала слабые зелья: сильные остаются на крайний случай
-+  static const char* potions[] = {"ITPO_HEALTH_01", "ITPO_HEALTH_02", "ITPO_HEALTH_03", "ITPO_HEALTH_ADDON_04"};
-+  for(auto name:potions) {
-+    const size_t id = w->script().findSymbolIndex(name);
++  for(size_t i=0; i<count; ++i) {
++    const size_t id = w->script().findSymbolIndex(names[i]);
 +    if(id==size_t(-1) || pl->itemCount(id)==0)
 +      continue;
 +    pl->useItem(id);
 +    return true;
 +    }
 +  return false;
++  }
++
++bool PlayerControl::drinkHealPotion() {
++  return drinkPotion(healPotions,std::size(healPotions));
++  }
++
++bool PlayerControl::drinkManaPotion() {
++  return drinkPotion(manaPotions,std::size(manaPotions));
++  }
++
++size_t PlayerControl::potionCount(bool mana) const {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  if(pl==nullptr)
++    return 0;
++  const char* const* names = mana ? manaPotions : healPotions;
++  size_t n = 0;
++  for(size_t i=0; i<std::size(healPotions); ++i) {
++    const size_t id = w->script().findSymbolIndex(names[i]);
++    if(id!=size_t(-1))
++      n += pl->itemCount(id);
++    }
++  return n;
++  }
++
++void PlayerControl::toggleSneak() {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  if(pl==nullptr)
++    return;
++  if(!pl->canSneak() && !isSneak()) {
++    Gothic::inst().onPrint(toCp1251("Нужно умение «Красться»"));
++    return;
++    }
++  toggleSneakMode();
++  }
++
++bool PlayerControl::isSneak() const {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  return pl!=nullptr && (pl->walkMode()&WalkBit::WM_Sneak)==WalkBit::WM_Sneak;
++  }
++
++void PlayerControl::touchSwitchTarget(int dir) {
++  // Лук, арбалет, магия: следующая цель слева/справа на экране, как стрелки при прицеливании
++  moveFocus(dir<0 ? ActLeft : ActRight);
++  if(touchTgt!=nullptr && currentFocus.npc!=nullptr)
++    touchTgt = currentFocus.npc;
++  }
++
++void PlayerControl::touchDrawWeapon(uint8_t slot) {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  if(pl==nullptr)
++    return;
++  const auto ws    = pl->weaponState();
++  const bool melee = (ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H);
++  const bool bow   = (ws==WeaponState::Bow  || ws==WeaponState::CBow);
++  std::memset(wctrl,0,sizeof(wctrl));
++  if(slot==0) {
++    if(ws!=WeaponState::NoWeapon)
++      wctrl[WeaponClose] = true;
++    }
++  else if(slot==1) {
++    if(!melee)
++      wctrl[WeaponMele] = true;
++    }
++  else if(slot==2) {
++    if(!bow)
++      wctrl[WeaponBow] = true;
++    }
++  else if(slot>=3 && slot<=10) {
++    if(!(ws==WeaponState::Mage && pl->inventory().currentSpellSlot()==slot))
++      wctrl[slot] = true;
++    }
++  }
++
++void PlayerControl::setTouchTarget(Npc* npc) {
++  touchTgt = npc;
++  if(npc!=nullptr)
++    Tempest::Log::i("[g2m] touch target: ", npc->displayName());
++  }
++
++Npc* PlayerControl::touchTarget() {
++  if(touchTgt==nullptr)
++    return nullptr;
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  Focus f;
++  f.npc = touchTgt;
++  if(w!=nullptr)
++    f = w->validateFocus(f);
++  // Мёртвый, исчезнувший или далёкий (> 40 м) - выбор снимается
++  if(pl==nullptr || f.npc==nullptr || f.npc->isDead() || pl->qDistTo(*f.npc)>4000.f*4000.f)
++    touchTgt = nullptr;
++  return touchTgt;
++  }
++
++void PlayerControl::applyTouchTarget() {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  auto tg = touchTarget();
++  if(pl==nullptr || tg==nullptr || autoFightOn)
++    return;
++  // Разговор, подбор и обыск - по обычному фокусу; выбранная цель - для боя
++  const auto ws = pl->weaponState();
++  if(ws==WeaponState::NoWeapon)
++    return;
++  const zenkit::IFocus* fc = &w->script().focusMelee();
++  if(ws==WeaponState::Bow || ws==WeaponState::CBow)
++    fc = &w->script().focusRange();
++  else if(ws==WeaponState::Mage)
++    fc = &w->script().focusMage();
++  const float range = std::max(fc->npc_range2, 300.f);
++  if(pl->qDistTo(*tg)<=range*range && !tg->isDown())
++    currentFocus = Focus(*tg);
++  }
++
++bool PlayerControl::isAttacked(Npc& pl) const {
++  auto w     = Gothic::inst().world();
++  bool found = false;
++  w->detectNpc(pl.position(), 1500, [&](Npc& o) {
++    if(&o!=&pl && !o.isDown() && o.isAttack() && o.target()==&pl)
++      found = true;
++    });
++  return found;
++  }
++
++bool PlayerControl::findGatherTarget(Npc& pl, Item*& item, Npc*& body) const {
++  auto w = Gothic::inst().world();
++  item = nullptr;
++  body = nullptr;
++  static const float radius = 800.f;
++  float best = 0;
++  auto  skip = [this](const void* p) {
++    return std::find(gatherSkip.begin(),gatherSkip.end(),p)!=gatherSkip.end();
++    };
++  const auto pos = pl.position();
++  // Только бесхозное: чужое (владелец или гильдия) берётся вручную, осознанно - это кража
++  w->detectItem(pos, radius, [&](Item& it) {
++    auto& h = it.handle();
++    if(h.owner!=0 || h.owner_guild!=0 || it.isTorchBurn() || skip(&it))
++      return;
++    if(std::abs(it.position().y-pos.y)>160.f || !pl.canSeeItem(it,true))
++      return;
++    const float qd = pl.qDistTo(it);
++    if((item==nullptr && body==nullptr) || qd<best) {
++      item = &it;
++      body = nullptr;
++      best = qd;
++      }
++    });
++  // Мёртвые (не оглушённые): то, что даёт обыск
++  w->detectNpc(pos, radius, [&](Npc& n) {
++    if(&n==&pl || !n.isDead() || skip(&n))
++      return;
++    if(!n.inventory().iterator(Inventory::T_Ransack).isValid())
++      return;
++    if(std::abs(n.position().y-pos.y)>200.f || !pl.canSeeNpc(n,true))
++      return;
++    const float qd = pl.qDistTo(n);
++    if((item==nullptr && body==nullptr) || qd<best) {
++      item = nullptr;
++      body = &n;
++      best = qd;
++      }
++    });
++  return item!=nullptr || body!=nullptr;
++  }
++
++void PlayerControl::startGather() {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  if(pl==nullptr || gatherOn)
++    return;
++  gatherOn    = true;
++  gatherTaken = 0;
++  gatherItem  = nullptr;
++  gatherBody  = nullptr;
++  gatherSkip.clear();
++  gatherDeadline = w->tickCount()+7000;
++  Tempest::Log::i("[g2m] gather: start");
++  }
++
++void PlayerControl::stopGather(bool report) {
++  if(!gatherOn)
++    return;
++  gatherOn    = false;
++  gatherItem  = nullptr;
++  gatherBody  = nullptr;
++  gatherAvail = false;
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  if(pl!=nullptr && !pl->isAiQueueEmpty())
++    pl->clearAiQueue();
++  Tempest::Log::i("[g2m] gather: stop, taken=", int(gatherTaken));
++  if(!report && gatherTaken==0)
++    return;
++  if(gatherTaken>0)
++    Gothic::inst().onPrint(toCp1251("Собрано: ") + std::to_string(gatherTaken));
++  else
++    Gothic::inst().onPrint(toCp1251("Нечего собрать"));
++  }
++
++void PlayerControl::tickGather(Npc& pl) {
++  auto           w   = Gothic::inst().world();
++  const uint64_t now = w->tickCount();
++  if(!gatherOn) {
++    // Кнопка «Собрать» видна, только если рядом есть что взять и на героя не нападают
++    if(now>=gatherScanTime) {
++      gatherScanTime = now+350;
++      Item* it = nullptr;
++      Npc*  bd = nullptr;
++      gatherAvail = !pl.isDown() && !pl.isSwim() && !pl.isDive() && pl.interactive()==nullptr &&
++                    !dlg.isActive() && findGatherTarget(pl,it,bd) && !isAttacked(pl);
++      }
++    return;
++    }
++
++  // Игрок взялся за управление, напали, открылось окно - сбор прекращается
++  if(pl.isDown() || dlg.isActive() || inv.isActive() || pl.isSwim() || pl.isDive() || pl.interactive()!=nullptr ||
++     touchFwdAct!=Action::Idle || touchSideAct!=Action::Idle || touchAttack || touchBlock || isAttacked(pl)) {
++    // прервали - итог, только если что-то уже собрано
++    stopGather(gatherTaken>0);
++    return;
++    }
++  if(pl.weaponState()!=WeaponState::NoWeapon) {
++    // Сначала убрать оружие: с ним в руках вещи не поднять
++    wctrl[WeaponClose] = true;
++    gatherDeadline     = now+7000;
++    return;
++    }
++
++  if(gatherItem!=nullptr) {
++    Focus f;
++    f.item     = gatherItem;
++    gatherItem = w->validateFocus(f).item;
++    }
++  if(gatherBody!=nullptr) {
++    Focus f;
++    f.npc      = gatherBody;
++    gatherBody = w->validateFocus(f).npc;
++    if(gatherBody!=nullptr && !gatherBody->inventory().iterator(Inventory::T_Ransack).isValid())
++      gatherBody = nullptr;
++    }
++
++  if(gatherItem==nullptr && gatherBody==nullptr) {
++    if(!pl.isAiQueueEmpty() || pl.isAiBusy()) {
++      // доигрывается подбор или обыск
++      if(now>gatherDeadline)
++        pl.clearAiQueue();
++      return;
++      }
++    if(!findGatherTarget(pl,gatherItem,gatherBody)) {
++      stopGather(true);
++      return;
++      }
++    gatherDeadline = now+7000;
++    if(gatherItem!=nullptr)
++      pl.aiPush(AiQueue::aiGotoItem(*gatherItem)); else
++      pl.aiPush(AiQueue::aiGoToNpc(gatherBody));
++    return;
++    }
++
++  if(now>gatherDeadline) {
++    // Не дойти (стена, обрыв) - пропустить
++    gatherSkip.push_back(gatherItem!=nullptr ? static_cast<const void*>(gatherItem) : static_cast<const void*>(gatherBody));
++    gatherItem = nullptr;
++    gatherBody = nullptr;
++    pl.clearAiQueue();
++    return;
++    }
++
++  const float reach = gatherItem!=nullptr ? 110.f : 160.f;
++  const float qd    = gatherItem!=nullptr ? pl.qDistTo(*gatherItem) : pl.qDistTo(*gatherBody);
++  if(qd>reach*reach)
++    return; // ещё идёт
++  if(!pl.isAiQueueEmpty())
++    pl.clearAiQueue(); // дошёл
++  if(pl.isAiBusy())
++    return;
++
++  if(gatherItem!=nullptr) {
++    // Подбор - как вручную: анимация, проверка кражи скриптами
++    if(pl.takeItem(*gatherItem)!=nullptr) {
++      ++gatherTaken;
++      gatherItem = nullptr;
++      }
++    return;
++    }
++
++  // Обыск тела: всё, что показал бы обыск (как «Взять всё»)
++  std::vector<std::pair<size_t,size_t>> loot;
++  for(auto it = gatherBody->inventory().iterator(Inventory::T_Ransack); it.isValid(); ++it)
++    loot.emplace_back(it->clsId(), it.count());
++  for(auto& [cls,count]:loot)
++    pl.addItem(cls,*gatherBody,count);
++  gatherTaken += loot.size();
++  gatherSkip.push_back(gatherBody);
++  gatherBody     = nullptr;
++  gatherDeadline = now+3000;
++  pl.aiPush(AiQueue::aiPlayAnim("T_PLUNDER"));
 +  }
 +
 +void PlayerControl::applyTouchMove() {
@@ -510,7 +1116,17 @@ index aa165097..abf344f4 100644
    }
  
  void PlayerControl::marvinF8(uint64_t dt) {
-@@ -675,6 +897,12 @@ void PlayerControl::implMove(uint64_t dt) {
+@@ -579,6 +1121,9 @@ bool PlayerControl::tickMove(uint64_t dt) {
+   if(pl==nullptr)
+     return true;
+ 
++#if defined(__MOBILE_PLATFORM__)
++  tickGather(*pl);
++#endif
+   implMove(dt);
+ 
+   float runAngle = pl->runAngle();
+@@ -675,6 +1220,12 @@ void PlayerControl::implMove(uint64_t dt) {
        }
      }
  
@@ -524,26 +1140,49 @@ index aa165097..abf344f4 100644
      runAngleDest = 0;
      return;
 diff --git a/common/game/playercontrol.h b/common/game/playercontrol.h
-index fb8d6259..c55715d2 100644
+index fb8d625..fe8439e 100644
 --- a/common/game/playercontrol.h
 +++ b/common/game/playercontrol.h
-@@ -48,6 +48,15 @@ class PlayerControl final {
+@@ -5,6 +5,7 @@
+ #include "constants.h"
+ 
+ #include <array>
++#include <vector>
+ 
+ class DialogMenu;
+ class InventoryMenu;
+@@ -48,6 +49,30 @@ class PlayerControl final {
      bool  tickMove(uint64_t dt);
      bool  tickCameraMove(uint64_t dt);
  
 +    // Gothic II Mobile: сенсорное управление и автобой
-+    void  setTouchMove(int forward, int side);
++    void  setTouchMove(int forward, int side, bool run);
 +    void  setTouchAttack(bool hold);
 +    void  touchSideAttack(int dir);
++    void  touchSwitchTarget(int dir);
 +    void  setTouchBlock(bool hold);
++    // 0 - убрать оружие, 1 - ближнее, 2 - дальнее, 3..10 - заклинание из ячейки
++    void  touchDrawWeapon(uint8_t slot);
 +    void  setAutoFight(bool on);
 +    bool  isAutoFight() const { return autoFight; }
 +    bool  drinkHealPotion();
++    bool  drinkManaPotion();
++    size_t potionCount(bool mana) const;
++    void  toggleSneak();
++    bool  isSneak() const;
++    // Цель, выбранная касанием по NPC: на неё ведут бой и её атакует отряд
++    void  setTouchTarget(Npc* npc);
++    Npc*  touchTarget();
++    // «Собрать»: герой обходит и подбирает бесхозные вещи и добро с мёртвых в радиусе 8 м
++    bool  canGather() const { return gatherAvail; }
++    bool  isGathering() const { return gatherOn; }
++    void  startGather();
++    void  stopGather(bool report);
 +
    private:
      enum WeaponAction : uint8_t {
        WeaponClose,
-@@ -153,6 +162,17 @@ class PlayerControl final {
+@@ -153,6 +178,26 @@ class PlayerControl final {
      int            rotationAni    = 0;
      bool           g2Ctrl         = false;
  
@@ -557,24 +1196,38 @@ index fb8d6259..c55715d2 100644
 +    bool           autoFight      = false;
 +    bool           autoFightOn    = false;
 +    uint64_t       autoHealTime   = 0;
++    Npc*           touchTgt       = nullptr;
++    bool           gatherAvail    = false;
++    bool           gatherOn       = false;
++    uint64_t       gatherScanTime = 0;
++    uint64_t       gatherDeadline = 0;
++    size_t         gatherTaken    = 0;
++    Item*          gatherItem     = nullptr;
++    Npc*           gatherBody     = nullptr;
++    std::vector<const void*> gatherSkip;
 +
      DialogMenu&    dlg;
      InventoryMenu& inv;
  
-@@ -177,6 +197,11 @@ class PlayerControl final {
+@@ -177,6 +222,16 @@ class PlayerControl final {
      void           setAnimRotate (Npc& pl, float rotation, int anim, bool force, uint64_t dt);
      void           processAutoRotate(Npc& pl, float& rot, uint64_t dt);
  
 +    void           applyTouchMove();
++    void           applyTouchTarget();
 +    void           tickTouchAttack(Npc& pl);
 +    bool           tickAutoFight(Npc& pl);
 +    Npc*           findAutoFightTarget(Npc& pl) const;
++    bool           isAttacked(Npc& pl) const;
++    bool           findGatherTarget(Npc& pl, Item*& item, Npc*& body) const;
++    void           tickGather(Npc& pl);
++    bool           drinkPotion(const char* const* names, size_t count);
 +
  
      //////////////////////////////////
      // Helper functions for movement
 diff --git a/common/gothic.cpp b/common/gothic.cpp
-index 56c5d589..14729d02 100644
+index 56c5d58..14729d0 100644
 --- a/common/gothic.cpp
 +++ b/common/gothic.cpp
 @@ -149,6 +149,24 @@ Gothic::Gothic(GameModDescriptor desc) {
@@ -603,7 +1256,7 @@ index 56c5d589..14729d02 100644
    defaults->set("GAME", "enableMouse",         1);
    defaults->set("GAME", "mouseSensitivity",    0.5f);
 diff --git a/common/gothic.h b/common/gothic.h
-index 2654cc42..d991c5e8 100644
+index 2654cc4..d991c5e 100644
 --- a/common/gothic.h
 +++ b/common/gothic.h
 @@ -71,6 +71,11 @@ class Gothic final {
@@ -619,7 +1272,7 @@ index 2654cc42..d991c5e8 100644
  
      auto         version() const -> const VersionInfo&;
 diff --git a/common/graphics/drawcommands.cpp b/common/graphics/drawcommands.cpp
-index 1bf78979..00616c0f 100644
+index 1bf7897..00616c0 100644
 --- a/common/graphics/drawcommands.cpp
 +++ b/common/graphics/drawcommands.cpp
 @@ -286,10 +286,13 @@ void DrawCommands::visibilityPass(Encoder<CommandBuffer>& cmd, int pass) {
@@ -638,7 +1291,7 @@ index 1bf78979..00616c0f 100644
      auto* pso = &Shaders::inst().visibilityPassSh;
      if(viewport==SceneGlobals::V_Main)
 diff --git a/common/graphics/mesh/pose.cpp b/common/graphics/mesh/pose.cpp
-index 9a4f1665..9d0e67da 100644
+index 9a4f166..9d0e67d 100644
 --- a/common/graphics/mesh/pose.cpp
 +++ b/common/graphics/mesh/pose.cpp
 @@ -790,6 +790,25 @@ uint16_t Pose::comboLength() const {
@@ -668,7 +1321,7 @@ index 9a4f1665..9d0e67da 100644
    size_t id = 0;
    if(skeleton->rootNodes.size())
 diff --git a/common/graphics/mesh/pose.h b/common/graphics/mesh/pose.h
-index 216d392b..f0244f84 100644
+index 216d392..f0244f8 100644
 --- a/common/graphics/mesh/pose.h
 +++ b/common/graphics/mesh/pose.h
 @@ -74,6 +74,8 @@ class Pose final {
@@ -681,7 +1334,7 @@ index 216d392b..f0244f84 100644
      float              translateY() const { return trY; }
      auto               rootNode() const -> const Tempest::Matrix4x4;
 diff --git a/common/graphics/renderer.cpp b/common/graphics/renderer.cpp
-index 03a64b20..3b56b9f2 100644
+index 03a64b2..3b56b9f 100644
 --- a/common/graphics/renderer.cpp
 +++ b/common/graphics/renderer.cpp
 @@ -111,6 +111,7 @@ Renderer::~Renderer() {
@@ -723,7 +1376,7 @@ index 03a64b20..3b56b9f2 100644
        cmd.setBinding(4+r, shadowMap[r], Resources::shadowSampler());
        }
 diff --git a/common/graphics/renderer.h b/common/graphics/renderer.h
-index 912ea337..e80688b0 100644
+index 912ea33..e80688b 100644
 --- a/common/graphics/renderer.h
 +++ b/common/graphics/renderer.h
 @@ -124,7 +124,7 @@ class Renderer final {
@@ -736,10 +1389,18 @@ index 912ea337..e80688b0 100644
        bool           rtsmEnabled        = false;
        bool           swrEnabled         = false;
 diff --git a/common/mainwindow.cpp b/common/mainwindow.cpp
-index 52b66d3a..c3fd493c 100644
+index 52b66d3..529d0d9 100644
 --- a/common/mainwindow.cpp
 +++ b/common/mainwindow.cpp
-@@ -34,7 +34,7 @@ MainWindow::MainWindow(Device& device)
+@@ -18,6 +18,7 @@
+ #include "utils/string_frm.h"
+ #include "world/triggers/abstracttrigger.h"
+ #include "world/objects/npc.h"
++#include "world/objects/interactive.h"
+ #include "game/serialize.h"
+ #include "game/globaleffects.h"
+ #include "utils/gthfont.h"
+@@ -34,7 +35,7 @@ MainWindow::MainWindow(Device& device)
      dialogs(inventory),document(keycodec),
      console(*this),
  #if defined(__MOBILE_PLATFORM__)
@@ -748,7 +1409,48 @@ index 52b66d3a..c3fd493c 100644
  #endif
      player(dialogs,inventory) {
    Gothic::inst().onSettingsChanged.bind(this,&MainWindow::onSettings);
-@@ -304,6 +304,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
+@@ -224,6 +225,32 @@ void MainWindow::paintEvent(PaintEvent& event) {
+           bool showManaBar   = (opt.showManaBar==2) || (opt.showManaBar==1 && (pl->weaponState()==WeaponState::Mage || inventory.isActive()));
+           bool showSwimBar   = (opt.showSwimBar==2) || (opt.showSwimBar==1 && pl->isDive());
+ 
++#if defined(__MOBILE_PLATFORM__)
++          // Gothic II Mobile: внизу экрана лежат большие пальцы - полоски здоровья, маны и дыхания
++          // стоят столбиком слева вверху; в диалоге, сумке и документе их нет (там свои окна)
++          if(touchMode()==TouchMode::World) {
++            int y = 10;
++            const float scale = Gothic::interfaceScale(this);
++            const float destW = 200.f*scale*float(std::min(w(),800))/800.f;
++            const int   step  = barBack!=nullptr ? int(float(barBack->h())*destW/float(std::max(barBack->w(),1)))+4 : 0;
++            if(showHealthBar) {
++              drawBar(p,barHp, 10, y, hp, AlignLeft | AlignTop);
++              y += step;
++              }
++            if(showManaBar) {
++              drawBar(p,barMana, 10, y, mp, AlignLeft | AlignTop);
++              y += step;
++              }
++            if(showSwimBar) {
++              uint32_t gl = pl->guild();
++              auto     v  = float(pl->world().script().guildVal().dive_time[gl]);
++              if(v>0) {
++                auto t = float(pl->diveTime())/1000.f;
++                drawBar(p,barMisc, 10, y, (v-t)/(v), AlignLeft | AlignTop);
++                }
++              }
++            }
++#else
+           if(showHealthBar)
+             drawBar(p,barHp, 10, h()-10, hp, AlignLeft | AlignBottom);
+           if(showManaBar)
+@@ -236,6 +263,7 @@ void MainWindow::paintEvent(PaintEvent& event) {
+               drawBar(p,barMisc,w()/2,h()-10, (v-t)/(v), AlignHCenter | AlignBottom);
+               }
+             }
++#endif
+           }
+         }
+       }
+@@ -304,6 +332,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
    }
  
  void MainWindow::mouseDownEvent(MouseEvent &event) {
@@ -760,7 +1462,7 @@ index 52b66d3a..c3fd493c 100644
    if(event.button<sizeof(mouseP))
      mouseP[event.button]=true;
    auto act     = keycodec.tr(event);
-@@ -312,6 +317,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
+@@ -312,6 +345,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
    }
  
  void MainWindow::mouseUpEvent(MouseEvent &event) {
@@ -771,7 +1473,7 @@ index 52b66d3a..c3fd493c 100644
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
    player.onKeyReleased(act,mapping);
-@@ -333,6 +342,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
+@@ -333,6 +370,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
    }
  
  void MainWindow::processMouse(MouseEvent& event, bool enable) {
@@ -784,7 +1486,7 @@ index 52b66d3a..c3fd493c 100644
    auto center = Point(w()/2,h()/2);
    if(enable && event.pos()!=center && hasFocus()) {
      dMouse += (event.pos()-center);
-@@ -344,21 +359,23 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -344,21 +387,23 @@ void MainWindow::tickMouse(uint64_t dt) {
    auto camera = Gothic::inst().camera();
    if(dialogs.hasContent() || Gothic::inst().isPause() || camera==nullptr || camera->isCutscene()) {
      dMouse = Point();
@@ -810,7 +1512,7 @@ index 52b66d3a..c3fd493c 100644
    dpScaled.x/=float(w());
    dpScaled.y/=float(h());
    if(camLookaroundInverse)
-@@ -381,6 +398,7 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -381,6 +426,7 @@ void MainWindow::tickMouse(uint64_t dt) {
      }
  
    dMouse = Point();
@@ -818,7 +1520,7 @@ index 52b66d3a..c3fd493c 100644
    }
  
  void MainWindow::onSettings() {
-@@ -529,6 +547,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -529,6 +575,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
  
@@ -830,7 +1532,7 @@ index 52b66d3a..c3fd493c 100644
    std::string_view menuEv;
    if(act==KeyCodec::Escape)
      menuEv = Gothic::inst().menuMain();
-@@ -543,6 +566,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -543,6 +594,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
      if(auto pl = Gothic::inst().player())
        rootMenu.setPlayer(*pl);
      clearInput();
@@ -838,7 +1540,7 @@ index 52b66d3a..c3fd493c 100644
      }
    else if(act==KeyCodec::Inventory && !dialogs.isActive()) {
      if(inventory.isActive()) {
-@@ -553,10 +577,50 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -553,10 +605,93 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
          inventory.open(*pl);
        }
      clearInput();
@@ -882,6 +1584,49 @@ index 52b66d3a..c3fd493c 100644
 +  return inventory.canTakeAll();
 +  }
 +
++void MainWindow::touchQuickSave() {
++  if(Gothic::inst().isInGameAndAlive() && !Gothic::inst().isPause() && !dialogs.isActive())
++    Gothic::inst().quickSave();
++  }
++
++bool MainWindow::touchIsLockPick() const {
++  if(inventory.isOpen()==InventoryMenu::State::LockPicking)
++    return true;
++  auto pl = Gothic::inst().player();
++  if(pl==nullptr || pl->interactive()==nullptr)
++    return false;
++  auto inter = pl->interactive();
++  return inter->needToLockpick(*pl) && !inter->isCracked();
++  }
++
++bool MainWindow::touchDialogTap(Tempest::Point p) {
++  const int id = dialogs.touchChoiceAt(p);
++  if(id<0)
++    return false;
++  dialogs.touchChoice(size_t(id));
++  return true;
++  }
++
++int MainWindow::touchHudBottom() const {
++  if(barBack==nullptr)
++    return 10;
++  const float scale = Gothic::interfaceScale(this);
++  const float destW = 200.f*scale*float(std::min(w(),800))/800.f;
++  const float k     = destW/float(std::max(barBack->w(),1));
++  const float destH = float(barBack->h())*k;
++  int y = 10 + int(destH);
++  if(auto pl = Gothic::inst().player()) {
++    auto& opt = Gothic::options();
++    const bool mana = (opt.showManaBar==2) || (opt.showManaBar==1 && (pl->weaponState()==WeaponState::Mage || inventory.isActive()));
++    const bool swim = (opt.showSwimBar==2) || (opt.showSwimBar==1 && pl->isDive());
++    if(mana)
++      y += int(destH) + 4;
++    if(swim)
++      y += int(destH) + 4;
++    }
++  return y;
++  }
++
 +void MainWindow::touchTakeAll() {
 +  inventory.takeAll();
 +  }
@@ -890,7 +1635,7 @@ index 52b66d3a..c3fd493c 100644
  void MainWindow::focusEvent(FocusEvent &event) {
    if(!event.in)
      return;
-@@ -1245,11 +1309,17 @@ void MainWindow::render(){
+@@ -1245,11 +1380,17 @@ void MainWindow::render(){
      tickCamera(dt);
  
      auto& sync = fence[cmdId];
@@ -909,10 +1654,10 @@ index 52b66d3a..c3fd493c 100644
  
      if(video.isActive()) {
 diff --git a/common/mainwindow.h b/common/mainwindow.h
-index 3fb27136..81148845 100644
+index 3fb2713..b78ac15 100644
 --- a/common/mainwindow.h
 +++ b/common/mainwindow.h
-@@ -49,6 +49,22 @@ class MainWindow : public Tempest::Window {
+@@ -49,6 +49,40 @@ class MainWindow : public Tempest::Window {
  
      float uiScale() const;
  
@@ -930,12 +1675,30 @@ index 3fb27136..81148845 100644
 +    void      touchLook(int dx, int dy);
 +    bool      touchCanTakeAll() const;
 +    void      touchTakeAll();
++    void      touchQuickSave();
++    // Экраны со списками: что открыто и касание по самим спискам
++    bool      touchIsDialog() const    { return dialogs.isActive(); }
++    bool      touchIsDocument() const  { return document.isActive(); }
++    bool      touchIsInventory() const { return inventory.isActive(); }
++    bool      touchIsLockPick() const;
++    bool      touchDialogTalking() const  { return dialogs.touchIsTalking(); }
++    bool      touchDialogChoices() const  { return dialogs.touchHasChoices(); }
++    bool      touchDialogTap(Tempest::Point p);
++    bool      touchInventoryDown(Tempest::Point p) { return inventory.touchDown(p); }
++    void      touchInventoryUp()                   { inventory.touchUp(); }
++    void      touchInventoryScroll(int rows)       { inventory.touchScroll(rows); }
++    bool      touchInventoryGrid(Tempest::Point p) const { return inventory.touchIsGrid(p); }
++    int       touchInventoryRow() const            { return inventory.touchSlotHeight(); }
++    auto      touchInventoryAction()               { return inventory.touchActionKind(); }
++    void      touchInventoryDo()                   { inventory.touchAction(); }
++    // Нижний край полосок здоровья и маны (на телефоне они слева вверху, не под пальцами)
++    int       touchHudBottom() const;
 +#endif
 +
    private:
      void paintEvent     (Tempest::PaintEvent& event) override;
      void resizeEvent    (Tempest::SizeEvent & event) override;
-@@ -89,6 +105,7 @@ class MainWindow : public Tempest::Window {
+@@ -89,6 +123,7 @@ class MainWindow : public Tempest::Window {
      void setFullscreen(bool fs);
  
      void processMouse(Tempest::MouseEvent& event, bool enable);
@@ -943,7 +1706,7 @@ index 3fb27136..81148845 100644
      void tickMouse(uint64_t dt);
      void onSettings();
  
-@@ -157,6 +174,7 @@ class MainWindow : public Tempest::Window {
+@@ -157,6 +192,7 @@ class MainWindow : public Tempest::Window {
  
      Tempest::Widget*          uiKeyUp=nullptr;
      Tempest::Point            dMouse;
@@ -951,8 +1714,78 @@ index 3fb27136..81148845 100644
      PlayerControl             player;
      uint64_t                  lastTick=0;
  
+diff --git a/common/ui/dialogmenu.cpp b/common/ui/dialogmenu.cpp
+index 5a7db4d..ffa0878 100644
+--- a/common/ui/dialogmenu.cpp
++++ b/common/ui/dialogmenu.cpp
+@@ -527,6 +527,48 @@ void DialogMenu::paintChoice(PaintEvent &e) {
+     }
+   }
+ 
++int DialogMenu::touchChoiceAt(Point p) const {
++  // Gothic II Mobile: та же раскладка, что в paintChoice
++  if(!isChoiceMenuActive())
++    return -1;
++  const float scale = Gothic::interfaceScale(this);
++  const int   padd  = int(20*scale);
++  const int   dw    = std::min(w(),int(600*scale));
++  auto        fnt   = Resources::dialogFont(scale);
++
++  std::vector<int> rows;
++  int dh = padd*2;
++  for(auto& c:choice) {
++    const int ch = fnt.textSize(dw-padd, c.title).h;
++    rows.push_back(ch);
++    dh += ch;
++    }
++  const int x = (w()-dw)/2;
++  const int y = h()-dh-int(20*scale);
++  if(p.x<x || p.x>=x+dw)
++    return -1;
++  // Шрифт рисует первую строку над точкой вывода, остальные - ниже неё
++  int off = padd;
++  for(size_t i=0; i<rows.size(); ++i) {
++    const int top = y+padd+off-fnt.pixelSize();
++    if(p.y>=top && p.y<top+rows[i])
++      return int(i);
++    off += rows[i];
++    }
++  return -1;
++  }
++
++void DialogMenu::touchChoice(size_t id) {
++  if(id>=choice.size())
++    return;
++  if(dlgSel==id) {
++    onSelect();
++    return;
++    }
++  dlgSel = id;
++  update();
++  }
++
+ bool DialogMenu::isChoiceMenuActive() const {
+   return choice.size()!=0 && current.time==0 && !haveToWaitOutput() && trade.isOpen()==InventoryMenu::State::Closed;
+   }
+diff --git a/common/ui/dialogmenu.h b/common/ui/dialogmenu.h
+index f08a36e..045379a 100644
+--- a/common/ui/dialogmenu.h
++++ b/common/ui/dialogmenu.h
+@@ -34,6 +34,12 @@ class DialogMenu : public Tempest::Widget {
+     bool isActive() const;
+     bool hasContent() const;
+ 
++    // Gothic II Mobile: касание по реплике - выделить, по выделенной - выбрать
++    int  touchChoiceAt(Tempest::Point p) const;
++    void touchChoice(size_t id);
++    bool touchHasChoices() const { return isChoiceMenuActive(); }
++    bool touchIsTalking()  const { return state!=State::Idle && current.time>0; }
++
+     void print      (std::string_view msg);
+     void printScreen(std::string_view msg, int x, int y, int time, const GthFont &font);
+     void drawMsg    (Tempest::Painter& p, int offsetY);
 diff --git a/common/ui/gamemenu.cpp b/common/ui/gamemenu.cpp
-index 17a2ec63..cf8c4d46 100644
+index 17a2ec6..cf8c4d4 100644
 --- a/common/ui/gamemenu.cpp
 +++ b/common/ui/gamemenu.cpp
 @@ -7,6 +7,7 @@
@@ -980,10 +1813,10 @@ index 17a2ec63..cf8c4d46 100644
      accepted = true;
      }
 diff --git a/common/ui/inventorymenu.cpp b/common/ui/inventorymenu.cpp
-index b532ab81..7025e591 100644
+index b532ab8..9b6b3e9 100644
 --- a/common/ui/inventorymenu.cpp
 +++ b/common/ui/inventorymenu.cpp
-@@ -163,6 +163,28 @@ bool InventoryMenu::ransack(Npc &pl, Npc &tr) {
+@@ -163,6 +163,133 @@ bool InventoryMenu::ransack(Npc &pl, Npc &tr) {
    return true;
    }
  
@@ -1009,36 +1842,897 @@ index b532ab81..7025e591 100644
 +  update();
 +  }
 +
++bool InventoryMenu::touchIsGrid(Tempest::Point p) const {
++  if(player==nullptr || state==State::Closed || state==State::LockPicking)
++    return false;
++  const int  padd = 43;
++  const int  iy   = 30+34+70;
++  const auto sz   = slotSize();
++  const int  gw   = int(columsCount)*sz.w;
++  const int  gh   = int(rowsCount())*sz.h;
++  if(p.y<iy || p.y>=iy+gh)
++    return false;
++  const bool oth  = (chest!=nullptr || trader!=nullptr) && p.x>=padd && p.x<padd+gw;
++  const bool own  = state!=State::Ransack && p.x>=w()-padd-gw && p.x<w()-padd;
++  return oth || own;
++  }
++
++bool InventoryMenu::touchDown(Tempest::Point p) {
++  // Та же раскладка, что в drawAll
++  if(!touchIsGrid(p))
++    return false;
++  const int  padd = 43;
++  const int  iy   = 30+34+70;
++  const auto sz   = slotSize();
++  const int  gw   = int(columsCount)*sz.w;
++
++  uint8_t pg = 1;
++  int     x0 = w()-padd-gw;
++  if((chest!=nullptr || trader!=nullptr) && p.x>=padd && p.x<padd+gw) {
++    pg = 0;
++    x0 = padd;
++    }
++  if(pg==0 && pageOth==nullptr)
++    return false;
++
++  auto&        loc = (pg==0 ? pageLocal[0] : pageLocal[1]);
++  const size_t col = size_t((p.x-x0)/sz.w);
++  const size_t row = size_t((p.y-iy)/sz.h);
++  const size_t id  = (loc.scroll+row)*columsCount+col;
++  const auto&  pgr = (pg==0 ? *pageOth : *pagePl);
++  if(id>=pgr.size())
++    return true;
++
++  if(page==pg && loc.sel==id) {
++    onItemAction(Item::NSLOT);
++    } else {
++    page    = pg;
++    loc.sel = id;
++    }
++  adjustScroll();
++  update();
++  return true;
++  }
++
++InventoryMenu::TouchAction InventoryMenu::touchActionKind() {
++  if(player==nullptr || state==State::Closed || state==State::LockPicking)
++    return TouchAction::None;
++  auto& pg  = activePage();
++  auto& sel = activePageSel();
++  if(!pg.get(sel.sel).isValid())
++    return TouchAction::None;
++  const bool own = pg.is(&player->inventory());
++  switch(state) {
++    case State::Equip:   return TouchAction::Use;
++    case State::Chest:   return own ? TouchAction::Put  : TouchAction::Take;
++    case State::Ransack: return own ? TouchAction::None : TouchAction::Take;
++    case State::Trade:   return own ? TouchAction::Sell : TouchAction::Buy;
++    case State::Closed:
++    case State::LockPicking:
++      break;
++    }
++  return TouchAction::None;
++  }
++
++void InventoryMenu::touchAction() {
++  const auto act = touchActionKind();
++  if(act==TouchAction::None)
++    return;
++  if(act==TouchAction::Take || act==TouchAction::Put) {
++    lootMode = LootMode::Stack;
++    onTakeStuff();
++    lootMode = LootMode::Normal;
++    } else {
++    onItemAction(Item::NSLOT);
++    takeTimer.stop();
++    takeCount = 0;
++    }
++  adjustScroll();
++  update();
++  }
++
++void InventoryMenu::touchUp() {
++  takeTimer.stop();
++  takeCount = 0;
++  }
++
++void InventoryMenu::touchScroll(int rows) {
++  if(state==State::Closed || state==State::LockPicking)
++    return;
++  for(int i=0; i<rows; ++i)
++    moveDown();
++  for(int i=0; i<-rows; ++i)
++    moveUp();
++  adjustScroll();
++  update();
++  }
++
  void InventoryMenu::open(Npc &pl, Interactive &ch) {
    if(pl.isDown())
      return;
 diff --git a/common/ui/inventorymenu.h b/common/ui/inventorymenu.h
-index d4ddb41f..885a936c 100644
+index d4ddb41..3babfe3 100644
 --- a/common/ui/inventorymenu.h
 +++ b/common/ui/inventorymenu.h
-@@ -44,6 +44,9 @@ class InventoryMenu : public Tempest::Widget {
+@@ -44,6 +44,20 @@ class InventoryMenu : public Tempest::Widget {
      void  open(Npc& pl);
      void  trade(Npc& pl,Npc& tr);
      bool  ransack(Npc& pl,Npc& tr);
 +    // Gothic II Mobile: «Взять всё» из сундука или с тела
 +    bool  canTakeAll() const;
 +    void  takeAll();
++    // Gothic II Mobile: касание по ячейке - выделить, по выделенной - взять/надеть/применить
++    // (держать - брать ещё, как кнопкой мыши); палец вверх-вниз по сетке - листать
++    bool  touchDown(Tempest::Point p);
++    void  touchUp();
++    void  touchScroll(int rows);
++    bool  touchIsGrid(Tempest::Point p) const;
++    int   touchSlotHeight() const { return slotSize().h; }
++    // Кнопка действия: у сундука и тела - взять всю стопку, в торговле - одну штуку, в сумке - применить
++    enum class TouchAction : uint8_t { None, Use, Take, Put, Buy, Sell };
++    TouchAction touchActionKind();
++    void  touchAction();
      void  open(Npc& pl,Interactive& chest);
      State isOpen() const;
      bool  isActive() const;
+diff --git a/common/ui/touchicons.cpp b/common/ui/touchicons.cpp
+new file mode 100644
+index 0000000..2224659
+--- /dev/null
++++ b/common/ui/touchicons.cpp
+@@ -0,0 +1,657 @@
++#include "touchicons.h"
++
++#include <Tempest/Pixmap>
++
++#include <algorithm>
++#include <cmath>
++#include <vector>
++
++#include "resources.h"
++
++using namespace Tempest;
++
++// Gothic II Mobile: значки сенсорных кнопок.
++// Каждый значок - набор фигур в квадрате 0..1 (y вниз): отрезки со скруглёнными концами, круги, кольца,
++// дуги и многоугольники. Покрытие пикселя считается по расстоянию до фигуры - края сглажены на любом
++// размере. Фигуры «выреза» стирают уже нарисованное: так делаются прожилки клинка, пальцы, страницы.
++
++namespace {
++
++struct P {
++  float x = 0, y = 0;
++  };
++
++static P     operator + (P a, P b)     { return P{a.x+b.x, a.y+b.y}; }
++static P     operator - (P a, P b)     { return P{a.x-b.x, a.y-b.y}; }
++static P     operator * (P a, float k) { return P{a.x*k, a.y*k}; }
++static float dot(P a, P b)             { return a.x*b.x + a.y*b.y; }
++static float len(P a)                  { return std::sqrt(dot(a,a)); }
++
++static const float Pi = 3.14159265f;
++
++struct Shape {
++  enum Kind : uint8_t {
++    Seg,
++    Disc,
++    Ring,
++    Arc,
++    Poly,
++    };
++  Kind           kind  = Seg;
++  bool           erase = false;
++  float          w     = 0;
++  P              a, b;
++  float          r     = 0;
++  float          a0    = 0;
++  float          a1    = 0;
++  std::vector<P> pts;
++  };
++
++float distSeg(P p, P a, P b) {
++  const P     e  = b-a;
++  const float ee = dot(e,e);
++  const float t  = ee>0 ? std::clamp(dot(p-a,e)/ee, 0.f, 1.f) : 0.f;
++  return len(p-(a+e*t));
++  }
++
++float sdf(const Shape& s, P p) {
++  switch(s.kind) {
++    case Shape::Seg:
++      return distSeg(p,s.a,s.b) - s.w*0.5f;
++    case Shape::Disc:
++      return len(p-s.a) - s.r;
++    case Shape::Ring:
++      return std::abs(len(p-s.a) - s.r) - s.w*0.5f;
++    case Shape::Arc: {
++      // углы в градусах, против часовой стрелки, 0 - вправо (как в математике, y вверх)
++      const P     d   = p-s.a;
++      float       ang = std::atan2(-d.y, d.x)*180.f/Pi;
++      const float t   = std::fmod(ang-s.a0+720.f, 360.f);
++      if(t<=s.a1-s.a0)
++        return std::abs(len(d)-s.r) - s.w*0.5f;
++      const float r0 = s.a0*Pi/180.f, r1 = s.a1*Pi/180.f;
++      const P     e0 = s.a + P{std::cos(r0), -std::sin(r0)}*s.r;
++      const P     e1 = s.a + P{std::cos(r1), -std::sin(r1)}*s.r;
++      return std::min(len(p-e0), len(p-e1)) - s.w*0.5f;
++      }
++    case Shape::Poly: {
++      float d      = 1e9f;
++      bool  inside = false;
++      for(size_t i=0, j=s.pts.size()-1; i<s.pts.size(); j=i++) {
++        const P a = s.pts[j], b = s.pts[i];
++        d = std::min(d, distSeg(p,a,b));
++        if(((a.y>p.y)!=(b.y>p.y)) && (p.x < (b.x-a.x)*(p.y-a.y)/(b.y-a.y)+a.x))
++          inside = !inside;
++        }
++      return inside ? -d : d;
++      }
++    }
++  return 1e9f;
++  }
++
++// Построитель значка: текущее преобразование (поворот по часовой стрелке, масштаб, сдвиг относительно
++// центра) применяется к фигурам при добавлении.
++class Glyph {
++  public:
++    Glyph& seg(P a, P b, float w) {
++      Shape s; s.kind = Shape::Seg; s.a = tr(a); s.b = tr(b); s.w = w*sc;
++      return put(std::move(s));
++      }
++    Glyph& line(std::initializer_list<P> pts, float w) {
++      const P* prev = nullptr;
++      for(auto& i:pts) {
++        if(prev!=nullptr)
++          seg(*prev,i,w);
++        prev = &i;
++        }
++      return *this;
++      }
++    Glyph& disc(P c, float r) {
++      Shape s; s.kind = Shape::Disc; s.a = tr(c); s.r = r*sc;
++      return put(std::move(s));
++      }
++    Glyph& ring(P c, float r, float w) {
++      Shape s; s.kind = Shape::Ring; s.a = tr(c); s.r = r*sc; s.w = w*sc;
++      return put(std::move(s));
++      }
++    Glyph& arc(P c, float r, float a0, float a1, float w) {
++      Shape s; s.kind = Shape::Arc; s.a = tr(c); s.r = r*sc; s.w = w*sc;
++      s.a0 = a0-rot; s.a1 = a1-rot;
++      return put(std::move(s));
++      }
++    Glyph& poly(std::initializer_list<P> pts) {
++      Shape s; s.kind = Shape::Poly;
++      for(auto& i:pts)
++        s.pts.push_back(tr(i));
++      return put(std::move(s));
++      }
++    // Наконечник стрелки: острие tip, направление dir
++    Glyph& head(P tip, P dir, float l, float w) {
++      const float k = len(dir);
++      const P     d = dir*(1.f/k);
++      const P     n = P{-d.y, d.x};
++      const P     b = tip-d*l;
++      return poly({tip, b+n*(w*0.5f), b-n*(w*0.5f)});
++      }
++    Glyph& cut() { erase = true;  return *this; }
++    Glyph& add() { erase = false; return *this; }
++
++    Glyph& push(float angle, float scale = 1.f, P offset = P{}) {
++      stk.push_back({rot,sc,off});
++      rot += angle;
++      sc  *= scale;
++      off  = off + offset;
++      return *this;
++      }
++    Glyph& pop() {
++      rot = stk.back().rot;
++      sc  = stk.back().sc;
++      off = stk.back().off;
++      stk.pop_back();
++      return *this;
++      }
++
++    std::vector<Shape> shapes;
++
++  private:
++    struct Tr {
++      float rot = 0, sc = 1;
++      P     off;
++      };
++    float           rot   = 0;
++    float           sc    = 1;
++    P               off;
++    bool            erase = false;
++    std::vector<Tr> stk;
++
++    P tr(P p) const {
++      const float r = rot*Pi/180.f;
++      const float c = std::cos(r), s = std::sin(r);
++      const P     d = (p-P{0.5f,0.5f})*sc;
++      return P{0.5f + d.x*c - d.y*s, 0.5f + d.x*s + d.y*c} + off;
++      }
++    Glyph& put(Shape&& s) {
++      s.erase = erase;
++      shapes.push_back(std::move(s));
++      return *this;
++      }
++  };
++
++void swordShape(Glyph& g) {
++  g.poly({{0.5f,0.06f},{0.565f,0.16f},{0.565f,0.60f},{0.435f,0.60f},{0.435f,0.16f}});
++  g.cut().seg({0.5f,0.19f},{0.5f,0.55f},0.024f).add();
++  g.seg({0.31f,0.635f},{0.69f,0.635f},0.075f);
++  g.seg({0.5f,0.66f},{0.5f,0.83f},0.065f);
++  g.disc({0.5f,0.875f},0.05f);
++  }
++
++void slimSword(Glyph& g) {
++  g.seg({0.5f,0.11f},{0.5f,0.66f},0.07f);
++  g.poly({{0.5f,0.04f},{0.538f,0.12f},{0.462f,0.12f}});
++  g.seg({0.37f,0.68f},{0.63f,0.68f},0.06f);
++  g.seg({0.5f,0.70f},{0.5f,0.84f},0.055f);
++  g.disc({0.5f,0.885f},0.045f);
++  }
++
++void sackShape(Glyph& g) {
++  g.disc({0.5f,0.67f},0.25f);
++  g.poly({{0.38f,0.40f},{0.62f,0.40f},{0.75f,0.64f},{0.25f,0.64f}});
++  g.poly({{0.42f,0.41f},{0.58f,0.41f},{0.56f,0.31f},{0.44f,0.31f}});
++  g.poly({{0.30f,0.30f},{0.41f,0.13f},{0.5f,0.25f},{0.59f,0.13f},{0.70f,0.30f}});
++  g.cut();
++  g.seg({0.36f,0.33f},{0.64f,0.33f},0.035f);
++  g.arc({0.5f,0.67f},0.15f,200,250,0.03f);
++  g.add();
++  }
++
++void personShape(Glyph& g, P c, float k) {
++  g.disc(c+P{0,-0.17f}*k, 0.105f*k);
++  g.disc(c+P{0, 0.33f}*k, 0.22f*k);
++  }
++
++Glyph glyph(TouchIcons::Icon i) {
++  Glyph g;
++  switch(i) {
++    case TouchIcons::I_Sword:
++      g.push(45);
++      swordShape(g);
++      g.pop();
++      break;
++    case TouchIcons::I_Fist:
++      // кулак спереди: четыре пальца, большой палец поперёк, запястье
++      g.seg({0.30f,0.31f},{0.30f,0.44f},0.13f);
++      g.seg({0.43f,0.28f},{0.43f,0.44f},0.13f);
++      g.seg({0.56f,0.28f},{0.56f,0.44f},0.13f);
++      g.seg({0.69f,0.31f},{0.69f,0.44f},0.13f);
++      g.seg({0.37f,0.56f},{0.63f,0.56f},0.30f);
++      g.seg({0.5f,0.70f},{0.5f,0.88f},0.26f);
++      g.cut();
++      g.seg({0.365f,0.24f},{0.365f,0.45f},0.026f);
++      g.seg({0.495f,0.22f},{0.495f,0.45f},0.026f);
++      g.seg({0.625f,0.24f},{0.625f,0.45f},0.026f);
++      g.seg({0.22f,0.465f},{0.78f,0.465f},0.026f);
++      g.line({{0.21f,0.50f},{0.36f,0.60f},{0.60f,0.60f}},0.026f);
++      g.seg({0.30f,0.71f},{0.70f,0.71f},0.026f);
++      g.add();
++      break;
++    case TouchIcons::I_Bow:
++      g.arc({0.80f,0.5f},0.46f,122,238,0.075f);
++      g.seg({0.556f,0.11f},{0.556f,0.89f},0.022f);
++      g.seg({0.16f,0.5f},{0.80f,0.5f},0.035f);
++      g.head({0.93f,0.5f},{1,0},0.13f,0.14f);
++      g.seg({0.16f,0.5f},{0.10f,0.42f},0.03f);
++      g.seg({0.16f,0.5f},{0.10f,0.58f},0.03f);
++      break;
++    case TouchIcons::I_Crossbow:
++      g.arc({0.5f,0.72f},0.40f,25,155,0.075f);
++      g.seg({0.137f,0.551f},{0.863f,0.551f},0.022f);
++      g.seg({0.5f,0.22f},{0.5f,0.92f},0.085f);
++      g.head({0.5f,0.06f},{0,-1},0.16f,0.16f);
++      break;
++    case TouchIcons::I_Rune:
++      g.disc({0.5f,0.52f},0.36f);
++      g.cut();
++      g.line({{0.57f,0.27f},{0.42f,0.53f},{0.58f,0.53f},{0.43f,0.78f}},0.06f);
++      g.add();
++      break;
++    case TouchIcons::I_Scroll:
++      g.poly({{0.32f,0.28f},{0.68f,0.28f},{0.68f,0.74f},{0.32f,0.74f}});
++      g.seg({0.26f,0.27f},{0.74f,0.27f},0.11f);
++      g.seg({0.26f,0.75f},{0.74f,0.75f},0.11f);
++      g.cut();
++      g.seg({0.40f,0.43f},{0.60f,0.43f},0.03f);
++      g.seg({0.40f,0.52f},{0.60f,0.52f},0.03f);
++      g.seg({0.40f,0.61f},{0.54f,0.61f},0.03f);
++      g.add();
++      break;
++    case TouchIcons::I_Talk:
++      g.seg({0.36f,0.42f},{0.64f,0.42f},0.46f);
++      g.poly({{0.30f,0.56f},{0.47f,0.60f},{0.22f,0.86f}});
++      g.cut();
++      g.disc({0.35f,0.42f},0.05f);
++      g.disc({0.50f,0.42f},0.05f);
++      g.disc({0.65f,0.42f},0.05f);
++      g.add();
++      break;
++    case TouchIcons::I_Hand:
++      g.seg({0.5f,0.61f},{0.5f,0.70f},0.34f);
++      g.seg({0.38f,0.58f},{0.38f,0.27f},0.075f);
++      g.seg({0.475f,0.56f},{0.475f,0.17f},0.075f);
++      g.seg({0.57f,0.56f},{0.57f,0.19f},0.075f);
++      g.seg({0.66f,0.60f},{0.66f,0.31f},0.07f);
++      g.seg({0.37f,0.70f},{0.20f,0.50f},0.085f);
++      break;
++    case TouchIcons::I_Use:
++      g.disc({0.5f,0.5f},0.27f);
++      for(int k=0; k<8; ++k) {
++        const float a = float(k)*Pi/4.f;
++        const P     d = P{std::cos(a), std::sin(a)};
++        g.seg(P{0.5f,0.5f}+d*0.24f, P{0.5f,0.5f}+d*0.39f, 0.12f);
++        }
++      g.cut().disc({0.5f,0.5f},0.11f).add();
++      break;
++    case TouchIcons::I_Sack:
++      sackShape(g);
++      break;
++    case TouchIcons::I_Shield:
++      g.poly({{0.22f,0.18f},{0.78f,0.18f},{0.78f,0.48f},{0.73f,0.64f},{0.63f,0.77f},{0.5f,0.88f},
++              {0.37f,0.77f},{0.27f,0.64f},{0.22f,0.48f}});
++      g.cut();
++      g.seg({0.5f,0.28f},{0.5f,0.74f},0.055f);
++      g.seg({0.32f,0.42f},{0.68f,0.42f},0.055f);
++      g.add();
++      break;
++    case TouchIcons::I_Jump:
++      g.line({{0.27f,0.50f},{0.5f,0.27f},{0.73f,0.50f}},0.09f);
++      g.line({{0.27f,0.70f},{0.5f,0.47f},{0.73f,0.70f}},0.09f);
++      g.seg({0.24f,0.87f},{0.76f,0.87f},0.05f);
++      break;
++    case TouchIcons::I_Weapons:
++      g.push( 45); slimSword(g); g.pop();
++      g.push(-45); slimSword(g); g.pop();
++      break;
++    case TouchIcons::I_Potion:
++      g.disc({0.5f,0.64f},0.26f);
++      g.seg({0.5f,0.42f},{0.5f,0.22f},0.14f);
++      g.seg({0.39f,0.19f},{0.61f,0.19f},0.08f);
++      g.cut().arc({0.5f,0.64f},0.17f,105,165,0.045f).add();
++      break;
++    case TouchIcons::I_Auto: {
++      g.arc({0.5f,0.5f},0.40f,70,340,0.06f);
++      const float a = 70.f*Pi/180.f;
++      const P     e = P{0.5f+0.40f*std::cos(a), 0.5f-0.40f*std::sin(a)};
++      g.head(e+P{std::sin(a),std::cos(a)}*0.07f, P{std::sin(a),std::cos(a)}, 0.17f, 0.17f);
++      g.push( 45,0.55f); slimSword(g); g.pop();
++      g.push(-45,0.55f); slimSword(g); g.pop();
++      break;
++      }
++    case TouchIcons::I_Gather:
++      g.push(0,0.72f,{0,0.16f});
++      sackShape(g);
++      g.pop();
++      g.seg({0.5f,0.04f},{0.5f,0.24f},0.07f);
++      g.head({0.5f,0.37f},{0,1},0.15f,0.24f);
++      break;
++    case TouchIcons::I_Squad:
++      personShape(g,{0.22f,0.56f},0.8f);
++      personShape(g,{0.78f,0.56f},0.8f);
++      g.cut();
++      g.disc({0.5f,0.33f},0.15f);
++      g.disc({0.5f,0.83f},0.27f);
++      g.add();
++      personShape(g,{0.5f,0.50f},1.f);
++      g.cut().poly({{0,0.92f},{1,0.92f},{1,1.1f},{0,1.1f}}).add();
++      break;
++    case TouchIcons::I_Sneak:
++      // два следа босой ноги
++      for(int k=0; k<2; ++k) {
++        const P o = k==0 ? P{0.33f,0.50f} : P{0.66f,0.16f};
++        g.seg(o+P{0,0.08f},o+P{0.01f,0.19f},0.15f);
++        g.disc(o+P{0.015f,0.31f},0.065f);
++        g.disc(o+P{-0.055f,-0.005f},0.03f);
++        g.disc(o+P{-0.015f,-0.025f},0.033f);
++        g.disc(o+P{ 0.03f,-0.02f},0.03f);
++        g.disc(o+P{ 0.065f,0.005f},0.026f);
++        }
++      break;
++    case TouchIcons::I_Menu:
++      g.seg({0.25f,0.30f},{0.75f,0.30f},0.08f);
++      g.seg({0.25f,0.50f},{0.75f,0.50f},0.08f);
++      g.seg({0.25f,0.70f},{0.75f,0.70f},0.08f);
++      break;
++    case TouchIcons::I_Map:
++      g.poly({{0.16f,0.26f},{0.38f,0.18f},{0.62f,0.26f},{0.84f,0.18f},{0.84f,0.74f},{0.62f,0.82f},{0.38f,0.74f},{0.16f,0.82f}});
++      g.cut();
++      g.seg({0.38f,0.20f},{0.38f,0.72f},0.03f);
++      g.seg({0.62f,0.28f},{0.62f,0.80f},0.03f);
++      g.add();
++      break;
++    case TouchIcons::I_Log:
++      g.poly({{0.13f,0.24f},{0.47f,0.30f},{0.47f,0.84f},{0.13f,0.78f}});
++      g.poly({{0.53f,0.30f},{0.87f,0.24f},{0.87f,0.78f},{0.53f,0.84f}});
++      g.cut();
++      g.seg({0.20f,0.40f},{0.40f,0.44f},0.026f);
++      g.seg({0.20f,0.52f},{0.40f,0.56f},0.026f);
++      g.seg({0.20f,0.64f},{0.34f,0.67f},0.026f);
++      g.seg({0.60f,0.44f},{0.80f,0.40f},0.026f);
++      g.seg({0.60f,0.56f},{0.80f,0.52f},0.026f);
++      g.add();
++      break;
++    case TouchIcons::I_Hero:
++      g.disc({0.5f,0.32f},0.16f);
++      g.disc({0.5f,0.98f},0.37f);
++      g.cut().poly({{0,0.92f},{1,0.92f},{1,1.1f},{0,1.1f}}).add();
++      break;
++    case TouchIcons::I_Up:
++    case TouchIcons::I_Right:
++    case TouchIcons::I_Down:
++    case TouchIcons::I_Left: {
++      const float ang = (i==TouchIcons::I_Up ? 0.f : i==TouchIcons::I_Right ? 90.f : i==TouchIcons::I_Down ? 180.f : 270.f);
++      g.push(ang);
++      g.line({{0.25f,0.63f},{0.5f,0.38f},{0.75f,0.63f}},0.1f);
++      g.pop();
++      break;
++      }
++    case TouchIcons::I_Ok:
++      g.line({{0.22f,0.52f},{0.42f,0.72f},{0.80f,0.32f}},0.1f);
++      break;
++    case TouchIcons::I_Back:
++      g.seg({0.30f,0.5f},{0.78f,0.5f},0.09f);
++      g.line({{0.48f,0.30f},{0.28f,0.5f},{0.48f,0.70f}},0.09f);
++      break;
++    case TouchIcons::I_Skip:
++      g.poly({{0.18f,0.24f},{0.50f,0.5f},{0.18f,0.76f}});
++      g.poly({{0.50f,0.24f},{0.82f,0.5f},{0.50f,0.76f}});
++      break;
++    case TouchIcons::I_TakeAll:
++      g.line({{0.20f,0.60f},{0.20f,0.82f},{0.80f,0.82f},{0.80f,0.60f}},0.07f);
++      g.seg({0.5f,0.12f},{0.5f,0.50f},0.08f);
++      g.head({0.5f,0.68f},{0,1},0.22f,0.34f);
++      break;
++    case TouchIcons::I_Follow:
++      personShape(g,{0.5f,0.48f},0.85f);
++      g.cut().poly({{0,0.92f},{1,0.92f},{1,1.1f},{0,1.1f}}).add();
++      g.seg({0.04f,0.58f},{0.20f,0.58f},0.06f);
++      g.head({0.29f,0.58f},{1,0},0.12f,0.17f);
++      g.seg({0.96f,0.58f},{0.80f,0.58f},0.06f);
++      g.head({0.71f,0.58f},{-1,0},0.12f,0.17f);
++      break;
++    case TouchIcons::I_Wait:
++      g.poly({{0.30f,0.21f},{0.70f,0.21f},{0.5f,0.5f}});
++      g.poly({{0.5f,0.5f},{0.70f,0.79f},{0.30f,0.79f}});
++      g.seg({0.24f,0.16f},{0.76f,0.16f},0.06f);
++      g.seg({0.24f,0.84f},{0.76f,0.84f},0.06f);
++      break;
++    case TouchIcons::I_Target:
++      g.ring({0.5f,0.5f},0.28f,0.06f);
++      g.seg({0.5f,0.06f},{0.5f,0.27f},0.06f);
++      g.seg({0.5f,0.73f},{0.5f,0.94f},0.06f);
++      g.seg({0.06f,0.5f},{0.27f,0.5f},0.06f);
++      g.seg({0.73f,0.5f},{0.94f,0.5f},0.06f);
++      g.disc({0.5f,0.5f},0.06f);
++      break;
++    case TouchIcons::I_Passive:
++      g.push(0,0.72f);
++      slimSword(g);
++      g.pop();
++      g.cut().seg({0.22f,0.22f},{0.78f,0.78f},0.13f).add();
++      g.ring({0.5f,0.5f},0.39f,0.07f);
++      g.seg({0.24f,0.24f},{0.76f,0.76f},0.07f);
++      break;
++    case TouchIcons::I_Finish:
++      g.push(180,0.9f);
++      swordShape(g);
++      g.pop();
++      break;
++    case TouchIcons::I_Stop:
++      g.seg({0.28f,0.28f},{0.72f,0.72f},0.1f);
++      g.seg({0.72f,0.28f},{0.28f,0.72f},0.1f);
++      break;
++    case TouchIcons::I_Dot:
++      g.disc({0.5f,0.5f},0.42f);
++      break;
++    case TouchIcons::I_Count:
++      break;
++    }
++  return g;
++  }
++
++std::vector<float> rasterize(const std::vector<Shape>& shapes, int size) {
++  std::vector<float> cov(size_t(size*size), 0.f);
++  const float px = 1.f/float(size);
++  for(int y=0; y<size; ++y) {
++    for(int x=0; x<size; ++x) {
++      const P p = P{(float(x)+0.5f)*px, (float(y)+0.5f)*px};
++      float   c = 0;
++      for(auto& s:shapes) {
++        const float k = std::clamp(0.5f - sdf(s,p)/px, 0.f, 1.f);
++        if(s.erase)
++          c *= (1.f-k); else
++          c = std::max(c,k);
++        }
++      cov[size_t(y*size+x)] = c;
++      }
++    }
++  return cov;
++  }
++
++Texture2d toTexture(const std::vector<float>& rgba, int w, int h) {
++  Pixmap pm(uint32_t(w),uint32_t(h),TextureFormat::RGBA8);
++  auto*  dst = reinterpret_cast<uint8_t*>(pm.data());
++  for(size_t i=0; i<rgba.size(); ++i)
++    dst[i] = uint8_t(std::clamp(rgba[i],0.f,1.f)*255.f+0.5f);
++  return Resources::loadTexturePm(pm);
++  }
++
++Texture2d alphaTexture(const std::vector<float>& a, int w, int h, float r, float g, float b) {
++  std::vector<float> rgba(a.size()*4);
++  for(size_t i=0; i<a.size(); ++i) {
++    rgba[i*4+0] = r;
++    rgba[i*4+1] = g;
++    rgba[i*4+2] = b;
++    rgba[i*4+3] = a[i];
++    }
++  return toTexture(rgba,w,h);
++  }
++
++struct Rgba {
++  float r = 0, g = 0, b = 0, a = 0;
++  };
++
++static Rgba over(Rgba src, Rgba dst) {
++  const float a = src.a + dst.a*(1.f-src.a);
++  if(a<=0.f)
++    return Rgba();
++  auto mix = [&](float s, float d) { return (s*src.a + d*dst.a*(1.f-src.a))/a; };
++  return Rgba{mix(src.r,dst.r), mix(src.g,dst.g), mix(src.b,dst.b), a};
++  }
++
++static float lerp(float a, float b, float t) { return a+(b-a)*t; }
++
++// Подложка: тень снаружи, полупрозрачная тёмная кожа с отсветом сверху, кольцо старой бронзы с бликом.
++// dist - расстояние со знаком до края кнопки в пикселях (меньше нуля - внутри), ny - высота 0..1, rad - радиус
++Rgba plate(float dist, float ny, float rad, float pad) {
++  Rgba c;
++  if(dist>0.f) {
++    const float k = std::clamp(1.f - dist/pad, 0.f, 1.f);
++    c = Rgba{0,0,0, 0.38f*k*k};
++    }
++
++  const float fill  = std::clamp(0.5f - dist, 0.f, 1.f);
++  const float depth = std::clamp(-dist/rad, 0.f, 1.f);
++  const float tone  = 0.05f + 0.10f*std::pow(depth,0.7f) + 0.05f*(1.f-ny);
++  Rgba body = Rgba{tone*1.35f, tone*1.05f, tone*0.72f, 0.62f*fill};
++  c = over(body,c);
++
++  const float ringW = std::max(1.5f, rad*0.075f);
++  const float rd    = std::abs(dist + ringW*0.5f) - ringW*0.5f;
++  const float ring  = std::clamp(0.5f - rd, 0.f, 1.f);
++  if(ring>0.f) {
++    // свет сверху: светлое золото вверху, тёмная бронза внизу
++    const float t = std::clamp(ny, 0.f, 1.f);
++    Rgba m = Rgba{lerp(0.92f,0.46f,t), lerp(0.76f,0.32f,t), lerp(0.44f,0.15f,t), ring};
++    c = over(m,c);
++    }
++  // тонкая тёмная линия под кольцом - кольцо «утоплено» в кожу
++  const float ld   = std::abs(dist + ringW + 0.6f) - 0.6f;
++  const float line = std::clamp(0.5f - ld, 0.f, 1.f)*0.7f;
++  if(line>0.f)
++    c = over(Rgba{0.02f,0.015f,0.01f,line},c);
++  return c;
++  }
++
++}
++
++const Texture2d& TouchIcons::cached(uint64_t key, const std::function<Texture2d()>& make) {
++  auto it = cache.find(key);
++  if(it!=cache.end())
++    return *it->second;
++  auto t = std::make_unique<Texture2d>(make());
++  auto& ret = *t;
++  cache[key] = std::move(t);
++  return ret;
++  }
++
++const Texture2d& TouchIcons::icon(Icon i, int size) {
++  size = std::clamp(size,4,512);
++  const uint64_t key = (uint64_t(1)<<40) | (uint64_t(i)<<16) | uint64_t(size);
++  return cached(key,[i,size](){
++    auto g = glyph(i);
++    return alphaTexture(rasterize(g.shapes,size),size,size,1.f,1.f,1.f);
++    });
++  }
++
++const Texture2d& TouchIcons::shadow(Icon i, int size) {
++  size = std::clamp(size,4,512);
++  const uint64_t key = (uint64_t(2)<<40) | (uint64_t(i)<<16) | uint64_t(size);
++  return cached(key,[i,size](){
++    auto  g   = glyph(i);
++    auto  a   = rasterize(g.shapes,size);
++    // размытие квадратом в два прохода
++    const int r = std::max(1, size/28);
++    std::vector<float> tmp(a.size(),0.f);
++    for(int y=0; y<size; ++y)
++      for(int x=0; x<size; ++x) {
++        float s = 0;
++        for(int k=-r; k<=r; ++k)
++          s += a[size_t(y*size+std::clamp(x+k,0,size-1))];
++        tmp[size_t(y*size+x)] = s/float(2*r+1);
++        }
++    for(int y=0; y<size; ++y)
++      for(int x=0; x<size; ++x) {
++        float s = 0;
++        for(int k=-r; k<=r; ++k)
++          s += tmp[size_t(std::clamp(y+k,0,size-1)*size+x)];
++        a[size_t(y*size+x)] = std::min(1.f, 1.6f*s/float(2*r+1));
++        }
++    return alphaTexture(a,size,size,0.f,0.f,0.f);
++    });
++  }
++
++const Texture2d& TouchIcons::disc(int size) {
++  size = std::clamp(size,8,1024);
++  const uint64_t key = (uint64_t(3)<<40) | uint64_t(size);
++  return cached(key,[size](){
++    const float R   = float(size)*0.5f;
++    const float pad = std::max(2.f, float(size)*0.06f);
++    const float rad = R-pad;
++    std::vector<float> rgba(size_t(size*size*4));
++    for(int y=0; y<size; ++y)
++      for(int x=0; x<size; ++x) {
++        const float dx = float(x)+0.5f-R, dy = float(y)+0.5f-R;
++        const float d  = std::sqrt(dx*dx+dy*dy) - rad;
++        const Rgba  c  = plate(d, (float(y)+0.5f)/float(size), rad, pad);
++        float* o = &rgba[size_t((y*size+x)*4)];
++        o[0] = c.r; o[1] = c.g; o[2] = c.b; o[3] = c.a;
++        }
++    return toTexture(rgba,size,size);
++    });
++  }
++
++const Texture2d& TouchIcons::pill(int w, int h) {
++  w = std::clamp(w,8,2048);
++  h = std::clamp(h,8,1024);
++  const uint64_t key = (uint64_t(4)<<40) | (uint64_t(w)<<16) | uint64_t(h);
++  return cached(key,[w,h](){
++    const float R   = float(h)*0.5f;
++    const float pad = std::max(2.f, float(h)*0.08f);
++    const float rad = R-pad;
++    // скругление углов - треть высоты, как у панелей игры
++    const float cr  = rad*0.55f;
++    std::vector<float> rgba(size_t(w*h*4));
++    for(int y=0; y<h; ++y)
++      for(int x=0; x<w; ++x) {
++        const float px = float(x)+0.5f, py = float(y)+0.5f;
++        // скруглённый прямоугольник с отступом pad
++        const float qx = std::abs(px-float(w)*0.5f) - (float(w)*0.5f-pad-cr);
++        const float qy = std::abs(py-float(h)*0.5f) - (float(h)*0.5f-pad-cr);
++        const float ox = std::max(qx,0.f), oy = std::max(qy,0.f);
++        const float d  = std::sqrt(ox*ox+oy*oy) + std::min(std::max(qx,qy),0.f) - cr;
++        const Rgba  c  = plate(d, py/float(h), rad, pad);
++        float* o = &rgba[size_t((y*w+x)*4)];
++        o[0] = c.r; o[1] = c.g; o[2] = c.b; o[3] = c.a;
++        }
++    return toTexture(rgba,w,h);
++    });
++  }
++
++const Texture2d& TouchIcons::glow(int size) {
++  size = std::clamp(size,8,1024);
++  const uint64_t key = (uint64_t(5)<<40) | uint64_t(size);
++  return cached(key,[size](){
++    // Холст на 30% больше кнопки: свечение выходит за кольцо
++    const float S   = float(size)*1.3f;
++    const int   n   = int(S);
++    const float R   = S*0.5f;
++    const float rad = float(size)*0.5f - std::max(2.f, float(size)*0.06f);
++    const float wid = rad*0.16f;
++    std::vector<float> a(size_t(n*n));
++    for(int y=0; y<n; ++y)
++      for(int x=0; x<n; ++x) {
++        const float dx = float(x)+0.5f-R, dy = float(y)+0.5f-R;
++        const float d  = (std::sqrt(dx*dx+dy*dy) - rad)/wid;
++        a[size_t(y*n+x)] = std::exp(-d*d)*0.9f;
++        }
++    return alphaTexture(a,n,n,1.f,1.f,1.f);
++    });
++  }
+diff --git a/common/ui/touchicons.h b/common/ui/touchicons.h
+new file mode 100644
+index 0000000..fb25f55
+--- /dev/null
++++ b/common/ui/touchicons.h
+@@ -0,0 +1,71 @@
++#pragma once
++
++#include <Tempest/Texture2d>
++
++#include <cstdint>
++#include <functional>
++#include <memory>
++#include <unordered_map>
++
++// Gothic II Mobile: рисованные значки и подложки сенсорных кнопок.
++// Всё рисуется на процессоре со сглаживанием (поле расстояний) один раз под нужный размер в пикселях
++// и хранится текстурой: значки белые (цвет задаёт кисть), подложки - тёмная кожа с кольцом старой бронзы.
++class TouchIcons {
++  public:
++    enum Icon : uint8_t {
++      I_Sword,
++      I_Fist,
++      I_Bow,
++      I_Crossbow,
++      I_Rune,
++      I_Scroll,
++      I_Talk,
++      I_Hand,
++      I_Use,
++      I_Sack,
++      I_Shield,
++      I_Jump,
++      I_Weapons,
++      I_Potion,
++      I_Auto,
++      I_Gather,
++      I_Squad,
++      I_Sneak,
++      I_Menu,
++      I_Map,
++      I_Log,
++      I_Hero,
++      I_Up,
++      I_Down,
++      I_Left,
++      I_Right,
++      I_Ok,
++      I_Back,
++      I_Skip,
++      I_TakeAll,
++      I_Follow,
++      I_Wait,
++      I_Target,
++      I_Passive,
++      I_Finish,
++      I_Stop,
++      I_Dot,
++      I_Count
++      };
++
++    const Tempest::Texture2d& icon (Icon i, int size);
++    // Круглая подложка кнопки диаметром size
++    const Tempest::Texture2d& disc (int size);
++    // Мягкое золотое свечение вокруг круга диаметром size (рисуется со сложением)
++    const Tempest::Texture2d& glow (int size);
++    // Подложка-«пилюля» w×h для кнопок с подписью
++    const Tempest::Texture2d& pill (int w, int h);
++    // Тень значка: тот же значок, размытый
++    const Tempest::Texture2d& shadow(Icon i, int size);
++
++  private:
++    using Cache = std::unordered_map<uint64_t,std::unique_ptr<Tempest::Texture2d>>;
++    Cache cache;
++
++    const Tempest::Texture2d& cached(uint64_t key, const std::function<Tempest::Texture2d()>& make);
++  };
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f17309..4ffe30c3 100644
+index d9f1730..0b67456 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,457 @@
+@@ -1,41 +1,1234 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
  #include <Tempest/Painter>
  
++#include <algorithm>
 +#include <cmath>
 +
  #include "game/playercontrol.h"
++#include "world/objects/npc.h"
++#include "world/objects/item.h"
++#include "world/objects/interactive.h"
++#include "world/world.h"
 +#include "utils/cp1251.h"
 +#include "utils/gthfont.h"
 +#include "mainwindow.h"
@@ -1048,112 +2742,155 @@ index d9f17309..4ffe30c3 100644
  using namespace Tempest;
  
 -TouchInput::TouchInput(PlayerControl& ctrl) : ctrl(ctrl) {
++static const float Pi = 3.14159265f;
++
++// Цвета значков: старое золото, при нажатии - светлее, недоступное - тусклая бронза
++static const Color GoldIdle   = Color(0.93f, 0.81f, 0.56f, 0.95f);
++static const Color GoldBright = Color(1.00f, 0.93f, 0.70f, 1.00f);
++static const Color GoldDim    = Color(0.62f, 0.57f, 0.48f, 0.60f);
++static const Color GlowColor  = Color(1.00f, 0.70f, 0.28f, 0.85f);
++
 +TouchInput::TouchInput(MainWindow& owner, PlayerControl& ctrl) : owner(owner), ctrl(ctrl) {
-+  repeatTimer.timeout.bind(this,&TouchInput::onRepeat);
++  timer.timeout.bind(this,&TouchInput::onTimer);
 +  }
 +
 +float TouchInput::dp() const {
 +  return std::max(1.f, owner.uiScale());
 +  }
 +
-+uint8_t TouchInput::currentMode() const {
-+  return uint8_t(owner.touchMode());
-   }
- 
--void TouchInput::paintEvent(Tempest::PaintEvent& e) {
-+Rect TouchInput::rectOf(Ctl c) const {
-+  const float d   = dp();
-+  const int   pad = int(12*d);
-+  const int   big = int(96*d);
-+  const int   btn = int(64*d);
-+  const int   tw  = int(88*d);
-+  const int   th  = int(44*d);
-+  const int   W   = w();
-+  const int   H   = h();
++TouchInput::Ui TouchInput::currentUi() const {
++  using M = MainWindow::TouchMode;
++  const auto m = owner.touchMode();
++  if(m==M::Hidden)
++    return Ui::Hidden;
++  if(m==M::Skip)
++    return Ui::Skip;
++  if(owner.touchIsLockPick())
++    return Ui::LockPick;
++  if(m==M::World)
++    return Ui::World;
++  // Торговля открывается поверх диалога - сначала сумка
++  if(owner.touchIsInventory())
++    return Ui::Inventory;
++  if(owner.touchIsDialog())
++    return Ui::Dialog;
++  return Ui::Document;
++  }
 +
-+  const Rect atk  = Rect(W-pad-big, H-pad-big, big, big);
-+  const int  autoW = int(float(btn)*1.7f);
-+  const Rect aut  = Rect(W-pad-autoW, atk.y-2*(pad+btn), autoW, btn);
++TouchInput::Button TouchInput::buttonOf(Ctl c) const {
++  const float d = dp();
++  const float W = float(w());
++  const float H = float(h());
++  const float m = 16*d;
 +
-+  // крестовина экранов со списками
-+  const int  cx = pad + btn + btn/2 + pad;
-+  const int  cy = H - pad - btn - btn/2 - pad;
++  // Главная кнопка под большим пальцем, остальные - на двух дугах вокруг неё
++  const float mx = W - 66*d, my = H - 60*d;
++  auto round = [](float x, float y, float r) {
++    Button b;
++    b.c = Point(int(x),int(y));
++    b.r = int(r);
++    return b;
++    };
++  auto arc = [&](float rad, float deg, float r) {
++    const float a = deg*Pi/180.f;
++    return round(mx + rad*std::cos(a), my - rad*std::sin(a), r);
++    };
++  auto pill = [](float x, float y, float pw, float ph) {
++    Button b;
++    b.rect = Rect(int(x),int(y),int(pw),int(ph));
++    b.c    = Point(int(x+pw*0.5f),int(y+ph*0.5f));
++    return b;
++    };
++  // Ряд системных кнопок справа вверху; самая нужная - «Сумка» - ближе к краю
++  auto top = [&](int k) {
++    return round(W - m - 19*d - float(k)*44*d, 12*d + 19*d, 19*d);
++    };
 +
++  const float pw = 150*d, ph = 42*d;
 +  switch(c) {
-+    case C_Attack:
-+    case C_Select:
-+      return atk;
-+    case C_Block:
-+      return Rect(atk.x-pad-btn, H-pad-btn, btn, btn);
-+    case C_Jump:
-+      return Rect(W-pad-btn, atk.y-pad-btn, btn, btn);
-+    case C_Weapon:
-+      return Rect(atk.x-pad-btn, atk.y-pad-btn, btn, btn);
-+    case C_Auto:
-+      return aut;
-+    case C_Potion:
-+      return Rect(aut.x-pad-btn, aut.y, btn, btn);
-+    case C_TakeAll: {
-+      // над «Выбрать», шириной с неё
-+      return Rect(atk.x, atk.y-pad-btn, atk.w, btn);
-+      }
-+    case C_Menu:
-+    case C_Back:
-+      return Rect(pad, pad, tw, th);
-+    case C_Bag:
-+      return Rect(pad+(tw+pad), pad, tw, th);
-+    case C_Log:
-+      return Rect(pad+(tw+pad)*2, pad, tw, th);
-+    case C_Hero:
-+      return Rect(pad+(tw+pad)*3, pad, tw, th);
-+    case C_Skip:
-+      return Rect(W-pad-int(float(tw)*1.4f), pad, int(float(tw)*1.4f), th);
-+    case C_Up:
-+      return Rect(cx-btn/2, cy-btn/2-btn-pad/2, btn, btn);
-+    case C_Down:
-+      return Rect(cx-btn/2, cy+btn/2+pad/2, btn, btn);
-+    case C_Left:
-+      return Rect(cx-btn/2-btn-pad/2, cy-btn/2, btn, btn);
-+    case C_Right:
-+      return Rect(cx+btn/2+pad/2, cy-btn/2, btn, btn);
++    case C_Main:    return round(mx, my, 40*d);
++    case C_Weapon:  return arc(92*d,   90, 27*d);
++    case C_Jump:    return arc(92*d,  135, 27*d);
++    case C_Block:   return arc(92*d,  180, 27*d);
++    case C_Potion:  return arc(154*d, 102, 22*d);
++    case C_Auto:    return arc(154*d, 128, 22*d);
++    case C_Gather:  return arc(154*d, 154, 22*d);
++    case C_Squad:   return arc(154*d, 180, 22*d);
++    case C_Sneak:   return round(m + 22*d, H*0.5f, 22*d);
++    case C_Bag:     return top(0);
++    case C_Map:     return top(1);
++    case C_Log:     return top(2);
++    case C_Hero:    return top(3);
++    case C_Menu:    return top(4);
++    case C_Back:    return pill(m, H - m - ph, pw*0.9f, ph);
++    case C_Select:  return pill(W - m - pw, H - m - ph, pw, ph);
++    // Над сеткой сундука, рядом с его названием: внизу справа - сетка сумки героя
++    case C_TakeAll: return pill(m + 112*d, 10*d, pw, ph);
++    case C_Skip:    return pill(W - m - pw, 12*d, pw, ph);
++    case C_Up:      return round(m + 26*d, H - m - ph - 16*d - 26*d - 62*d, 26*d);
++    case C_Down:    return round(m + 26*d, H - m - ph - 16*d - 26*d, 26*d);
++    case C_Left:    return round(m + 36*d,         H - m - ph - 20*d - 36*d, 36*d);
++    case C_Right:   return round(m + 36*d + 88*d,  H - m - ph - 20*d - 36*d, 36*d);
 +    case C_None:
 +    case C_Joy:
 +    case C_Look:
++    case C_List:
++    case C_Absorb:
 +    case C_Count:
 +      break;
 +    }
-+  return Rect();
++  return Button();
 +  }
 +
 +bool TouchInput::isShown(Ctl c) const {
-+  using M = MainWindow::TouchMode;
-+  const auto m = MainWindow::TouchMode(currentMode());
++  const auto ui = currentUi();
++  auto  pl      = Gothic::inst().player();
++  const auto ws = pl!=nullptr ? pl->weaponState() : WeaponState::NoWeapon;
 +  switch(c) {
-+    case C_Attack:
-+    case C_Block:
++    case C_Main:
 +    case C_Jump:
 +    case C_Weapon:
 +    case C_Auto:
-+    case C_Potion:
-+    case C_Menu:
++    case C_Sneak:
 +    case C_Bag:
++    case C_Map:
 +    case C_Log:
 +    case C_Hero:
-+      return m==M::World;
++    case C_Menu:
++      return ui==Ui::World;
++    case C_Block:
++      return ui==Ui::World && (ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H);
++    case C_Potion:
++      return ui==Ui::World && (ctrl.potionCount(false)>0 || ctrl.potionCount(true)>0);
++    case C_Gather:
++      return ui==Ui::World && (ctrl.canGather() || ctrl.isGathering());
++    case C_Squad:
++      return ui==Ui::World && !squad.empty();
 +    case C_Up:
 +    case C_Down:
++      return ui==Ui::Dialog && owner.touchDialogChoices();
++    case C_Select:
++      if(ui==Ui::Dialog)
++        return owner.touchDialogChoices();
++      if(ui==Ui::Inventory)
++        return owner.touchInventoryAction()!=InventoryMenu::TouchAction::None;
++      return false;
++    case C_Back:
++      if(ui==Ui::Dialog)
++        return owner.touchDialogTalking();
++      return ui==Ui::Inventory || ui==Ui::Document || ui==Ui::LockPick;
++    case C_TakeAll:
++      return ui==Ui::Inventory && owner.touchCanTakeAll();
 +    case C_Left:
 +    case C_Right:
-+    case C_Select:
-+    case C_Back:
-+      return m==M::Navigation;
-+    case C_TakeAll:
-+      return m==M::Navigation && owner.touchCanTakeAll();
++      return ui==Ui::LockPick;
 +    case C_Skip:
-+      return m==M::Skip;
++      return ui==Ui::Skip;
 +    case C_None:
 +    case C_Joy:
 +    case C_Look:
++    case C_List:
++    case C_Absorb:
 +    case C_Count:
 +      break;
 +    }
@@ -1161,170 +2898,701 @@ index d9f17309..4ffe30c3 100644
 +  }
 +
 +TouchInput::Ctl TouchInput::hitTest(Point p) const {
-+  // Небольшой запас вокруг кнопки: палец крупнее нарисованной рамки
-+  const int slop = int(6*dp());
-+  for(uint8_t i=C_Attack; i<C_Count; ++i) {
++  // Запас вокруг кнопки: палец крупнее нарисованного круга
++  const int slop = int(8*dp());
++  for(uint8_t i=C_Main; i<C_Count; ++i) {
 +    const Ctl c = Ctl(i);
 +    if(!isShown(c))
 +      continue;
-+    auto r = rectOf(c);
-+    if(Rect(r.x-slop, r.y-slop, r.w+2*slop, r.h+2*slop).contains(p))
-+      return c;
++    const auto b = buttonOf(c);
++    if(b.r>0) {
++      const int dx = p.x-b.c.x, dy = p.y-b.c.y, r = b.r+slop;
++      if(dx*dx+dy*dy<=r*r)
++        return c;
++      } else {
++      const auto& r = b.rect;
++      if(Rect(r.x-slop, r.y-slop, r.w+2*slop, r.h+2*slop).contains(p))
++        return c;
++      }
 +    }
 +  return C_None;
 +  }
 +
-+std::string TouchInput::label(Ctl c) const {
-+  switch(c) {
-+    case C_Attack: return toCp1251("Удар");
-+    case C_Block:  return toCp1251("Блок");
-+    case C_Jump:   return toCp1251("Прыжок");
-+    case C_Weapon: return toCp1251("Оружие");
-+    case C_Auto:   return toCp1251(ctrl.isAutoFight() ? "Автобой: вкл" : "Автобой");
-+    case C_Potion: return toCp1251("Зелье");
-+    case C_Menu:   return toCp1251("Меню");
-+    case C_Bag:    return toCp1251("Сумка");
-+    case C_Log:    return toCp1251("Журнал");
-+    case C_Hero:   return toCp1251("Герой");
-+    case C_Up:     return "^";
-+    case C_Down:   return "v";
-+    case C_Left:   return "<";
-+    case C_Right:  return ">";
-+    case C_Select: return toCp1251("Выбрать");
-+    case C_Back:   return toCp1251("Назад");
-+    case C_TakeAll:return toCp1251("Взять всё");
-+    case C_Skip:   return toCp1251("Пропустить");
-+    case C_None:
-+    case C_Joy:
-+    case C_Look:
-+    case C_Count:
-+      break;
-+    }
-+  return "";
++bool TouchInput::isPressed(Ctl c) const {
++  for(auto& f:fingers)
++    if(f.ctl==c)
++      return true;
++  return false;
 +  }
 +
++TouchInput::MainCtx TouchInput::mainContext() const {
++  MainCtx ret;
++  auto pl = Gothic::inst().player();
++  if(pl==nullptr)
++    return ret;
++  switch(pl->weaponState()) {
++    case WeaponState::NoWeapon: {
++      const auto f = pl->world().validateFocus(ctrl.focus());
++      if(f.npc!=nullptr && !f.npc->isDown()) {
++        ret.icon  = TouchIcons::I_Talk;
++        ret.label = toCp1251("Говорить");
++        }
++      else if(f.npc!=nullptr) {
++        ret.icon  = TouchIcons::I_Hand;
++        ret.label = toCp1251("Обыскать");
++        }
++      else if(f.item!=nullptr) {
++        ret.icon  = TouchIcons::I_Hand;
++        ret.label = toCp1251("Взять");
++        }
++      else if(f.interactive!=nullptr) {
++        ret.icon  = f.interactive->isContainer() ? TouchIcons::I_Sack : TouchIcons::I_Use;
++        ret.label = toCp1251(f.interactive->isContainer() ? "Открыть" : "Использовать");
++        }
++      else {
++        ret.icon  = TouchIcons::I_Hand;
++        ret.label = toCp1251("Действие");
++        ret.dim   = true;
++        }
++      break;
++      }
++    case WeaponState::Fist:
++      ret.icon  = TouchIcons::I_Fist;
++      ret.label = toCp1251("Удар");
++      break;
++    case WeaponState::W1H:
++    case WeaponState::W2H:
++      if(auto tg = pl->target(); tg!=nullptr && !pl->isAttackAnim() && pl->canFinish(*tg)) {
++        ret.icon  = TouchIcons::I_Finish;
++        ret.label = toCp1251("Добить");
++        } else {
++        ret.icon  = TouchIcons::I_Sword;
++        ret.label = toCp1251("Удар");
++        }
++      break;
++    case WeaponState::Bow:
++    case WeaponState::CBow:
++      ret.icon  = pl->weaponState()==WeaponState::CBow ? TouchIcons::I_Crossbow : TouchIcons::I_Bow;
++      ret.label = toCp1251(pl->hasAmmunition() ? "Выстрел" : "Нет стрел");
++      ret.dim   = !pl->hasAmmunition();
++      break;
++    case WeaponState::Mage: {
++      auto spl  = pl->inventory().activeWeapon();
++      ret.icon  = (spl!=nullptr && !spl->isRune()) ? TouchIcons::I_Scroll : TouchIcons::I_Rune;
++      ret.label = spl!=nullptr ? std::string(spl->displayName()) : toCp1251("Магия");
++      break;
++      }
++    }
++  return ret;
++  }
++
++Npc* TouchInput::squadTarget() const {
++  // Цель приказа «Атаковать»: выбранная касанием, иначе та, на которую смотрит герой
++  if(auto tg = ctrl.touchTarget())
++    return tg;
++  auto w = Gothic::inst().world();
++  if(w==nullptr)
++    return nullptr;
++  auto f = w->validateFocus(ctrl.focus());
++  if(f.npc!=nullptr && !f.npc->isDown() && std::find(squad.begin(),squad.end(),f.npc)==squad.end())
++    return f.npc;
++  return nullptr;
++  }
++
++std::string TouchInput::fit(std::string txt, int maxW, float scale) const {
++  auto& fnt = Resources::font(Resources::FontType::Normal, Gothic::interfaceScale(this)*scale);
++  if(fnt.textSize(txt).w<=maxW)
++    return txt;
++  while(txt.size()>1 && fnt.textSize(txt+"..").w>maxW)
++    txt.pop_back();
++  return txt+"..";
+   }
+ 
+-void TouchInput::paintEvent(Tempest::PaintEvent& e) {
 +void TouchInput::paintEvent(PaintEvent& e) {
-+  const uint8_t m = currentMode();
-+  if(m!=lastMode) {
++  const Ui ui = currentUi();
++  if(ui!=lastUi) {
 +    // Экран сменился (открылся диалог, сумка, меню) - всё, что держали пальцы, отпускается
 +    releaseAll();
-+    lastMode = m;
++    lastUi = ui;
 +    }
-+  if(MainWindow::TouchMode(m)==MainWindow::TouchMode::Hidden)
++  if(ui==Ui::Hidden)
 +    return;
 +
++  if(ui==Ui::World) {
++    if(auto w = Gothic::inst().world())
++      w->script().squadMembers(squad);
++    } else {
++    squad.clear();
++    }
++
    Painter p(e);
-+  for(uint8_t i=C_Attack; i<C_Count; ++i) {
++  if(ui==Ui::World) {
++    drawTarget(p);
++    drawSquad(p);
++    drawJoystick(p);
++    }
++
++  for(uint8_t i=C_Main; i<C_Count; ++i) {
 +    const Ctl c = Ctl(i);
 +    if(!isShown(c))
 +      continue;
-+    bool pressed = false;
-+    for(auto& f:fingers)
-+      if(f.ctl==c)
-+        pressed = true;
-+    drawButton(p, c, pressed, c==C_Auto && ctrl.isAutoFight());
++    const auto b       = buttonOf(c);
++    const bool pressed = isPressed(c);
++    switch(c) {
++      case C_Main:
++        drawMain(p);
++        break;
++      case C_Block:  drawRound(p,b,TouchIcons::I_Shield,pressed,false,1.f); break;
++      case C_Jump:   drawRound(p,b,TouchIcons::I_Jump,  pressed,false,1.f); break;
++      case C_Weapon: drawRound(p,b,TouchIcons::I_Weapons,pressed,wheel==Wheel::Weapon,1.f); break;
++      case C_Potion:
++        drawRound(p,b,TouchIcons::I_Potion,pressed,false,1.f);
++        drawBadge(p,b,ctrl.potionCount(false));
++        break;
++      case C_Auto:   drawRound(p,b,TouchIcons::I_Auto,  pressed,ctrl.isAutoFight(),1.f); break;
++      case C_Gather: drawRound(p,b,ctrl.isGathering() ? TouchIcons::I_Stop : TouchIcons::I_Gather,pressed,ctrl.isGathering(),1.f); break;
++      case C_Squad:
++        drawRound(p,b,TouchIcons::I_Squad,pressed,wheel==Wheel::Squad,1.f);
++        drawBadge(p,b,squad.size());
++        break;
++      case C_Sneak:  drawRound(p,b,TouchIcons::I_Sneak, pressed,ctrl.isSneak(),0.8f); break;
++      case C_Bag:    drawRound(p,b,TouchIcons::I_Sack,  pressed,false,0.8f); break;
++      case C_Map:    drawRound(p,b,TouchIcons::I_Map,   pressed,false,0.8f); break;
++      case C_Log:    drawRound(p,b,TouchIcons::I_Log,   pressed,false,0.8f); break;
++      case C_Hero:   drawRound(p,b,TouchIcons::I_Hero,  pressed,false,0.8f); break;
++      case C_Menu:   drawRound(p,b,TouchIcons::I_Menu,  pressed,false,0.8f); break;
++      case C_Up:     drawRound(p,b,TouchIcons::I_Up,    pressed,false,1.f); break;
++      case C_Down:   drawRound(p,b,TouchIcons::I_Down,  pressed,false,1.f); break;
++      case C_Left:   drawRound(p,b,TouchIcons::I_Left,  pressed,false,1.f); break;
++      case C_Right:  drawRound(p,b,TouchIcons::I_Right, pressed,false,1.f); break;
++      case C_Select: {
++        const char* txt = "Выбрать";
++        if(ui==Ui::Inventory) {
++          switch(owner.touchInventoryAction()) {
++            case InventoryMenu::TouchAction::Use:  txt = "Применить"; break;
++            case InventoryMenu::TouchAction::Take: txt = "Взять";     break;
++            case InventoryMenu::TouchAction::Put:  txt = "Положить";  break;
++            case InventoryMenu::TouchAction::Buy:  txt = "Купить";    break;
++            case InventoryMenu::TouchAction::Sell: txt = "Продать";   break;
++            case InventoryMenu::TouchAction::None: break;
++            }
++          }
++        drawPill(p,b.rect,TouchIcons::I_Ok,toCp1251(txt),pressed);
++        break;
++        }
++      case C_Back: {
++        const char* txt = "Закрыть";
++        if(ui==Ui::Dialog)
++          txt = "Пропуск";
++        else if(ui==Ui::LockPick)
++          txt = "Отойти";
++        drawPill(p,b.rect,ui==Ui::Dialog ? TouchIcons::I_Skip : TouchIcons::I_Back,toCp1251(txt),pressed);
++        break;
++        }
++      case C_TakeAll:
++        drawPill(p,b.rect,TouchIcons::I_TakeAll,toCp1251("Взять всё"),pressed);
++        break;
++      case C_Skip:
++        drawPill(p,b.rect,TouchIcons::I_Skip,toCp1251("Пропустить"),pressed);
++        break;
++      case C_None:
++      case C_Joy:
++      case C_Look:
++      case C_List:
++      case C_Absorb:
++      case C_Count:
++        break;
++      }
 +    }
-+  if(MainWindow::TouchMode(m)==MainWindow::TouchMode::World)
-+    drawJoystick(p);
++
++  // Долгие нажатия: кольцо заполняется, пока держат
++  const uint64_t now = Application::tickCount();
++  for(auto& f:fingers) {
++    if(f.held || f.moved)
++      continue;
++    if(f.ctl==C_Menu && now-f.downAt>150)
++      drawHoldRing(p,buttonOf(C_Menu),float(now-f.downAt-150)/550.f);
++    if(f.ctl==C_Potion && now-f.downAt>150 && ctrl.potionCount(true)>0)
++      drawHoldRing(p,buttonOf(C_Potion),float(now-f.downAt-150)/300.f);
++    }
++
++  if(wheel!=Wheel::None)
++    drawWheel(p);
 +  }
 +
-+void TouchInput::drawButton(Painter& p, Ctl c, bool pressed, bool active) {
-+  const auto r = rectOf(c);
-+  const int  b = std::max(1, int(1.5f*dp()));
- 
--  p.setBrush(Color(1,1,1, 0.2f));
--  p.drawRect(10, h()-10 - 100, 100, 100);
-+  // Тёмная кожа и рамка старой бронзы, как панели игры
-+  if(active)
-+    p.setBrush(Color(0.42f, 0.31f, 0.12f, pressed ? 0.85f : 0.7f));
-+  else
-+    p.setBrush(Color(0.06f, 0.05f, 0.04f, pressed ? 0.7f : 0.42f));
-+  p.drawRect(r.x, r.y, r.w, r.h);
++void TouchInput::drawGlyph(Painter& p, TouchIcons::Icon ic, Point c, int size, const Color& cl) {
++  if(size<4)
++    return;
++  const int x = c.x-size/2, y = c.y-size/2;
++  // Тень под значком - он читается на светлом небе и снегу
++  auto& sh  = icons.shadow(ic,size);
++  const int off = std::max(1, int(1.2f*dp()));
++  p.setBrush(Brush(sh,Color(1.f,1.f,1.f,0.8f*cl.a())));
++  p.drawRect(x+off/2, y+off, size, size, 0,0,sh.w(),sh.h());
++  auto& tx = icons.icon(ic,size);
++  p.setBrush(Brush(tx,cl));
++  p.drawRect(x, y, size, size, 0,0,tx.w(),tx.h());
++  }
 +
-+  p.setBrush(Color(0.74f, 0.6f, 0.33f, pressed || active ? 0.95f : 0.6f));
-+  p.drawRect(r.x,       r.y,       r.w, b);
-+  p.drawRect(r.x,       r.y+r.h-b, r.w, b);
-+  p.drawRect(r.x,       r.y,       b,   r.h);
-+  p.drawRect(r.x+r.w-b, r.y,       b,   r.h);
++void TouchInput::drawRound(Painter& p, const Button& b, TouchIcons::Icon ic, bool pressed, bool active, float alpha) {
++  // Видимый круг подложки занимает 88% текстуры: по краям - тень
++  const int ds = int(float(2*b.r)/0.88f);
++  if(active || pressed) {
++    const int gs = int(float(ds)*1.3f);
++    auto&     g  = icons.glow(ds);
++    Color     gc = GlowColor;
++    gc.set(gc.r(), gc.g(), gc.b(), active ? 0.85f : 0.55f);
++    p.setBrush(Brush(g,gc,Painter::Add));
++    p.drawRect(b.c.x-gs/2, b.c.y-gs/2, gs, gs, 0,0,g.w(),g.h());
++    }
++  auto& d = icons.disc(ds);
++  p.setBrush(Brush(d,Color(1.f,1.f,1.f,alpha*(pressed ? 1.f : 0.9f))));
++  p.drawRect(b.c.x-ds/2, b.c.y-ds/2, ds, ds, 0,0,d.w(),d.h());
 +
-+  const auto  type = (pressed || active) ? Resources::FontType::Hi : Resources::FontType::Normal;
-+  auto&       fnt  = Resources::font(type, Gothic::interfaceScale(this));
-+  const auto  txt  = label(c);
-+  const auto  sz   = fnt.textSize(txt);
-+  fnt.drawText(p, r.x+(r.w-sz.w)/2, r.y+(r.h+sz.h)/2, txt);
-   }
- 
--void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
--  auto r = Rect(10, h()-10-100, 100, 100);
--  if(!r.contains(e.pos())) {
++  Color cl = (pressed || active) ? GoldBright : GoldIdle;
++  cl.set(cl.r(), cl.g(), cl.b(), cl.a()*alpha);
++  drawGlyph(p, ic, b.c, int(float(b.r)*1.12f), cl);
++  }
++
++void TouchInput::drawPill(Painter& p, const Rect& r, TouchIcons::Icon ic, std::string_view label, bool pressed) {
++  if(pressed) {
++    auto& g = icons.glow(r.h);
++    p.setBrush(Brush(g,Color(1.f,0.7f,0.28f,0.35f),Painter::Add));
++    p.drawRect(r.x-r.h/6, r.y-r.h/6, r.w+r.h/3, r.h+r.h/3, 0,0,g.w(),g.h());
++    }
++  auto& t = icons.pill(r.w,r.h);
++  p.setBrush(Brush(t,Color(1.f,1.f,1.f,pressed ? 1.f : 0.92f)));
++  p.drawRect(r.x, r.y, r.w, r.h, 0,0,t.w(),t.h());
++
++  const int   gs  = int(float(r.h)*0.48f);
++  auto&       fnt = Resources::font(pressed ? Resources::FontType::Hi : Resources::FontType::Normal, Gothic::interfaceScale(this));
++  const auto  ts  = fnt.textSize(label);
++  const int   gap = int(6*dp());
++  const int   tw  = gs + gap + ts.w;
++  const int   x0  = r.x + (r.w-tw)/2;
++  drawGlyph(p, ic, Point(x0+gs/2, r.y+r.h/2), gs, pressed ? GoldBright : GoldIdle);
++  fnt.drawText(p, x0+gs+gap, r.y+(r.h+ts.h)/2, label);
++  }
++
++void TouchInput::drawLabel(Painter& p, std::string_view txt, Point c, bool hi, float scale) {
++  auto&      fnt = Resources::font(hi ? Resources::FontType::Hi : Resources::FontType::Normal, Gothic::interfaceScale(this)*scale);
++  const auto sz  = fnt.textSize(txt);
++  fnt.drawText(p, c.x-sz.w/2, c.y+sz.h/2, txt);
++  }
++
++void TouchInput::drawMain(Painter& p) {
++  const auto b       = buttonOf(C_Main);
++  const auto ctx     = mainContext();
++  const bool pressed = isPressed(C_Main);
++  const int  ds      = int(float(2*b.r)/0.88f);
++  if(pressed) {
++    const int gs = int(float(ds)*1.3f);
++    auto&     g  = icons.glow(ds);
++    p.setBrush(Brush(g,Color(1.f,0.7f,0.28f,0.6f),Painter::Add));
++    p.drawRect(b.c.x-gs/2, b.c.y-gs/2, gs, gs, 0,0,g.w(),g.h());
++    }
++  auto& d = icons.disc(ds);
++  p.setBrush(Brush(d,Color(1.f,1.f,1.f,pressed ? 1.f : 0.92f)));
++  p.drawRect(b.c.x-ds/2, b.c.y-ds/2, ds, ds, 0,0,d.w(),d.h());
++
++  // Значок выше центра, подпись - внизу круга: что кнопка сделает сейчас
++  const Color cl = ctx.dim ? GoldDim : (pressed ? GoldBright : GoldIdle);
++  drawGlyph(p, ctx.icon, Point(b.c.x, b.c.y-int(float(b.r)*0.16f)), int(float(b.r)*0.95f), cl);
++  if(!ctx.label.empty()) {
++    const auto txt = fit(ctx.label, int(float(b.r)*1.6f), 0.85f);
++    drawLabel(p, txt, Point(b.c.x, b.c.y+int(float(b.r)*0.52f)), pressed, 0.85f);
++    }
++  }
++
++void TouchInput::drawBadge(Painter& p, const Button& b, size_t n) {
++  if(n==0)
++    return;
++  const int  r  = int(9*dp());
++  const auto c  = Point(b.c.x+int(float(b.r)*0.72f), b.c.y+int(float(b.r)*0.72f));
++  const int  ds = int(float(2*r)/0.88f);
++  auto&      d  = icons.disc(ds);
++  p.setBrush(Brush(d,Color(1.f)));
++  p.drawRect(c.x-ds/2, c.y-ds/2, ds, ds, 0,0,d.w(),d.h());
++  drawLabel(p, std::to_string(std::min<size_t>(n,99)), c, true, 0.75f);
++  }
++
++void TouchInput::drawHoldRing(Painter& p, const Button& b, float k) {
++  k = std::clamp(k,0.f,1.f);
++  const int   n   = 28;
++  const int   cnt = int(float(n)*k);
++  const float rad = float(b.r)+5*dp();
++  const int   ds  = std::max(4, int(4*dp()));
++  for(int i=0; i<cnt; ++i) {
++    const float a = Pi*0.5f - 2.f*Pi*float(i)/float(n);
++    const auto  c = Point(b.c.x+int(rad*std::cos(a)), b.c.y-int(rad*std::sin(a)));
++    drawGlyph(p, TouchIcons::I_Dot, c, ds, GoldBright);
++    }
++  }
++
 +void TouchInput::drawJoystick(Painter& p) {
-+  const float d = dp();
-+  const int   R = int(56*d);
-+  const int   b = std::max(1, int(1.5f*d));
++  const float d  = dp();
++  const int   R  = int(56*d);
++  const int   ds = int(float(2*R)/0.88f);
 +
-+  Point center = Point(int(12*d)+R+int(24*d), h()-int(12*d)-R-int(24*d));
++  Point center = Point(int(16*d)+R+int(16*d), h()-int(16*d)-R-int(12*d));
 +  Point knob   = center;
-+  float alpha  = 0.25f;
++  float alpha  = 0.28f;
++  bool  active = false;
 +  for(auto& f:fingers) {
 +    if(f.ctl!=C_Joy)
 +      continue;
 +    center = f.start;
-+    auto dv = f.last-f.start;
++    auto  dv  = f.last-f.start;
 +    float len = std::sqrt(float(dv.x*dv.x + dv.y*dv.y));
 +    if(len>float(R)) {
 +      dv.x = int(float(dv.x)*float(R)/len);
 +      dv.y = int(float(dv.y)*float(R)/len);
 +      }
-+    knob  = center+dv;
-+    alpha = 0.6f;
++    knob   = center+dv;
++    alpha  = 0.75f;
++    active = true;
 +    }
 +
-+  p.setBrush(Color(0.06f, 0.05f, 0.04f, alpha*0.6f));
-+  p.drawRect(center.x-R, center.y-R, 2*R, 2*R);
-+  p.setBrush(Color(0.74f, 0.6f, 0.33f, alpha));
-+  p.drawRect(center.x-R,     center.y-R,     2*R, b);
-+  p.drawRect(center.x-R,     center.y+R-b,   2*R, b);
-+  p.drawRect(center.x-R,     center.y-R,     b,   2*R);
-+  p.drawRect(center.x+R-b,   center.y-R,     b,   2*R);
++  auto& base = icons.disc(ds);
++  p.setBrush(Brush(base,Color(1.f,1.f,1.f,alpha*0.8f)));
++  p.drawRect(center.x-ds/2, center.y-ds/2, ds, ds, 0,0,base.w(),base.h());
 +
-+  const int k = int(float(R)*0.45f);
-+  p.setBrush(Color(0.74f, 0.6f, 0.33f, alpha+0.15f));
-+  p.drawRect(knob.x-k, knob.y-k, 2*k, 2*k);
++  // Кольцо шага: внутри - шаг, за ним - бег
++  if(active) {
++    const int ws = int(float(R)*1.1f);
++    auto&     g  = icons.glow(ws);
++    p.setBrush(Brush(g,Color(1.f,0.85f,0.55f,0.25f),Painter::Add));
++    const int gs = int(float(ws)*1.3f);
++    p.drawRect(center.x-gs/2, center.y-gs/2, gs, gs, 0,0,g.w(),g.h());
++    }
++
++  const int kr = int(float(R)*0.42f);
++  Button kb;
++  kb.c = knob;
++  kb.r = kr;
++  drawRound(p, kb, TouchIcons::I_Dot, false, active && joyRun, alpha+0.15f);
 +  }
 +
++void TouchInput::drawTarget(Painter& p) {
++  auto tg  = ctrl.touchTarget();
++  auto cam = Gothic::inst().camera();
++  if(tg==nullptr || cam==nullptr)
++    return;
++  auto  vp  = cam->viewProj();
++  auto  pos = tg->displayPosition();
++  float pw  = 1.f;
++  vp.project(pos.x,pos.y,pos.z,pw);
++  if(pw<=0.f)
++    return;
++  pos /= pw;
++  const int   ix  = int((0.5f*pos.x+0.5f)*float(w()));
++  const int   iy  = int((0.5f*pos.y+0.5f)*float(h()));
++  const float d   = dp();
++  // Покачивающаяся золотая стрелка над головой выбранной цели
++  const float t   = float(Application::tickCount()%1200)/1200.f;
++  const int   bob = int(3*d*std::sin(t*2.f*Pi));
++  const int   gs  = int(22*d);
++  drawGlyph(p, TouchIcons::I_Down, Point(ix, iy-int(26*d)+bob), gs, GoldBright);
++  if(ctrl.focus().npc!=tg)
++    drawLabel(p, tg->displayName(), Point(ix, iy-int(44*d)+bob), false, 0.85f);
++  }
++
++void TouchInput::drawSquad(Painter& p) {
++  if(squad.empty())
++    return;
++  auto w = Gothic::inst().world();
++  if(w==nullptr)
++    return;
++  // Под полосками героя: имя, здоровье, приказ
++  const float d    = dp();
++  const int   x    = 10; // как полоски игры
++  int         y    = owner.touchHudBottom() + int(8*d);
++  const int   rowH = int(22*d);
++  const int   gs   = int(13*d);
++  const int   barW = int(70*d);
++  const int   barH = std::max(2, int(3*d));
++  auto& sc = w->script();
++  for(auto npc:squad) {
++    TouchIcons::Icon ic = sc.squadIsWaiting(*npc) ? TouchIcons::I_Wait : TouchIcons::I_Follow;
++    if(sc.isPassive(*npc) && !sc.squadIsWaiting(*npc))
++      ic = TouchIcons::I_Passive;
++    drawGlyph(p, ic, Point(x+gs/2, y+gs/2), gs, GoldIdle);
++
++    auto&      fnt  = Resources::font(Resources::FontType::Normal, Gothic::interfaceScale(this)*0.8f);
++    const auto name = fit(std::string(npc->displayName()), barW+int(30*d), 0.8f);
++    const auto ts   = fnt.textSize(name);
++    fnt.drawText(p, x+gs+int(5*d), y+ts.h-int(2*d), name);
++
++    const float hp = float(npc->attribute(ATR_HITPOINTS))/float(std::max(1,npc->attribute(ATR_HITPOINTSMAX)));
++    const int   by = y+ts.h+int(1*d);
++    p.setBrush(Color(0.f,0.f,0.f,0.5f));
++    p.drawRect(x+gs+int(5*d), by, barW, barH);
++    p.setBrush(Color(0.78f,0.16f,0.10f,0.9f));
++    p.drawRect(x+gs+int(5*d), by, int(float(barW)*std::clamp(hp,0.f,1.f)), barH);
++    y += rowH;
++    }
++  }
++
++Point TouchInput::wheelCenter() const {
++  // Левее кнопок под правым пальцем: колесо их не закрывает
++  return Point(w()*52/100, h()*47/100);
++  }
++
++int TouchInput::wheelRadius() const {
++  return int(std::min(float(h())*0.37f, 150*dp()));
++  }
++
++Point TouchInput::wheelItemPos(size_t i) const {
++  const size_t n = std::max<size_t>(wheelItems.size(),1);
++  // по часовой стрелке от верха
++  const float  a = Pi*0.5f - 2.f*Pi*float(i)/float(n);
++  const float  r = float(wheelRadius())*0.68f;
++  const auto   c = wheelCenter();
++  return Point(c.x+int(r*std::cos(a)), c.y-int(r*std::sin(a)));
++  }
++
++int TouchInput::wheelPickDir(Point dv) const {
++  const float len = std::sqrt(float(dv.x*dv.x+dv.y*dv.y));
++  if(len<28*dp() || wheelItems.empty())
++    return -1;
++  // угол от верха по часовой стрелке
++  float a = std::atan2(float(dv.x), float(-dv.y));
++  if(a<0)
++    a += 2.f*Pi;
++  const float  step = 2.f*Pi/float(wheelItems.size());
++  const size_t id   = size_t(int(std::floor(a/step+0.5f)))%wheelItems.size();
++  return wheelItems[id].enabled ? int(id) : -1;
++  }
++
++int TouchInput::wheelPickAt(Point p) const {
++  const auto  c   = wheelCenter();
++  const auto  dv  = p-c;
++  const float len = std::sqrt(float(dv.x*dv.x+dv.y*dv.y));
++  if(len>float(wheelRadius())*1.15f || len<float(wheelRadius())*0.25f)
++    return -1;
++  return wheelPickDir(dv);
++  }
++
++void TouchInput::openWheel(Wheel wh, int finger) {
++  auto pl = Gothic::inst().player();
++  if(pl==nullptr)
++    return;
++  wheelItems.clear();
++  wheelSel   = -1;
++  wheelOwner = finger;
++  wheel      = wh;
++
++  if(wh==Wheel::Weapon) {
++    const auto ws = pl->weaponState();
++    auto&      in = pl->inventory();
++    WheelItem melee;
++    melee.action = 1;
++    if(auto it = pl->currentMeleeWeapon()) {
++      melee.icon  = TouchIcons::I_Sword;
++      melee.label = std::string(it->displayName());
++      } else {
++      melee.icon  = TouchIcons::I_Fist;
++      melee.label = toCp1251("Кулаки");
++      }
++    melee.current = (ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H);
++    wheelItems.push_back(melee);
++
++    if(auto it = pl->currentRangedWeapon()) {
++      WheelItem rng;
++      rng.action  = 2;
++      rng.icon    = it->isCrossbow() ? TouchIcons::I_Crossbow : TouchIcons::I_Bow;
++      rng.label   = std::string(it->displayName());
++      rng.current = (ws==WeaponState::Bow || ws==WeaponState::CBow);
++      wheelItems.push_back(rng);
++      }
++    for(uint8_t i=0; i<8; ++i) {
++      auto spl = in.currentSpell(i);
++      if(spl==nullptr)
++        continue;
++      WheelItem sp;
++      sp.action  = uint8_t(3+i);
++      sp.icon    = spl->isRune() ? TouchIcons::I_Rune : TouchIcons::I_Scroll;
++      sp.label   = std::string(spl->displayName());
++      sp.current = (ws==WeaponState::Mage && in.currentSpellSlot()==3+i);
++      wheelItems.push_back(sp);
++      }
++    if(ws!=WeaponState::NoWeapon) {
++      WheelItem off;
++      off.action = 0;
++      off.icon   = TouchIcons::I_Hand;
++      off.label  = toCp1251("Убрать");
++      wheelItems.push_back(off);
++      }
++    }
++  else if(wh==Wheel::Squad) {
++    auto w = Gothic::inst().world();
++    bool waiting = !squad.empty(), passive = false;
++    for(auto npc:squad) {
++      waiting = waiting && w->script().squadIsWaiting(*npc);
++      passive = passive || w->script().isPassive(*npc);
++      }
++    WheelItem fl;
++    fl.action  = uint8_t(GameScript::SquadOrder::Follow);
++    fl.icon    = TouchIcons::I_Follow;
++    fl.label   = toCp1251("Ко мне");
++    fl.current = !waiting;
++    wheelItems.push_back(fl);
++
++    WheelItem at;
++    at.action  = uint8_t(GameScript::SquadOrder::Attack);
++    at.icon    = TouchIcons::I_Target;
++    auto tg    = squadTarget();
++    at.enabled = tg!=nullptr;
++    at.label   = tg!=nullptr ? toCp1251("Атаковать: ") + std::string(tg->displayName()) : toCp1251("Нет цели");
++    wheelItems.push_back(at);
++
++    WheelItem st;
++    st.action = uint8_t(passive ? GameScript::SquadOrder::Defend : GameScript::SquadOrder::Passive);
++    st.icon   = passive ? TouchIcons::I_Shield : TouchIcons::I_Passive;
++    st.label  = toCp1251(passive ? "Защищать" : "Не нападать");
++    wheelItems.push_back(st);
++
++    WheelItem wt;
++    wt.action  = uint8_t(GameScript::SquadOrder::Wait);
++    wt.icon    = TouchIcons::I_Wait;
++    wt.label   = toCp1251("Ждать здесь");
++    wt.current = waiting;
++    wheelItems.push_back(wt);
++    }
++  if(wheelItems.empty())
++    closeWheel();
++  update();
++  }
++
++void TouchInput::closeWheel() {
++  wheel      = Wheel::None;
++  wheelSel   = -1;
++  wheelOwner = -1;
++  wheelItems.clear();
++  update();
++  }
++
++void TouchInput::applyWheel(int id) {
++  if(id<0 || size_t(id)>=wheelItems.size() || !wheelItems[size_t(id)].enabled)
++    return;
++  const auto& it = wheelItems[size_t(id)];
++  if(wheel==Wheel::Weapon) {
++    ctrl.touchDrawWeapon(it.action);
++    }
++  else if(wheel==Wheel::Squad) {
++    auto w = Gothic::inst().world();
++    if(w==nullptr)
++      return;
++    const auto ord = GameScript::SquadOrder(it.action);
++    w->script().squadOrder(ord, ord==GameScript::SquadOrder::Attack ? squadTarget() : nullptr);
++    Gothic::inst().onPrint(toCp1251("Отряд: ") + it.label);
++    }
++  }
++
++void TouchInput::drawWheel(Painter& p) {
++  const auto  c  = wheelCenter();
++  const int   R  = wheelRadius();
++  const float d  = dp();
++  const int   ds = int(float(2*R)/0.88f);
++  auto&       bg = icons.disc(ds);
++  p.setBrush(Brush(bg,Color(1.f,1.f,1.f,0.95f)));
++  p.drawRect(c.x-ds/2, c.y-ds/2, ds, ds, 0,0,bg.w(),bg.h());
+ 
+-  p.setBrush(Color(1,1,1, 0.2f));
+-  p.drawRect(10, h()-10 - 100, 100, 100);
++  const int ir = int(23*d);
++  for(size_t i=0; i<wheelItems.size(); ++i) {
++    const auto& it  = wheelItems[i];
++    Button      b;
++    b.c = wheelItemPos(i);
++    b.r = ir;
++    const bool sel = int(i)==wheelSel;
++    drawRound(p, b, it.icon, sel, it.current, it.enabled ? 1.f : 0.45f);
++    const auto txt = fit(it.label, int(80*d), 0.8f);
++    drawLabel(p, txt, Point(b.c.x, b.c.y+ir+int(9*d)), sel, 0.8f);
++    }
++
++  // В центре - полное название того, что выберется
++  std::string title;
++  if(wheelSel>=0 && size_t(wheelSel)<wheelItems.size())
++    title = wheelItems[size_t(wheelSel)].label;
++  else
++    title = toCp1251(wheel==Wheel::Weapon ? "Оружие" : "Отряд");
++  drawLabel(p, fit(title, int(float(R)*0.95f), 1.f), c, true, 1.f);
+   }
+ 
+-void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
+-  auto r = Rect(10, h()-10-100, 100, 100);
+-  if(!r.contains(e.pos())) {
 +void TouchInput::mouseDownEvent(MouseEvent& e) {
-+  using M = MainWindow::TouchMode;
-+  const auto m = M(currentMode());
-+  if(m==M::Hidden || e.mouseID<0 || size_t(e.mouseID)>=fingers.size()) {
++  const Ui ui = currentUi();
++  if(ui==Ui::Hidden || e.mouseID<0 || size_t(e.mouseID)>=fingers.size()) {
      e.ignore();
      return;
      }
  
 -  mpos = e.pos();
 -  ctrl.onKeyPressed(KeyCodec::Forward, KeyEvent::K_NoKey, KeyCodec::Mapping::Primary);
-+  Ctl c = hitTest(e.pos());
-+  if(c==C_None && m==M::World) {
-+    // Левая часть экрана под верхними кнопками - джойстик, остальное - обзор
-+    const int top = int(64*dp());
-+    c = (e.x<w()*45/100 && e.y>top) ? C_Joy : C_Look;
-+    }
-+
 +  auto& f  = fingers[size_t(e.mouseID)];
 +  f        = Finger();
-+  f.ctl    = c;
 +  f.start  = e.pos();
 +  f.last   = e.pos();
 +  f.downAt = Application::tickCount();
-+  // Касание мимо кнопок на экранах со списками поглощается: случайный тап не применит предмет
++
++  // Колесо открыто и ждёт выбора: касание выбирает или закрывает его
++  if(wheel!=Wheel::None && wheelOwner<0) {
++    applyWheel(wheelPickAt(e.pos()));
++    closeWheel();
++    f.ctl = C_Absorb;
++    return;
++    }
++
++  Ctl c = hitTest(e.pos());
++  if(c==C_None) {
++    switch(ui) {
++      case Ui::World: {
++        // Левая часть экрана ниже полосок - джойстик, остальное - обзор
++        const int top = int(64*dp());
++        c = (e.x<w()*45/100 && e.y>top) ? C_Joy : C_Look;
++        break;
++        }
++      case Ui::Dialog:
++        c = C_List;
++        break;
++      case Ui::Inventory:
++        c = owner.touchInventoryGrid(e.pos()) ? C_List : C_Absorb;
++        break;
++      case Ui::Hidden:
++      case Ui::Document:
++      case Ui::LockPick:
++      case Ui::Skip:
++        // Касание мимо кнопок поглощается: случайный тап ничего не сделает
++        c = C_Absorb;
++        break;
++      }
++    }
++
++  f.ctl = c;
++  if(c==C_Joy)
++    joyRun = false;
 +  press(c, f);
++  if(c!=C_Joy && c!=C_Look && c!=C_List && c!=C_Absorb)
++    timer.start(40);
 +  update();
 +  }
 +
 +void TouchInput::mouseDragEvent(MouseEvent& e) {
 +  if(e.mouseID<0 || size_t(e.mouseID)>=fingers.size())
 +    return;
-+  auto& f  = fingers[size_t(e.mouseID)];
-+  auto pos = e.pos();
++  auto&      f   = fingers[size_t(e.mouseID)];
++  const auto pos = e.pos();
++  const float d  = dp();
++  const int  dx  = pos.x-f.start.x;
++  const int  dy  = pos.y-f.start.y;
++  if(!f.moved && dx*dx+dy*dy>int(12*d)*int(12*d))
++    f.moved = true;
++
 +  switch(f.ctl) {
 +    case C_Joy:
 +      joystick(f, pos);
@@ -1332,13 +3600,42 @@ index d9f17309..4ffe30c3 100644
 +    case C_Look:
 +      owner.touchLook(pos.x-f.last.x, pos.y-f.last.y);
 +      break;
-+    case C_Attack: {
-+      // Свайп вбок по «Удару» - боковой удар; ещё свайп - ещё удар
-+      const int dx = pos.x-f.start.x;
-+      const int dy = pos.y-f.start.y;
-+      if(std::abs(dx)>int(36*dp()) && std::abs(dx)>std::abs(dy)) {
-+        ctrl.touchSideAttack(dx<0 ? -1 : 1);
++    case C_Main: {
++      // Свайп вбок по главной кнопке: в ближнем бою - боковой удар, с луком и магией - другая цель
++      if(std::abs(dx)>int(36*d) && std::abs(dx)>std::abs(dy)) {
++        auto pl = Gothic::inst().player();
++        const auto ws = pl!=nullptr ? pl->weaponState() : WeaponState::NoWeapon;
++        if(ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H)
++          ctrl.touchSideAttack(dx<0 ? -1 : 1);
++        else if(ws!=WeaponState::NoWeapon)
++          ctrl.touchSwitchTarget(dx<0 ? -1 : 1);
 +        f.start = pos;
++        }
++      break;
++      }
++    case C_Weapon:
++    case C_Squad: {
++      // Потянуть кнопку - открыть колесо и выбрать направлением пальца
++      const auto kind = (f.ctl==C_Weapon ? Wheel::Weapon : Wheel::Squad);
++      if(wheel==Wheel::None && f.moved)
++        openWheel(kind, e.mouseID);
++      if(wheel==kind && wheelOwner==e.mouseID)
++        wheelSel = wheelPickDir(pos-f.start);
++      break;
++      }
++    case C_List: {
++      // Палец вверх-вниз по сетке сумки - листать
++      if(currentUi()==Ui::Inventory) {
++        const int row = std::max(1, owner.touchInventoryRow());
++        f.accum += pos.y-f.last.y;
++        while(f.accum<=-row) {
++          owner.touchInventoryScroll(1);
++          f.accum += row;
++          }
++        while(f.accum>=row) {
++          owner.touchInventoryScroll(-1);
++          f.accum -= row;
++          }
 +        }
 +      break;
 +      }
@@ -1353,25 +3650,83 @@ index d9f17309..4ffe30c3 100644
 +  if(e.mouseID<0 || size_t(e.mouseID)>=fingers.size())
 +    return;
 +  auto& f = fingers[size_t(e.mouseID)];
-+  release(f.ctl, f);
++  release(f.ctl, f, e.pos());
 +  f = Finger();
 +  update();
 +  }
 +
 +void TouchInput::joystick(Finger& f, Point pos) {
-+  // Вперёд/назад и вбок - отдельные оси с мёртвой зоной; как стрелки клавиатуры в Gothic
-+  const float R  = 56*dp();
-+  const float dx = float(pos.x-f.start.x)/R;
-+  const float dy = float(pos.y-f.start.y)/R;
-+  const int   fw = dy<-0.3f ? 1 : (dy>0.3f ? -1 : 0);
-+  const int   sd = dx<-0.45f ? -1 : (dx>0.45f ? 1 : 0);
-+  ctrl.setTouchMove(fw, sd);
++  // Вперёд/назад и вбок - отдельные оси с мёртвой зоной, как стрелки клавиатуры в Gothic.
++  // Чуть сдвинут - шаг, дальше - бег (с запасом, чтобы не дёргалось на границе)
++  const float R   = 56*dp();
++  float       dx  = float(pos.x-f.start.x)/R;
++  float       dy  = float(pos.y-f.start.y)/R;
++  const float len = std::sqrt(dx*dx+dy*dy);
++  if(len>1.5f) {
++    // Палец ушёл далеко - центр джойстика едет следом: смена направления без возврата пальца
++    const float k = (len-1.5f)/len;
++    f.start.x += int(float(pos.x-f.start.x)*k);
++    f.start.y += int(float(pos.y-f.start.y)*k);
++    dx = float(pos.x-f.start.x)/R;
++    dy = float(pos.y-f.start.y)/R;
++    }
++  if(joyRun && len<0.5f)
++    joyRun = false;
++  else if(!joyRun && len>0.68f)
++    joyRun = true;
++  const int fw = dy<-0.3f ? 1 : (dy>0.3f ? -1 : 0);
++  const int sd = dx<-0.45f ? -1 : (dx>0.45f ? 1 : 0);
++  ctrl.setTouchMove(fw, sd, joyRun);
++  }
++
++void TouchInput::tapWorld(Point p) {
++  // Касание по NPC - выбрать цель (для боя и приказа отряду), мимо - снять выбор
++  auto world = Gothic::inst().world();
++  auto pl    = world!=nullptr ? world->player() : nullptr;
++  auto cam   = Gothic::inst().camera();
++  if(pl==nullptr || cam==nullptr)
++    return;
++  const auto  vp   = cam->viewProj();
++  const float maxD = 48*dp();
++  const float sw   = float(w()), sh = float(h());
++  Npc*        best = nullptr;
++  float       bD   = maxD*maxD;
++  auto toScreen = [&](Vec3 v, Point& out) {
++    float pw = 1.f;
++    vp.project(v.x,v.y,v.z,pw);
++    if(pw<=0.f)
++      return false;
++    v /= pw;
++    out = Point(int((0.5f*v.x+0.5f)*sw), int((0.5f*v.y+0.5f)*sh));
++    return true;
++    };
++  world->detectNpc(pl->position(), 3000, [&](Npc& n) {
++    if(&n==pl || n.isDead())
++      return;
++    Point a, b;
++    if(!toScreen(n.displayPosition(),a) || !toScreen(n.position(),b))
++      return;
++    // расстояние от пальца до отрезка «голова - ноги» на экране
++    const float ex = float(b.x-a.x), ey = float(b.y-a.y);
++    const float ee = ex*ex+ey*ey;
++    float t = ee>0 ? (float(p.x-a.x)*ex+float(p.y-a.y)*ey)/ee : 0.f;
++    t = std::clamp(t,0.f,1.f);
++    const float qx = float(a.x)+ex*t-float(p.x), qy = float(a.y)+ey*t-float(p.y);
++    const float qd = qx*qx+qy*qy;
++    if(qd<bD) {
++      bD   = qd;
++      best = &n;
++      }
++    });
++  if(best!=nullptr && !pl->canSeeNpc(*best,true))
++    best = nullptr;
++  ctrl.setTouchTarget(best);
 +  }
 +
 +void TouchInput::press(Ctl c, Finger& f) {
 +  (void)f;
 +  switch(c) {
-+    case C_Attack:
++    case C_Main:
 +      ctrl.setTouchAttack(true);
 +      break;
 +    case C_Block:
@@ -1384,12 +3739,13 @@ index d9f17309..4ffe30c3 100644
 +      ctrl.setAutoFight(!ctrl.isAutoFight());
 +      Gothic::inst().onPrint(toCp1251(ctrl.isAutoFight() ? "Автобой включён" : "Автобой выключен"));
 +      break;
-+    case C_Potion:
-+      if(!ctrl.drinkHealPotion())
-+        Gothic::inst().onPrint(toCp1251("Нет зелий лечения"));
++    case C_Gather:
++      if(ctrl.isGathering())
++        ctrl.stopGather(false); else
++        ctrl.startGather();
 +      break;
-+    case C_Menu:
-+      owner.touchKey(Event::K_ESCAPE);
++    case C_Sneak:
++      ctrl.toggleSneak();
 +      break;
 +    case C_Bag:
 +      owner.touchMenu(KeyCodec::Inventory);
@@ -1406,14 +3762,22 @@ index d9f17309..4ffe30c3 100644
 +    case C_Right:
 +      sendNav(c);
 +      // Держать стрелку - листать список
-+      repeatCtl  = c;
-+      repeatNext = Application::tickCount()+400;
-+      repeatTimer.start(50);
++      if(c==C_Up || c==C_Down) {
++        repeatCtl  = c;
++        repeatNext = Application::tickCount()+400;
++        }
 +      break;
 +    case C_Select:
-+      owner.touchKey(Event::K_Return);
++      if(currentUi()==Ui::Inventory)
++        owner.touchInventoryDo(); else
++        owner.touchKey(Event::K_Return);
 +      break;
 +    case C_Back:
++      // Взлом: «назад» - отойти от замка; иначе - Esc (в диалоге - пропуск реплики)
++      if(currentUi()==Ui::LockPick)
++        owner.touchKey(Event::K_Down); else
++        owner.touchKey(Event::K_ESCAPE);
++      break;
 +    case C_Skip:
 +      owner.touchKey(Event::K_ESCAPE);
 +      break;
@@ -1423,18 +3787,29 @@ index d9f17309..4ffe30c3 100644
 +    case C_None:
 +    case C_Joy:
 +    case C_Look:
++    case C_List:
++    case C_Absorb:
 +    case C_Weapon:
++    case C_Potion:
++    case C_Squad:
++    case C_Map:
++    case C_Menu:
 +    case C_Count:
 +      break;
 +    }
 +  }
 +
-+void TouchInput::release(Ctl c, Finger& f) {
++void TouchInput::release(Ctl c, Finger& f, Point pos) {
++  const uint64_t dt = Application::tickCount()-f.downAt;
 +  switch(c) {
 +    case C_Joy:
-+      ctrl.setTouchMove(0, 0);
++      ctrl.setTouchMove(0, 0, true);
 +      break;
-+    case C_Attack:
++    case C_Look:
++      if(!f.moved && dt<300 && currentUi()==Ui::World)
++        tapWorld(pos);
++      break;
++    case C_Main:
 +      ctrl.setTouchAttack(false);
 +      break;
 +    case C_Block:
@@ -1444,36 +3819,70 @@ index d9f17309..4ffe30c3 100644
 +      ctrl.onKeyReleased(KeyCodec::Jump, KeyCodec::Mapping::Primary);
 +      break;
 +    case C_Weapon: {
-+      // Коснуться - меч (или последнее оружие), подержать - лук
-+      const bool longPress = Application::tickCount()-f.downAt>=450;
-+      const auto act       = longPress ? KeyCodec::WeaponBow : KeyCodec::Weapon;
-+      ctrl.onKeyPressed (act, Event::K_NoKey, KeyCodec::Mapping::Primary);
-+      ctrl.onKeyReleased(act, KeyCodec::Mapping::Primary);
++      const int id = int(&f-fingers.data());
++      if(wheel==Wheel::Weapon && wheelOwner==id) {
++        if(wheelSel>=0) {
++          applyWheel(wheelSel);
++          closeWheel();
++          }
++        else if(!f.moved) {
++          wheelOwner = -1; // открыли удержанием - колесо ждёт касания
++          }
++        else {
++          closeWheel();
++          }
++        }
++      else if(!f.held) {
++        // Коснуться - достать последнее оружие или убрать
++        ctrl.onKeyPressed (KeyCodec::Weapon, Event::K_NoKey, KeyCodec::Mapping::Primary);
++        ctrl.onKeyReleased(KeyCodec::Weapon, KeyCodec::Mapping::Primary);
++        }
 +      break;
 +      }
++    case C_Squad: {
++      const int id = int(&f-fingers.data());
++      if(wheel==Wheel::Squad && wheelOwner==id && wheelSel>=0) {
++        applyWheel(wheelSel);
++        closeWheel();
++        }
++      else if(wheel==Wheel::Squad && wheelOwner==id) {
++        wheelOwner = -1;
++        }
++      else if(wheel==Wheel::None) {
++        openWheel(Wheel::Squad, -1);
++        }
++      break;
++      }
++    case C_Potion:
++      if(!f.held && !ctrl.drinkHealPotion())
++        Gothic::inst().onPrint(toCp1251("Нет зелий лечения"));
++      break;
++    case C_Map:
++      ctrl.onKeyPressed (KeyCodec::Map, Event::K_NoKey, KeyCodec::Mapping::Primary);
++      ctrl.onKeyReleased(KeyCodec::Map, KeyCodec::Mapping::Primary);
++      break;
++    case C_Menu:
++      if(!f.held)
++        owner.touchKey(Event::K_ESCAPE);
++      break;
 +    case C_Up:
 +    case C_Down:
-+    case C_Left:
-+    case C_Right:
-+      if(repeatCtl==c) {
++      if(repeatCtl==c)
 +        repeatCtl = C_None;
-+        repeatTimer.stop();
++      break;
++    case C_List:
++      if(currentUi()==Ui::Inventory) {
++        if(!f.moved)
++          owner.touchInventoryDown(pos);
++        owner.touchInventoryUp();
++        }
++      else if(currentUi()==Ui::Dialog && !f.moved) {
++        owner.touchDialogTap(pos);
 +        }
 +      break;
 +    default:
 +      break;
 +    }
-+  }
-+
-+void TouchInput::releaseAll() {
-+  for(auto& f:fingers) {
-+    // Кнопку оружия при смене экрана не нажимаем
-+    if(f.ctl!=C_Weapon)
-+      release(f.ctl, f);
-+    f = Finger();
-+    }
-+  repeatCtl = C_None;
-+  repeatTimer.stop();
    }
  
 -void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
@@ -1482,20 +3891,77 @@ index d9f17309..4ffe30c3 100644
 -  if(std::abs(dp.x)>0) {
 -    const float scale = 4.f;
 -    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
-+void TouchInput::onRepeat() {
-+  if(repeatCtl==C_None) {
-+    repeatTimer.stop();
-+    return;
++void TouchInput::releaseAll() {
++  for(size_t i=0; i<fingers.size(); ++i) {
++    auto& f = fingers[i];
++    // Кнопки с действием на отпускание при смене экрана не срабатывают
++    switch(f.ctl) {
++      case C_Weapon:
++      case C_Squad:
++      case C_Potion:
++      case C_Map:
++      case C_Menu:
++      case C_Look:
++      case C_List:
++        break;
++      default:
++        release(f.ctl, f, f.last);
++        break;
++      }
++    f = Finger();
      }
-+  const uint64_t now = Application::tickCount();
-+  if(now<repeatNext)
-+    return;
-+  repeatNext = now+120;
-+  sendNav(repeatCtl);
++  repeatCtl = C_None;
++  timer.stop();
++  if(wheel!=Wheel::None)
++    closeWheel();
    }
  
 -void TouchInput::mouseUpEvent(Tempest::MouseEvent& e) {
 -  ctrl.onKeyReleased(KeyCodec::Forward, KeyCodec::Mapping::Primary);
++void TouchInput::onTimer() {
++  const uint64_t now  = Application::tickCount();
++  bool           busy = false;
++  for(size_t i=0; i<fingers.size(); ++i) {
++    auto& f = fingers[i];
++    if(f.ctl==C_None || f.held)
++      continue;
++    // Долгое нажатие: колесо оружия, зелье маны, быстрое сохранение
++    if(f.ctl==C_Weapon && !f.moved) {
++      busy = true;
++      if(now-f.downAt>=300) {
++        f.held = true;
++        if(wheel==Wheel::None)
++          openWheel(Wheel::Weapon, int(i));
++        }
++      }
++    if(f.ctl==C_Potion && !f.moved) {
++      busy = true;
++      if(now-f.downAt>=450 && ctrl.potionCount(true)>0) {
++        f.held = true;
++        ctrl.drinkManaPotion();
++        }
++      }
++    if(f.ctl==C_Menu && !f.moved) {
++      busy = true;
++      if(now-f.downAt>=700) {
++        f.held = true;
++        owner.touchQuickSave();
++        }
++      }
++    }
++
++  if(repeatCtl!=C_None) {
++    busy = true;
++    if(now>=repeatNext) {
++      repeatNext = now+120;
++      sendNav(repeatCtl);
++      }
++    }
++  if(!busy)
++    timer.stop();
++  update();
++  }
++
 +void TouchInput::sendNav(Ctl c) {
 +  switch(c) {
 +    case C_Up:    owner.touchKey(Event::K_Up);    break;
@@ -1506,10 +3972,10 @@ index d9f17309..4ffe30c3 100644
 +    }
    }
 diff --git a/common/ui/touchinput.h b/common/ui/touchinput.h
-index f46becce..97797a54 100644
+index f46becc..c218e93 100644
 --- a/common/ui/touchinput.h
 +++ b/common/ui/touchinput.h
-@@ -1,21 +1,88 @@
+@@ -1,21 +1,170 @@
  #pragma once
  
  #include <Tempest/Widget>
@@ -1517,16 +3983,22 @@ index f46becce..97797a54 100644
  
 +#include <array>
 +#include <string>
++#include <vector>
++
++#include "touchicons.h"
 +
 +class MainWindow;
  class PlayerControl;
++class Npc;
  
-+// Gothic II Mobile: сенсорное управление поверх игры.
-+// Мир: джойстик слева (плавающий), обзор пальцем справа, «Удар» (держать - серия ударов в окно комбо,
-+// свайп вбок - боковой удар), «Блок», «Прыжок», «Оружие» (долго - лук), «Автобой», «Зелье»,
-+// сверху - «Меню», «Сумка», «Журнал», «Герой».
-+// Диалог, сумка, торговля: стрелки, «Выбрать», «Назад»; сундук и тело - ещё «Взять всё».
-+// Ролик и сцена: «Пропустить».
++// Gothic II Mobile: сенсорное управление поверх игры. Подробно - docs/CONTROLS.md.
++// Мир: плавающий джойстик слева (чуть - шаг, до края - бег), обзор пальцем справа, касание по NPC -
++// выбрать цель. Справа внизу дуга под большим пальцем: главная кнопка (говорить/взять/удар/выстрел/
++// магия - по обстановке), вокруг - «Блок», «Прыжок», «Оружие» (подержать - колесо оружия и заклинаний),
++// дальше - «Зелье», «Автобой», «Собрать» (когда есть что), «Отряд» (когда есть напарники).
++// Справа вверху - «Сумка», «Карта», «Журнал», «Герой», «Меню» (подержать - быстрое сохранение).
++// Слева вверху - полоски игры и состояние отряда. Диалог: касание по реплике, «Выбрать», «Пропуск».
++// Сумка, сундук, торговля: касание по ячейке, листать пальцем, «Взять всё». Взлом: влево/вправо.
  class TouchInput : public Tempest::Widget {
    public:
 -    TouchInput(PlayerControl& ctrl);
@@ -1542,22 +4014,29 @@ index f46becce..97797a54 100644
 +    void mouseUpEvent  (Tempest::MouseEvent& e) override;
  
    private:
+-    PlayerControl& ctrl;
 +    enum Ctl : uint8_t {
 +      C_None,
 +      C_Joy,
 +      C_Look,
++      C_List,   // палец на списке: реплики диалога, ячейки сумки
++      C_Absorb, // касание мимо кнопок поглощено
 +      // мир
-+      C_Attack,
++      C_Main,
 +      C_Block,
 +      C_Jump,
 +      C_Weapon,
-+      C_Auto,
 +      C_Potion,
-+      C_Menu,
++      C_Auto,
++      C_Gather,
++      C_Squad,
++      C_Sneak,
 +      C_Bag,
++      C_Map,
 +      C_Log,
 +      C_Hero,
-+      // экраны со списками
++      C_Menu,
++      // экраны со списками и взлом
 +      C_Up,
 +      C_Down,
 +      C_Left,
@@ -1569,45 +4048,115 @@ index f46becce..97797a54 100644
 +      C_Skip,
 +      C_Count
 +      };
-+
-+    struct Finger {
-+      Ctl            ctl = C_None;
-+      Tempest::Point start;
-+      Tempest::Point last;
-+      uint64_t       downAt = 0;
-+      };
-+
-+    MainWindow&    owner;
-     PlayerControl& ctrl;
  
 -    Tempest::Point mpos;
 -  };
-+    std::array<Finger,10> fingers = {};
-+    uint8_t        lastMode   = 0;
-+    Ctl            repeatCtl  = C_None;
-+    uint64_t       repeatNext = 0;
-+    Tempest::Timer repeatTimer;
++    enum class Ui : uint8_t {
++      Hidden,
++      World,
++      Dialog,
++      Inventory,
++      Document,
++      LockPick,
++      Skip,
++      };
++
++    enum class Wheel : uint8_t {
++      None,
++      Weapon,
++      Squad,
++      };
++
++    struct Finger {
++      Ctl            ctl    = C_None;
++      Tempest::Point start;
++      Tempest::Point last;
++      uint64_t       downAt = 0;
++      bool           moved  = false;
++      bool           held   = false; // долгое нажатие уже сработало
++      int            accum  = 0;     // сдвиг пальца по списку, ещё не пролистанный
++      };
++
++    struct Button {
++      Tempest::Point c;      // центр круглой кнопки
++      int            r = 0;  // радиус; 0 - кнопка-«пилюля» rect
++      Tempest::Rect  rect;
++      };
++
++    struct WheelItem {
++      TouchIcons::Icon icon    = TouchIcons::I_Sword;
++      std::string      label;
++      uint8_t          action  = 0;
++      bool             enabled = true;
++      bool             current = false;
++      };
++
++    struct MainCtx {
++      TouchIcons::Icon icon  = TouchIcons::I_Hand;
++      std::string      label;
++      bool             dim   = false;
++      };
  
++    MainWindow&            owner;
++    PlayerControl&         ctrl;
++    TouchIcons             icons;
++
++    std::array<Finger,10>  fingers    = {};
++    Ui                     lastUi     = Ui::Hidden;
++    Ctl                    repeatCtl  = C_None;
++    uint64_t               repeatNext = 0;
++    Tempest::Timer         timer;
++    bool                   joyRun     = false;
++
++    Wheel                  wheel      = Wheel::None;
++    std::vector<WheelItem> wheelItems;
++    int                    wheelSel   = -1;
++    int                    wheelOwner = -1; // палец, открывший колесо; -1 - колесо ждёт касания
++
++    std::vector<Npc*>      squad;
++
 +    float          dp() const;
-+    uint8_t        currentMode() const;
-+    Tempest::Rect  rectOf(Ctl c) const;
-+    Ctl            hitTest(Tempest::Point p) const;
++    Ui             currentUi() const;
++    Button         buttonOf(Ctl c) const;
 +    bool           isShown(Ctl c) const;
-+    std::string    label(Ctl c) const;
++    Ctl            hitTest(Tempest::Point p) const;
++    bool           isPressed(Ctl c) const;
++    MainCtx        mainContext() const;
++    Npc*           squadTarget() const;
++    std::string    fit(std::string txt, int maxW, float scale) const;
 +
 +    void           press  (Ctl c, Finger& f);
-+    void           release(Ctl c, Finger& f);
++    void           release(Ctl c, Finger& f, Tempest::Point pos);
 +    void           releaseAll();
-+    void           onRepeat();
++    void           onTimer();
 +    void           sendNav(Ctl c);
 +    void           joystick(Finger& f, Tempest::Point pos);
++    void           tapWorld(Tempest::Point p);
 +
-+    void           drawButton(Tempest::Painter& p, Ctl c, bool pressed, bool active);
++    void           openWheel(Wheel w, int finger);
++    void           closeWheel();
++    Tempest::Point wheelCenter() const;
++    int            wheelRadius() const;
++    Tempest::Point wheelItemPos(size_t i) const;
++    int            wheelPickDir(Tempest::Point d) const;
++    int            wheelPickAt (Tempest::Point p) const;
++    void           applyWheel(int id);
++
++    void           drawRound   (Tempest::Painter& p, const Button& b, TouchIcons::Icon ic, bool pressed, bool active, float alpha);
++    void           drawGlyph   (Tempest::Painter& p, TouchIcons::Icon ic, Tempest::Point c, int size, const Tempest::Color& cl);
++    void           drawPill    (Tempest::Painter& p, const Tempest::Rect& r, TouchIcons::Icon ic, std::string_view label, bool pressed);
++    void           drawLabel   (Tempest::Painter& p, std::string_view txt, Tempest::Point c, bool hi, float scale);
++    void           drawMain    (Tempest::Painter& p);
 +    void           drawJoystick(Tempest::Painter& p);
++    void           drawWheel   (Tempest::Painter& p);
++    void           drawTarget  (Tempest::Painter& p);
++    void           drawSquad   (Tempest::Painter& p);
++    void           drawBadge   (Tempest::Painter& p, const Button& b, size_t n);
++    void           drawHoldRing(Tempest::Painter& p, const Button& b, float k);
 +  };
 diff --git a/common/utils/cp1251.h b/common/utils/cp1251.h
 new file mode 100644
-index 00000000..0edac343
+index 0000000..0edac34
 --- /dev/null
 +++ b/common/utils/cp1251.h
 @@ -0,0 +1,31 @@
@@ -1643,7 +4192,7 @@ index 00000000..0edac343
 +  return ret;
 +  }
 diff --git a/common/utils/installdetect.cpp b/common/utils/installdetect.cpp
-index 1624d795..461c1e1f 100644
+index 1624d79..461c1e1 100644
 --- a/common/utils/installdetect.cpp
 +++ b/common/utils/installdetect.cpp
 @@ -1,6 +1,7 @@
@@ -1677,7 +4226,7 @@ index 1624d795..461c1e1f 100644
    if(path.empty())
      return u"";
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e0153980..c5c96efc 100644
+index e015398..c5c96ef 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -1555,7 +1555,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
@@ -1760,7 +4309,7 @@ index e0153980..c5c96efc 100644
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 73099364..af43e6f1 100644
+index 7309936..af43e6f 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
 @@ -289,6 +289,14 @@ class Npc final {
@@ -1787,7 +4336,7 @@ index 73099364..af43e6f1 100644
  
      float                          angleY   = 0.f;
 diff --git a/shader/materials/visibility_pass.comp b/shader/materials/visibility_pass.comp
-index 378d837a..570542f8 100644
+index 378d837..570542f 100644
 --- a/shader/materials/visibility_pass.comp
 +++ b/shader/materials/visibility_pass.comp
 @@ -23,6 +23,8 @@ layout(push_constant, std430) uniform UboPush {
