@@ -47,7 +47,8 @@ Android-приложение «Gothic II»: запускает **лицензи�
   - напарники (`common/game/companions.cpp`): найм безымянных NPC в диалоге за 10 золотых/уровень (до 6),
     `AIV_PARTYMEMBER` + `ZS_Follow_Player`, опыт за их убийства даёт сама игра (`ZS_Dead`); не погибают
     (`Npc::onNoHealth` → без сознания, `canFinish`), не обирают и не обираются, зелья перед `ZS_HealSelf`
-    (`AI_StartState` → `GameScript::companionState`); обмен даром (`DlgChoice::freeTrade`); привал —
+    (`AI_StartState` → `GameScript::companionState`); не обижаются на героя (`companionPerceives`,
+    `companionForgive`); выпавшее оружие ничьё (`ITM_DROPPED`); обмен даром (`DlgChoice::freeTrade`); привал —
     случайные занятия и беседы (`tickSquadIdle`, цикл распорядка молчит — `Npc::isCompanionIdle`);
   - графика из `g2m.ini` (`Gothic::Gothic`): FPS, внутреннее разрешение, тени (выкл/512–2048), отражения,
     лучи солнца, дальность прорисовки и отсечение мелочи (`visibility_pass.comp`); рендер ждёт видеокарту;
