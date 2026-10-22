@@ -30,6 +30,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import gothic2.mobile.og.ai.AiSettings;
+
 /**
  * Экран запуска: разрешение «Файлы», поиск папки игры (System, Data, _work), выбор вручную,
  * «Играть», графика, сохранение журнала в «Загрузки», сведения о лицензиях. Путь к игре движок
@@ -51,6 +53,7 @@ public class LauncherActivity extends Activity {
     private boolean searching;
     private GraphicsSettings graphics;
     private TextView graphicsSummary;
+    private Button aiButton;
     private final List<Runnable> graphicsRefresh = new ArrayList<>();
 
     @Override
@@ -82,6 +85,8 @@ public class LauncherActivity extends Activity {
         col.addView(button("Выбрать папку игры", v -> startActivityForResult(
             new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER)));
         col.addView(button("Сохранить журнал в «Загрузки»", v -> saveLog()));
+        aiButton = button("", v -> startActivity(new Intent(this, AiSettingsActivity.class)));
+        col.addView(aiButton);
 
         graphics = new GraphicsSettings(prefs());
         // Первый запуск: на слабом телефоне сразу «Экономно» (оценка самого быстрого ядра процессора)
@@ -135,6 +140,8 @@ public class LauncherActivity extends Activity {
     }
 
     private void refresh() {
+        boolean aiOn = AiSettings.of(getSharedPreferences("ai", MODE_PRIVATE)).enabled();
+        aiButton.setText("Живой NPC — Геральт (ИИ): " + (aiOn ? "включён" : "выключен"));
         boolean granted = hasPermission();
         permission.setVisibility(granted ? View.GONE : View.VISIBLE);
         if (!granted) {

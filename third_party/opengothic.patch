@@ -218,10 +218,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..19d75b1
+index 0000000..90790b1
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,1452 @@
+@@ -0,0 +1,1472 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -483,6 +483,9 @@ index 0000000..19d75b1
 +      npc.addItem(id,n);
 +    };
 +  equip("ITAR_DJG_L");
++  // Доспехи ополчения из скрипта Торуса - не его
++  if(const size_t mil = owner.findSymbolIndex("ITAR_MIL_M"); mil!=size_t(-1) && npc.itemCount(mil)>0)
++    npc.delItem(mil,uint32_t(npc.itemCount(mil)));
 +  equip("ITMW_SCHWERT5");       // «стальной» - на людей
 +  give ("ITMW_1H_SPECIAL_01",1); // рудный - вместо серебряного, на нечисть
 +  give ("ITPO_HEALTH_02",5);
@@ -726,6 +729,21 @@ index 0000000..19d75b1
 +  return true;
 +  }
 +
++void AiNpc::skipLines() {
++  const uint64_t now = owner.tickCount();
++  bool any = false;
++  for(auto& l:lines)
++    if(l.started && !l.overlay && l.endsAt>now) {
++      l.endsAt = now;
++      any      = true;
++      }
++  if(any)
++    AiLink::send("{\"ev\":\"line_skip\"}");
++  // «Назад», пока модель молчит: выбор реплик возвращается (можно уйти), ответ придёт позже субтитрами
++  if(!any && busy)
++    busy = false;
++  }
++
 +void AiNpc::tickLines(uint64_t now) {
 +  for(auto& l:lines) {
 +    if(l.endsAt==0 || now<l.endsAt)
@@ -859,9 +877,12 @@ index 0000000..19d75b1
 +  }
 +
 +void AiNpc::sendReady() {
++  // load=1 - первый раз за сеанс игры (новая игра или загрузка сохранения): приложение читает память
++  // этого сохранения; потом (смена мира и обратно) - память сеанса остаётся
 +  auto& h = geralt->handle();
 +  AiLink::send(std::string("{\"ev\":\"ready\",\"story\":")+std::to_string(h.aivar[AivStory])+
-+               ",\"token\":"+std::to_string(h.aivar[AivToken])+"}");
++               ",\"token\":"+std::to_string(h.aivar[AivToken])+",\"load\":"+(sessionReady ? "0" : "1")+"}");
++  sessionReady = true;
 +  }
 +
 +void AiNpc::onHit(Npc& attacker, Npc& victim) {
@@ -1202,8 +1223,7 @@ index 0000000..19d75b1
 +    static const struct { const char* name; const char* zs; } list[] = {
 +      {"stand","ZS_STAND_ARMSCROSSED"}, {"guard","ZS_STAND_GUARDING"}, {"sit","ZS_SIT_CAMPFIRE"},
 +      {"practice_sword","ZS_PRACTICE_SWORD"}, {"eat","ZS_STAND_EATING"}, {"drink","ZS_STAND_DRINKING"},
-+      {"look_around","ZS_STAND_WP"}, {"sweep","ZS_STAND_SWEEPING"}, {"meditate","ZS_PRAY_INNOS"},
-+      {"smoke","ZS_SMOKE_JOINT"}, {"sleep","ZS_SLEEP"}, {"roast","ZS_ROAST_SCAVENGER"},
++      {"look_around","ZS_STAND_WP"}, {"smoke","ZS_SMOKE_JOINT"},
 +      };
 +    const std::string act = str(args,"name");
 +    for(auto& i:list)
@@ -1676,10 +1696,10 @@ index 0000000..19d75b1
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..889f77d
+index 0000000..21ce05e
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,172 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -1729,6 +1749,8 @@ index 0000000..889f77d
 +    bool lineTime (std::string_view id, uint32_t& ms) const;
 +    // Реплика началась (в диалоге или вне его): звук - в приложении. false - не наша реплика
 +    bool lineStart(Npc& speaker, std::string_view id, bool inDialog);
++    // Касание пропустило реплику в диалоге: голос обрывается, реплика считается сказанной
++    void skipLines();
 +
 +    // Субтитры реплик вне диалога (MainWindow::paintEvent)
 +    void paint(Tempest::Painter& p, int w, int h, float scale);
@@ -1823,6 +1845,7 @@ index 0000000..889f77d
 +    Npc*                           geralt      = nullptr;
 +    World*                         geraltWorld = nullptr;
 +    bool                           readySent   = false;
++    bool                           sessionReady = false;
 +    bool                           wasEnabled  = false;
 +    uint64_t                       insertTry   = 0;
 +
@@ -6990,7 +7013,7 @@ index 3fb2713..a49b58a 100644
 +#endif
    };
 diff --git a/common/ui/dialogmenu.cpp b/common/ui/dialogmenu.cpp
-index 5a7db4d..6b7023c 100644
+index 5a7db4d..f4f15e8 100644
 --- a/common/ui/dialogmenu.cpp
 +++ b/common/ui/dialogmenu.cpp
 @@ -5,9 +5,11 @@
@@ -7062,7 +7085,17 @@ index 5a7db4d..6b7023c 100644
    dlgTrade=false;
    }
  
-@@ -411,6 +426,7 @@ void DialogMenu::onEntry(const GameScript::DlgChoice &e) {
+@@ -401,6 +416,9 @@ void DialogMenu::skipPhrase() {
+       pl->setAiOutputBarrier(0,false);
+     if(other!=nullptr)
+       other->setAiOutputBarrier(0,false);
++    // Gothic II Mobile: пропуск реплики живого NPC обрывает и её голос в приложении
++    if(other!=nullptr)
++      other->world().script().aiNpc().skipLines();
+     currentSnd   = SoundEffect();
+     current.time = 1;
+     }
+@@ -411,6 +429,7 @@ void DialogMenu::onEntry(const GameScript::DlgChoice &e) {
      selected = e;
      depth    = 1;
      dlgTrade = e.isTrade;
@@ -7070,7 +7103,7 @@ index 5a7db4d..6b7023c 100644
      except.push_back(e.scriptFn);
      Gothic::inst().dialogExec(e,*pl,*other);
  
-@@ -527,6 +543,48 @@ void DialogMenu::paintChoice(PaintEvent &e) {
+@@ -527,6 +546,48 @@ void DialogMenu::paintChoice(PaintEvent &e) {
      }
    }
  

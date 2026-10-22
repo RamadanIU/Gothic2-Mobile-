@@ -9,6 +9,9 @@
 
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <!-- Живой NPC (docs/AI_NPC.md): языковая модель и облачные голоса по ключу игрока, речь игрока -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:label="Gothic II"
@@ -35,6 +38,12 @@
             android:screenOrientation="sensorLandscape" />
 
         <activity
+            android:name=".AiSettingsActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".GameActivity"
             android:exported="false"
             android:screenOrientation="sensorLandscape"
@@ -43,4 +52,14 @@
             <meta-data android:name="android.app.lib_name" android:value="Gothic2Notr" />
         </activity>
     </application>
+
+    <!-- Распознавание речи (SpeechRecognizer) на Android 11+ видно только так -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
 </manifest>
