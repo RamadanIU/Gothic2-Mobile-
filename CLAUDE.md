@@ -46,8 +46,10 @@ Android-приложение «Gothic II»: запускает **лицензи�
     быстрая загрузка с подтверждением); любое сохранение — во временный файл и замена одним шагом;
   - «Путь» — быстрое перемещение: места `common/game/travelpoints.*` (62, метки разработчиков, точки рун и
     распорядков; карты и координаты — как у карт-предметов), карта с путём `TouchInput::drawTravelMap` (игра на
-    паузе), бегом — `PlayerControl::tickTravelRun` (сеть путей, бой автобоем, сбор добычи, стража, застревание),
-    мгновенно — `tickTravelFade` + `GameScript::squadArrive`;
+    паузе), бегом — `PlayerControl::tickTravelRun` (сеть путей, бой автобоем, сбор добычи, стража, застревание;
+    галочки «Сражаться»/«Собирать лут» — `TravelOptions`), мгновенно — `tickTravelFade` + `GameScript::squadArrive`;
+    камера в пути — `common/game/travelcamera.*` (ракурсы и «кино»; откуда и куда смотреть — `Camera::setDirector`,
+    палец крутит только камеру — `MainWindow::tickMouse`);
   - отряд (`companions.cpp`: `squadOrder`, `tickSquad`): «ко мне», «ждать», «атаковать цель», «не нападать»
     (`aivar[95]`), напарники вступаются за героя через `B_Attack`; «Собрать» (`PlayerControl::tickGather`);
   - удержание «Удара» = удар только в окно комбо (`Pose::isComboWindow`, `PlayerControl::tickTouchAttack`);
@@ -73,7 +75,7 @@ Android-приложение «Gothic II»: запускает **лицензи�
 ## Следующие действия
 
 1. Ждём от пользователя: новое управление, отряд в драках с людьми, «Собрать», «Путь» (стоят ли метки там, где
-   подписаны), быстрое сохранение, нагрев на новой графике (docs/PROGRESS.md, последний раздел «Ожидается от
+   подписаны; камера в пути, галочки), быстрое сохранение, нагрев на новой графике (docs/PROGRESS.md, последний раздел «Ожидается от
    пользователя»; docs/TEST_PLAN.md).
 2. Дальше — docs/ROADMAP.md: настройка размера/прозрачности кнопок и левша, надёжные сохранения, классика,
    слабые телефоны, OpenAL Soft (LGPL) перед выпуском.
@@ -116,6 +118,7 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
   ```bash
   cd third_party/opengothic
   git add -N common/game/companions.cpp common/game/travelpoints.cpp common/game/travelpoints.h common/utils/cp1251.h \
+    common/game/travelcamera.cpp common/game/travelcamera.h \
     common/ui/touchicons.cpp common/ui/touchicons.h   # и другие новые файлы; не -A: build/ не в .gitignore движка
   git diff --ignore-submodules=all > ../opengothic.patch && git reset -q
   git -C lib/Tempest diff > ../opengothic-tempest.patch
