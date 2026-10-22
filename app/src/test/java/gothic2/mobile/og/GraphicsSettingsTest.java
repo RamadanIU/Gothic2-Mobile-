@@ -1,6 +1,7 @@
 package gothic2.mobile.og;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -19,8 +20,8 @@ public class GraphicsSettingsTest {
         String ini = new GraphicsSettings(new MemoryPrefs()).iniText();
         assertTrue(ini.startsWith("[GRAPHICS]\n"));
         // Ключи читает Gothic::Gothic (патч движка): переименование здесь сломает настройки
-        for (String key : new String[]{"resolution=1", "fpsLimit=30", "shadowResolution=1024",
-            "viewDistance=500", "detailRatio=0.006", "reflections=0", "sunshafts=0"}) {
+        for (String key : new String[]{"resolution=1", "upscale=1", "fpsLimit=30", "shadowResolution=1024",
+            "viewDistance=500", "detailRatio=0.006", "anisotropy=4", "windRange=60", "reflections=0", "sunshafts=0"}) {
             assertTrue(key, ini.contains("\n" + key + "\n"));
         }
     }
@@ -45,6 +46,64 @@ public class GraphicsSettingsTest {
         g.applyPreset(2);
         assertEquals(2, g.currentPreset());
         assertTrue(g.iniText().contains("\nviewDistance=0\n"));
+    }
+
+    @Test
+    public void economyPresetIsCheapEverywhere() {
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        g.applyPreset(GraphicsSettings.ECONOMY_PRESET);
+        String ini = g.iniText();
+        for (String key : new String[]{"resolution=2", "upscale=0", "fpsLimit=30", "shadowResolution=0",
+            "viewDistance=250", "anisotropy=2", "reflections=0", "sunshafts=0"}) {
+            assertTrue(key, ini.contains("\n" + key + "\n"));
+        }
+        assertEquals(30, g.fpsLimit());
+    }
+
+    @Test
+    public void newOptionsFollowPresetOfOlderSettings() {
+        // Настройки прежней версии: «Экономно» сохранён по параметрам, без номера набора и без новых параметров
+        MemoryPrefs prefs = new MemoryPrefs();
+        int[] economyOld = {2, 0, 0, 1, 0, 0, 0};
+        GraphicsSettings.Option[] old = {GraphicsSettings.RESOLUTION, GraphicsSettings.FPS, GraphicsSettings.SHADOWS,
+            GraphicsSettings.VIEW, GraphicsSettings.DETAIL, GraphicsSettings.REFLECTIONS, GraphicsSettings.SUNSHAFTS};
+        for (int i = 0; i < old.length; i++) prefs.values.put(old[i].key, economyOld[i]);
+        GraphicsSettings g = new GraphicsSettings(prefs);
+        assertEquals(GraphicsSettings.ECONOMY_PRESET, g.currentPreset());
+        assertEquals("Растяжение до экрана: простое (быстрее)", g.label(GraphicsSettings.UPSCALE));
+        assertEquals("Чёткость текстур вдали: 2x", g.label(GraphicsSettings.ANISOTROPY));
+    }
+
+    @Test
+    public void untouchedUntilSomethingIsChosen() {
+        MemoryPrefs prefs = new MemoryPrefs();
+        GraphicsSettings g = new GraphicsSettings(prefs);
+        assertTrue(g.isUntouched());
+        g.cycle(GraphicsSettings.WIND);
+        assertFalse(g.isUntouched());
+        GraphicsSettings h = new GraphicsSettings(new MemoryPrefs());
+        h.applyPreset(GraphicsSettings.DEFAULT_PRESET);
+        assertFalse(h.isUntouched());
+    }
+
+    @Test
+    public void unlimitedFpsIsZero() {
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        g.cycle(GraphicsSettings.FPS); // 30 → 45
+        g.cycle(GraphicsSettings.FPS); // 45 → 60
+        assertEquals(60, g.fpsLimit());
+        g.cycle(GraphicsSettings.FPS); // 60 → без ограничения
+        assertEquals(0, g.fpsLimit());
+    }
+
+    @Test
+    public void fpsCounterIsNotPartOfPresets() {
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        assertTrue(g.iniText().contains("\nshowFps=0\n"));
+        g.cycle(GraphicsSettings.SHOW_FPS);
+        assertEquals("Счётчик кадров на экране: показан", g.label(GraphicsSettings.SHOW_FPS));
+        assertEquals(GraphicsSettings.DEFAULT_PRESET, g.currentPreset());
+        assertTrue(g.iniText().contains("\nshowFps=1\n"));
     }
 
     @Test

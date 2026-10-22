@@ -27,6 +27,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -83,6 +84,15 @@ public class LauncherActivity extends Activity {
         col.addView(button("Сохранить журнал в «Загрузки»", v -> saveLog()));
 
         graphics = new GraphicsSettings(prefs());
+        // Первый запуск: на слабом телефоне сразу «Экономно» (оценка самого быстрого ядра процессора)
+        if (graphics.isUntouched()) {
+            Double score = DevicePerformance.scoreOfThisDevice();
+            boolean weak = score != null && score < DevicePerformance.MIN_SCORE;
+            graphics.applyPreset(weak ? GraphicsSettings.ECONOMY_PRESET : GraphicsSettings.DEFAULT_PRESET);
+            if (weak) {
+                Toast.makeText(this, "Телефон слабее, чем нужно игре: графика — «Экономно».", Toast.LENGTH_LONG).show();
+            }
+        }
         addGraphicsSection(col, pad);
 
         TextView help = text(
@@ -186,7 +196,9 @@ public class LauncherActivity extends Activity {
         }
         col.addView(presets);
 
-        for (GraphicsSettings.Option o : GraphicsSettings.ALL) {
+        List<GraphicsSettings.Option> options = new ArrayList<>(Arrays.asList(GraphicsSettings.ALL));
+        options.addAll(Arrays.asList(GraphicsSettings.EXTRA));
+        for (GraphicsSettings.Option o : options) {
             Button b = button("", v -> {
                 graphics.cycle(o);
                 refreshGraphics();

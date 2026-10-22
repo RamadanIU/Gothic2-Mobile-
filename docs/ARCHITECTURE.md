@@ -44,9 +44,16 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
 | Лагерь «Ждать здесь»: на месте, точка-метка `G2M_CAMP`, цикл распорядка молчит; сон не уносит напарников | `GameScript::squadCamp`, `Npc::isCompanionCamp`, `Npc::resetPositionToTA` |
 | Враги отряда: бьют своих, угрожают, ударены героем (отметки `squadNoteHit` из `Npc::takeDamage`) | `GameScript::squadThreat/squadEnemy` |
 | В пути: строй позади героя, след героя, путь по точкам, телепорт отставших; точка на земле — `GT_Point` | `GameScript::tickSquadFollow`, `Npc::goToPos`, `Npc::GoTo::isClose` |
-| Графика из `g2m.ini`: FPS, разрешение, тени, отражения, лучи солнца | `Gothic::Gothic`, `Renderer::setupSettings` |
-| Дальность прорисовки и отсечение мелочи по угловому размеру | `shader/materials/visibility_pass.comp`, `DrawCommands::visibilityPass` |
-| Рендер ждёт видеокарту, а не крутит цикл | `MainWindow::render` |
+| Графика из `g2m.ini`: FPS, разрешение, растяжение до экрана, тени, анизотропия, ветер, отражения, лучи солнца, счётчик кадров | `Gothic::Gothic`, `Renderer::setupSettings`, `game/main.cpp` (анизотропия — до создания устройства) |
+| Дальность прорисовки и отсечение мелочи по угловому размеру; свой порог у каждого объекта (трава редеет без линии); в тенях мелочь — вдвое ближе; лежащие предметы — втрое дальше | `shader/materials/visibility_pass.comp`, `DrawCommands::visibilityPass`, `VisualObjects::setCullScale`, `WorldView::addItmView` |
+| Дымка у границы прорисовки: дальнее переходит в цвет неба, а не обрывается | `shader/sky/fog.frag`, `Renderer::drawFog` |
+| Скелеты NPC по дальности и видимости: рядом — каждый кадр, дальше — через 2/4/8/16 кадров | `Npc::animLodDue/updateAnimationLod`, `WorldObjects::updateAnimation` |
+| Ветер — только у камеры (до 60/150 м, затухание к границе), дальше через кадр | `VisualObjects::preFrameUpdateWind` |
+| Небо по направлениям (viewLut) — раз в 4 кадра; туман 128×72×48; свет дальше прорисовки не рисуется | `Renderer::prepareSky`, `Renderer::resetSkyFog`, `shader/lighting/light.vert` |
+| Анизотропия не выше настройки; простое растяжение до экрана (без Ланцоша) | `Sampler::setAnisotropyLimit` (Tempest), `Renderer::drawTonemapping` |
+| Шейдеры в Release без отладочной информации (SPIR-V втрое меньше, APK 27 → 17 МБ) | `shader/CMakeLists.txt` |
+| Рендер ждёт видеокарту, а не крутит цикл; точный ограничитель кадров; строка `[perf]` раз в 10 с; охлаждение — 30 FPS при сильном нагреве | `MainWindow::render/perfReport/effectiveFps` |
+| Подсказки планировщику (ADPF) и состояние перегрева — из `libandroid.so` по имени | `common/utils/mobileperf.*`, счётчики `common/utils/perfstats.h` |
 | «Взять всё» | `InventoryMenu::takeAll` |
 | Быстрое сохранение: кнопка, запреты (бой, прыжок, разговор), итог записи, быстрая загрузка с подтверждением | `MainWindow::touchQuickSave/touchQuickSaveInfo/touchQuickLoad`, `MainWindow::tick` (`savePending`), `TouchInput::openConfirm` |
 | Сохранение во временный файл и замена одним шагом; очередь ИИ героя (путь, сбор) не сохраняется | `MainWindow::saveGame`, `PlayerControl::onSaveGame` |
@@ -70,6 +77,11 @@ Tempest превращает касания в события мыши с ном
 Управление на телефоне — всегда схема Gothic II (`g2Ctrl`).
 
 ## Сборка
+
+Экран игры (`GameActivity`) подстраивает частоту дисплея под ограничение кадров: режим дисплея с наименьшей
+кратной частотой не ниже 60 Гц (`preferredDisplayModeId`) и `Surface.setFrameRate` (Android 11+). Манифест —
+`appCategory="game"`. Экран запуска при первом запуске выбирает «Экономно» на слабом телефоне
+(`DevicePerformance`: самое быстрое ядро по `/proc/cpuinfo` и `cpufreq`).
 
 `app/build.gradle.kts`: id `gothic2.mobile.og` (как у пробной сборки — обновление ставится поверх с
 сохранениями), minSdk/targetSdk 28, только arm64-v8a, `versionCode = 100 + число коммитов`, подпись — общий
