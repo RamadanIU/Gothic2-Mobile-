@@ -102,6 +102,1753 @@ index 3696b46..96ff5a5 100644
  
      Tempest::Vec3         clampRotation(Tempest::Vec3 spin);
      float                 calcCameraColision(const Tempest::Vec3& target, const Tempest::Vec3& dir, const Tempest::Vec3& rotSpin, float dist) const;
+diff --git a/common/game/ailink.cpp b/common/game/ailink.cpp
+new file mode 100644
+index 0000000..1dd6c79
+--- /dev/null
++++ b/common/game/ailink.cpp
+@@ -0,0 +1,86 @@
++#include "ailink.h"
++
++#include <atomic>
++#include <cstdint>
++#include <mutex>
++
++#ifdef __ANDROID__
++#include <jni.h>
++#endif
++
++// Gothic II Mobile: строки идут байтами UTF-8 (byte[]), а не jstring: NewStringUTF роняет приложение на
++// неверном «modified UTF-8», а Java сама заменяет битые последовательности при разборе.
++
++namespace {
++  std::mutex               mtx;
++  std::vector<std::string> inbox;
++  std::atomic<bool>        isOn{false};
++  // Очередь не растёт без конца, если игра долго не тикает (загрузка, пауза)
++  const size_t             MaxInbox = 512;
++
++#ifdef __ANDROID__
++  JavaVM*   jvm     = nullptr;
++  jclass    jcls    = nullptr;
++  jmethodID onEvent = nullptr;
++#endif
++  }
++
++bool AiLink::enabled() {
++  return isOn.load();
++  }
++
++void AiLink::poll(std::vector<std::string>& out) {
++  std::lock_guard<std::mutex> guard(mtx);
++  for(auto& s:inbox)
++    out.push_back(std::move(s));
++  inbox.clear();
++  }
++
++void AiLink::send(const std::string& json) {
++#ifdef __ANDROID__
++  if(jvm==nullptr || jcls==nullptr || onEvent==nullptr)
++    return;
++  JNIEnv* env = nullptr;
++  if(jvm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6)!=JNI_OK) {
++    // Поток игры живёт до конца процесса: подключается к Java один раз
++    if(jvm->AttachCurrentThread(&env,nullptr)!=JNI_OK)
++      return;
++    }
++  jbyteArray arr = env->NewByteArray(jsize(json.size()));
++  if(arr==nullptr) {
++    env->ExceptionClear();
++    return;
++    }
++  env->SetByteArrayRegion(arr,0,jsize(json.size()),reinterpret_cast<const jbyte*>(json.data()));
++  env->CallStaticVoidMethod(jcls,onEvent,arr);
++  if(env->ExceptionCheck())
++    env->ExceptionClear();
++  env->DeleteLocalRef(arr);
++#else
++  (void)json;
++#endif
++  }
++
++#ifdef __ANDROID__
++extern "C" JNIEXPORT void JNICALL Java_gothic2_mobile_og_ai_AiBridge_nativeAttach(JNIEnv* env, jclass cls, jboolean enable) {
++  env->GetJavaVM(&jvm);
++  if(jcls==nullptr)
++    jcls = reinterpret_cast<jclass>(env->NewGlobalRef(cls));
++  onEvent = env->GetStaticMethodID(jcls,"onEngineEvent","([B)V");
++  if(onEvent==nullptr)
++    env->ExceptionClear();
++  isOn = (enable==JNI_TRUE);
++  }
++
++extern "C" JNIEXPORT void JNICALL Java_gothic2_mobile_og_ai_AiBridge_nativeCommand(JNIEnv* env, jclass, jbyteArray cmd) {
++  if(cmd==nullptr)
++    return;
++  const jsize n = env->GetArrayLength(cmd);
++  std::string s(size_t(n),'\0');
++  env->GetByteArrayRegion(cmd,0,n,reinterpret_cast<jbyte*>(s.data()));
++  std::lock_guard<std::mutex> guard(mtx);
++  if(inbox.size()>=MaxInbox)
++    inbox.erase(inbox.begin());
++  inbox.push_back(std::move(s));
++  }
++#endif
+diff --git a/common/game/ailink.h b/common/game/ailink.h
+new file mode 100644
+index 0000000..29cac87
+--- /dev/null
++++ b/common/game/ailink.h
+@@ -0,0 +1,16 @@
++#pragma once
++
++#include <string>
++#include <vector>
++
++// Gothic II Mobile: связь движка с приложением для живого NPC (docs/AI_NPC.md). Приложение (Java,
++// gothic2.mobile.og.ai.AiBridge) шлёт команды строкой JSON в UTF-8, движок отвечает событиями тоже JSON.
++// Команды копятся в очереди и разбираются в главном потоке игры (AiNpc::tick). Без приложения - пусто.
++namespace AiLink {
++  // Приложение подключилось и включило живого NPC в настройках
++  bool enabled();
++  // Забрать накопившиеся команды
++  void poll(std::vector<std::string>& out);
++  // Событие приложению (из главного потока игры)
++  void send(const std::string& json);
++  }
+diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
+new file mode 100644
+index 0000000..19d75b1
+--- /dev/null
++++ b/common/game/ainpc.cpp
+@@ -0,0 +1,1452 @@
++#include "ainpc.h"
++
++#include <Tempest/Log>
++
++// rapidjson наследует устаревший std::iterator - предупреждение в его заголовках не наше
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
++#include <rapidjson/document.h>
++#include <rapidjson/stringbuffer.h>
++#include <rapidjson/writer.h>
++#pragma GCC diagnostic pop
++
++#include <algorithm>
++#include <cctype>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <random>
++
++#include "game/ailink.h"
++#include "game/travelpoints.h"
++#include "world/objects/npc.h"
++#include "world/objects/item.h"
++#include "world/objects/interactive.h"
++#include "world/aiqueue.h"
++#include "world/waypoint.h"
++#include "world/world.h"
++#include "utils/cp1251.h"
++#include "utils/gthfont.h"
++#include "resources.h"
++#include "gothic.h"
++
++using namespace Tempest;
++using JsonOut = rapidjson::Writer<rapidjson::StringBuffer>;
++
++namespace {
++  // Где Геральт: пещера у водопада под башней Ксардаса (в начале игры там молодые гоблины и жук)
++  const char*    SpawnPoint  = "NW_XARDAS_TOWER_WATERFALL_CAVE_03";
++  const char*    SpawnWorld  = "newworld.zen";
++  // Свободные ячейки aivar (скрипты игры - 0..88, отряд - 95): прохождение и метка памяти сохранения
++  const size_t   AivStory    = 96;
++  const size_t   AivToken    = 97;
++
++  const float    NearDist    = 800.f;   // герой подошёл (см)
++  const float    LeftDist    = 2000.f;  // герой ушёл
++  const float    SeeDist     = 2500.f;  // кого и что видит в снимке обстановки
++  const float    ItemDist    = 1500.f;
++  const float    MobDist     = 1500.f;
++  const float    HearDist    = 3000.f;  // дальше реплику вне диалога не слышно
++  const uint64_t BusyMax     = 120000;  // «думает» не дольше - иначе диалог мог бы зависнуть
++  const uint64_t LineKeep    = 120000;  // реплика, которую так и не сказали, забывается
++
++  std::string str(const rapidjson::Value& v, const char* key) {
++    if(!v.IsObject())
++      return {};
++    auto it = v.FindMember(key);
++    if(it==v.MemberEnd() || !it->value.IsString())
++      return {};
++    return std::string(it->value.GetString(),it->value.GetStringLength());
++    }
++
++  int64_t num(const rapidjson::Value& v, const char* key, int64_t def) {
++    if(!v.IsObject())
++      return def;
++    auto it = v.FindMember(key);
++    if(it==v.MemberEnd() || !it->value.IsNumber())
++      return def;
++    if(it->value.IsInt64())
++      return it->value.GetInt64();
++    return int64_t(it->value.GetDouble());
++    }
++
++  bool flag(const rapidjson::Value& v, const char* key, bool def) {
++    if(!v.IsObject())
++      return def;
++    auto it = v.FindMember(key);
++    if(it==v.MemberEnd() || !it->value.IsBool())
++      return def;
++    return it->value.GetBool();
++    }
++
++  void put(JsonOut& w, const char* key, std::string_view s) {
++    w.Key(key);
++    w.String(s.data(),rapidjson::SizeType(s.size()));
++    }
++
++  void put(JsonOut& w, const char* key, int64_t v) {
++    w.Key(key);
++    w.Int64(v);
++    }
++
++  void putMeters(JsonOut& w, const char* key, float cm) {
++    // Расстояние в метрах с одним знаком: модели хватает
++    w.Key(key);
++    w.Double(std::round(double(cm)/10.0)/10.0);
++    }
++
++  bool equalsNoCase(std::string_view a, std::string_view b) {
++    if(a.size()!=b.size())
++      return false;
++    for(size_t i=0; i<a.size(); ++i)
++      if(std::tolower(uint8_t(a[i]))!=std::tolower(uint8_t(b[i])))
++        return false;
++    return true;
++    }
++
++  std::string upper(std::string_view s) {
++    std::string r(s);
++    for(auto& c:r)
++      c = char(std::toupper(uint8_t(c)));
++    return r;
++    }
++
++  // Где относительно смотрящего: спереди, сбоку, сзади (лево и право модели не нужны)
++  const char* sideOf(const Npc& from, const Tempest::Vec3& to) {
++    auto  d   = to - from.position();
++    float ang = float(std::atan2(d.z,d.x)*180.0/M_PI) - from.rotation();
++    while(ang>180.f)
++      ang -= 360.f;
++    while(ang<-180.f)
++      ang += 360.f;
++    const float a = std::abs(ang);
++    if(a<50.f)
++      return "спереди";
++    if(a>130.f)
++      return "сзади";
++    return "сбоку";
++    }
++  }
++
++AiNpc::AiNpc(GameScript& owner):owner(owner) {
++  }
++
++AiNpc::~AiNpc() {
++  }
++
++World* AiNpc::world() {
++  return Gothic::inst().world();
++  }
++
++bool AiNpc::isTargetWorld(World& w) const {
++  return equalsNoCase(w.name(),SpawnWorld);
++  }
++
++bool AiNpc::npcAlive(const Npc* npc) {
++  auto* w = world();
++  if(w==nullptr || npc==nullptr)
++    return false;
++  for(uint32_t i=0; i<w->npcCount(); ++i)
++    if(w->npcById(i)==npc)
++      return true;
++  return false;
++  }
++
++bool AiNpc::isAiNpc(const Npc& npc) const {
++  return geralt!=nullptr && &npc==geralt;
++  }
++
++bool AiNpc::isBusy(const Npc& npc) const {
++  return busy && isAiNpc(npc);
++  }
++
++float AiNpc::dist(const Npc& a, const Npc& b) {
++  return std::sqrt(a.qDistTo(b));
++  }
++
++Npc* AiNpc::resolve() {
++  auto* w = world();
++  if(w==nullptr) {
++    geralt      = nullptr;
++    geraltWorld = nullptr;
++    return nullptr;
++    }
++  if(geralt!=nullptr && geraltWorld==w)
++    return geralt;
++
++  geralt      = nullptr;
++  geraltWorld = w;
++  readySent   = false;
++  talking     = false;
++  busy        = false;
++  acts.clear();
++  known.clear();
++  if(thorusSym==size_t(-1))
++    thorusSym = owner.findSymbolIndex("VLK_2000_THORUS");
++  if(thorusSym==size_t(-1) || !isTargetWorld(*w))
++    return nullptr;
++  geralt = w->findNpcByInstance(thorusSym);
++  if(geralt!=nullptr)
++    setup(*geralt,false);
++  return geralt;
++  }
++
++void AiNpc::insert(World& w) {
++  auto* wp = w.findPoint(SpawnPoint,false);
++  if(wp==nullptr) {
++    Log::e("[g2m] ai: no spawn point ",SpawnPoint);
++    return;
++    }
++  // Не на глазах у героя: появится, когда тот отойдёт
++  if(auto pl = w.player(); pl!=nullptr && pl->qDistTo(wp)<2000.f*2000.f)
++    return;
++  Npc* npc = w.addNpc(thorusSym,SpawnPoint);
++  if(npc==nullptr)
++    return;
++  setup(*npc,true);
++  geralt      = npc;
++  geraltWorld = &w;
++  Log::i("[g2m] ai: Geralt inserted at ",SpawnPoint);
++  }
++
++void AiNpc::setup(Npc& npc, bool fresh) {
++  auto& h = npc.handle();
++  h.name[0] = toCp1251("Геральт");
++  if(!fresh)
++    return;
++
++  // Ведьмак: сильный мечник-одиночка, без гильдии; безымянный тип - как нанятые напарники (отряд, не гибнет)
++  h.guild        = GIL_NONE;
++  npc.setTrueGuild(GIL_NONE);
++  h.type         = zenkit::NpcType::G2_AMBIENT;
++  h.level        = 30;
++  h.fight_tactic = owner.scriptConst("FAI_HUMAN_MASTER",4);
++  h.attribute[ATR_HITPOINTSMAX] = 900;
++  h.attribute[ATR_HITPOINTS]    = 900;
++  h.attribute[ATR_MANAMAX]      = 60;
++  h.attribute[ATR_MANA]         = 60;
++  h.attribute[ATR_STRENGTH]     = 160;
++  h.attribute[ATR_DEXTERITY]    = 140;
++  for(size_t i=1; i<zenkit::INpc::hitchance_count; ++i)
++    h.hitchance[i] = (i<=2) ? 95 : 70;
++  npc.setTalentSkill(TALENT_1H,2);
++  npc.setTalentSkill(TALENT_2H,2);
++  npc.setTalentSkill(TALENT_BOW,1);
++
++  std::random_device rd;
++  int32_t story = int32_t(rd() & 0x3FFFFFFFu);
++  h.aivar[AivStory] = std::max(story,1);
++  h.aivar[AivToken] = 0;
++
++  // Внешность из моделей игры: голова с хвостом, седое лицо, светлая кожа, доспехи охотника на драконов
++  const int32_t face = owner.scriptConst("FACE_N_IMPORTANTGREY",59);
++  npc.setVisualBody(face,0,1,0,"hum_body_Naked0","Hum_Head_Pony");
++  npc.delOverlay("Humans_Militia.mds");
++  npc.addOverlay("Humans_Relaxed.mds",0);
++  npc.setFatness(0);
++
++  auto equip = [&](std::string_view name) {
++    const size_t id = owner.findSymbolIndex(name);
++    if(id==size_t(-1))
++      return;
++    if(npc.itemCount(id)==0)
++      npc.addItem(id,1);
++    npc.useItem(id,Item::NSLOT,true);
++    };
++  auto give = [&](std::string_view name, size_t n) {
++    const size_t id = owner.findSymbolIndex(name);
++    if(id!=size_t(-1))
++      npc.addItem(id,n);
++    };
++  equip("ITAR_DJG_L");
++  equip("ITMW_SCHWERT5");       // «стальной» - на людей
++  give ("ITMW_1H_SPECIAL_01",1); // рудный - вместо серебряного, на нечисть
++  give ("ITPO_HEALTH_02",5);
++  give ("ITPO_HEALTH_03",2);
++  give ("ITFO_MUTTON",2);
++  give ("ITFO_BOOZE",1);
++  give ("ITMI_GOLD",250);
++
++  npc.setAttitude(ATT_FRIENDLY);
++  npc.setTempAttitude(ATT_FRIENDLY);
++  setActivity(npc,"ZS_STAND_ARMSCROSSED");
++  }
++
++void AiNpc::setActivity(Npc& npc, std::string_view zs) {
++  // Распорядок на весь день с точкой-меткой лагеря: стоит или занят делом там, где оказался, к точкам
++  // распорядка игры не уходит (как лагерь отряда «Ждать здесь»)
++  size_t fn = owner.findSymbolIndex(zs);
++  if(fn==size_t(-1))
++    fn = owner.findSymbolIndex("ZS_STAND_ARMSCROSSED");
++  if(fn==size_t(-1))
++    return;
++  npc.setRoutineAllDay(fn,GameScript::CompanionCamp);
++  npc.companionIdle.campPos = npc.position();
++  npc.companionIdle.campSet = true;
++  }
++
++void AiNpc::setParty(Npc& npc, bool on) {
++  const int32_t aiv = owner.scriptConst("AIV_PARTYMEMBER",15);
++  if(aiv>=0 && uint32_t(aiv)<zenkit::INpc::aivar_count)
++    npc.handle().aivar[size_t(aiv)] = on ? 1 : 0;
++  if(on) {
++    const size_t zs = owner.findSymbolIndex("ZS_FOLLOW_PLAYER");
++    if(zs!=size_t(-1)) {
++      auto* wp = npc.currentWayPoint();
++      npc.setRoutineAllDay(zs,wp!=nullptr ? std::string_view(wp->name) : std::string_view(SpawnPoint));
++      }
++    } else {
++    setActivity(npc,"ZS_STAND_ARMSCROSSED");
++    }
++  }
++
++bool AiNpc::inDialogWithHero() const {
++  return talking;
++  }
++
++void AiNpc::tick(uint64_t dt) {
++  (void)dt;
++  const bool on = AiLink::enabled();
++  if(!on) {
++    wasEnabled = false;
++    return;
++    }
++  if(!wasEnabled) {
++    wasEnabled = true;
++    readySent  = false;
++    }
++
++  auto* w = world();
++  if(w==nullptr || w->player()==nullptr)
++    return;
++  const uint64_t now = owner.tickCount();
++
++  Npc* npc = resolve();
++  if(npc==nullptr && isTargetWorld(*w) && thorusSym!=size_t(-1) && now>=insertTry) {
++    insertTry = now+5000;
++    insert(*w);
++    npc = geralt;
++    }
++
++  std::vector<std::string> cmds;
++  AiLink::poll(cmds);
++  for(auto& c:cmds)
++    handle(c);
++
++  if(geralt==nullptr)
++    return;
++  if(!readySent) {
++    readySent = true;
++    sendReady();
++    }
++
++  if(busy && now>busyUntil)
++    busy = false;
++  // Диалог мог закрыться сам (герой отошёл, бой) - без DialogMenu::close
++  if(talking && !geralt->isTalk() && !w->isInDialog())
++    onDialogEnd(nullptr,geralt);
++
++  tickActions(now);
++  tickLines(now);
++  tickEvents(now);
++  }
++
++void AiNpc::handle(const std::string& json) {
++  rapidjson::Document d;
++  d.Parse(json.c_str(),json.size());
++  if(d.HasParseError() || !d.IsObject())
++    return;
++  const std::string cmd = str(d,"cmd");
++
++  if(cmd=="snapshot") {
++    if(geralt!=nullptr)
++      sendSnapshot(str(d,"req"));
++    return;
++    }
++  if(geralt==nullptr)
++    return;
++
++  if(cmd=="say") {
++    cmdSay(str(d,"id"),str(d,"who"),str(d,"text"),uint32_t(std::clamp<int64_t>(num(d,"ms",2000),300,60000)),
++           str(d,"to"),str(d,"mood"));
++    }
++  else if(cmd=="act") {
++    auto it = d.FindMember("args");
++    static const rapidjson::Value empty(rapidjson::kObjectType);
++    cmdAct(str(d,"id"),str(d,"name"),it!=d.MemberEnd() ? &it->value : &empty);
++    }
++  else if(cmd=="think") {
++    busy      = flag(d,"on",false);
++    busyUntil = owner.tickCount()+BusyMax;
++    }
++  else if(cmd=="end_talk") {
++    endDialog();
++    }
++  else if(cmd=="hush") {
++    // Обрыв: реплики, которые ещё не начались, не скажутся
++    lines.erase(std::remove_if(lines.begin(),lines.end(),[](const Line& l){ return !l.started; }),lines.end());
++    }
++  }
++
++void AiNpc::cmdSay(const std::string& id, const std::string& who, const std::string& text, uint32_t ms,
++                   const std::string& to, const std::string& mood) {
++  auto* w = world();
++  if(w==nullptr || id.empty() || text.empty())
++    return;
++  Npc* pl      = w->player();
++  Npc* speaker = nullptr;
++  if(who.empty() || who=="self")
++    speaker = geralt;
++  else if(who=="hero")
++    speaker = pl;
++  else
++    speaker = npcByRef(who);
++  if(speaker==nullptr || speaker->isDead()) {
++    AiLink::send(std::string("{\"ev\":\"line_end\",\"id\":\"")+id+"\",\"skipped\":true}");
++    return;
++    }
++
++  Npc* target = nullptr;
++  if(to=="hero")
++    target = pl;
++  else if(to=="self")
++    target = geralt;
++  else if(!to.empty())
++    target = npcByRef(to);
++  if(target==nullptr)
++    target = (speaker==pl) ? geralt : pl;
++
++  Line ln;
++  ln.id      = id;
++  ln.text    = toCp1251(text);
++  ln.speaker = std::string(speaker->displayName());
++  ln.ms      = ms;
++  ln.npc     = speaker;
++  ln.endsAt  = owner.tickCount()+LineKeep;
++  lines.push_back(ln);
++
++  const bool dialog = talking && (speaker==geralt || speaker==pl) && (target==geralt || target==pl);
++  if(dialog) {
++    // В диалоге - очередью ИИ, как AI_Output скриптов: субтитр, камера, жесты и лицо, по очереди с героем
++    speaker->aiPush(AiQueue::aiOutput(*target,id,owner.aiOutOrderId));
++    ++owner.aiOutOrderId;
++    } else {
++    speakOverlay(*speaker,target,id,text,ms);
++    }
++
++  // Настроение - лицо на время реплики
++  static const struct { const char* mood; const char* ani; } faces[] = {
++    {"angry","S_ANGRY"}, {"friendly","S_FRIENDLY"}, {"hostile","S_HOSTILE"}, {"afraid","S_FRIGHTENED"},
++    };
++  for(auto& f:faces)
++    if(mood==f.mood)
++      speaker->startFaceAnim(f.ani,1,ms+2000);
++  }
++
++void AiNpc::speakOverlay(Npc& speaker, Npc* to, const std::string& id, const std::string& text, uint32_t ms) {
++  (void)text;
++  // Вне диалога: говорит на ходу, не останавливаясь (как реплики отряда в бою); стоящий - поворачивается
++  if(to!=nullptr && to!=&speaker && speaker.isAiQueueEmpty() && !speaker.isAttack() && speaker.interactive()==nullptr &&
++     speaker.bodyStateMasked()==BS_STAND && !speaker.isPlayer()) {
++    speaker.aiPush(AiQueue::aiTurnToNpc(to));
++    speaker.aiPush(AiQueue::aiLookAtNpc(to));
++    }
++  if(!speaker.isPlayer())
++    speaker.startFaceAnim("VISEME",1,ms);
++  lineStart(speaker,id,false);
++  }
++
++bool AiNpc::lineText(std::string_view id, std::string_view& out) const {
++  for(auto& l:lines)
++    if(l.id==id) {
++      out = l.text;
++      return true;
++      }
++  return false;
++  }
++
++bool AiNpc::lineTime(std::string_view id, uint32_t& ms) const {
++  for(auto& l:lines)
++    if(l.id==id) {
++      ms = l.ms;
++      return true;
++      }
++  return false;
++  }
++
++bool AiNpc::lineStart(Npc& speaker, std::string_view id, bool inDialog) {
++  Line* ln = nullptr;
++  for(auto& l:lines)
++    if(l.id==id)
++      ln = &l;
++  if(ln==nullptr)
++    return false;
++  const uint64_t now = owner.tickCount();
++  ln->started   = true;
++  ln->overlay   = !inDialog;
++  ln->endsAt    = now+ln->ms;
++  ln->shownTill = inDialog ? 0 : now+ln->ms+600;
++
++  // Громкость: в диалоге - полная, вне его - по расстоянию до героя
++  float vol = 1.f;
++  if(!inDialog) {
++    auto* w = world();
++    if(w!=nullptr && w->player()!=nullptr) {
++      const float d = std::sqrt(w->player()->qDistTo(speaker));
++      vol = std::clamp(1.f - (d-500.f)/(HearDist-500.f), 0.f, 1.f);
++      }
++    }
++  char buf[64] = {};
++  std::snprintf(buf,sizeof(buf),"%.2f",double(vol));
++  AiLink::send(std::string("{\"ev\":\"line_start\",\"id\":\"")+std::string(id)+"\",\"vol\":"+buf+"}");
++  return true;
++  }
++
++void AiNpc::tickLines(uint64_t now) {
++  for(auto& l:lines) {
++    if(l.endsAt==0 || now<l.endsAt)
++      continue;
++    if(l.started)
++      AiLink::send(std::string("{\"ev\":\"line_end\",\"id\":\"")+l.id+"\"}");
++    else
++      AiLink::send(std::string("{\"ev\":\"line_end\",\"id\":\"")+l.id+"\",\"skipped\":true}");
++    l.endsAt = 0;
++    }
++  // Сказанные реплики - ещё немного для субтитров, несказанные - пока не истекут
++  lines.erase(std::remove_if(lines.begin(),lines.end(),[now](const Line& l){
++    return l.endsAt==0 && now>l.shownTill;
++    }),lines.end());
++  if(lines.size()>64)
++    lines.erase(lines.begin(),lines.begin()+long(lines.size()-64));
++  }
++
++void AiNpc::paint(Painter& p, int w, int h, float scale) {
++  if(geralt==nullptr || lines.empty())
++    return;
++  auto* wrld = world();
++  if(wrld==nullptr || wrld->player()==nullptr)
++    return;
++  const uint64_t now = owner.tickCount();
++  auto& fnt = Resources::font(Resources::FontType::Yellow,scale);
++  const int pad = int(12*scale);
++  const int bw  = std::min(w-2*pad, int(900*scale));
++  int       y   = h - int(float(h)*0.30f);
++  int       shown = 0;
++  for(auto it=lines.rbegin(); it!=lines.rend() && shown<2; ++it) {
++    auto& l = *it;
++    if(!l.overlay || now>l.shownTill || l.npc==nullptr)
++      continue;
++    if(!npcAlive(l.npc) || wrld->player()->qDistTo(*l.npc)>HearDist*HearDist)
++      continue;
++    const std::string txt = l.speaker + ": " + l.text;
++    auto sz = fnt.textSize(bw,txt);
++    fnt.drawText(p,(w-bw)/2,y-sz.h,bw,sz.h,txt,Tempest::AlignHCenter);
++    y -= sz.h + pad/2;
++    ++shown;
++    }
++  }
++
++void AiNpc::onDialogStart(Npc& player, Npc& npc) {
++  (void)player;
++  if(!isAiNpc(npc))
++    return;
++  talking = true;
++  busy    = false;
++  // Разговор прерывает дело: стоит лицом к герою
++  cancelBody("разговор с героем");
++  AiLink::send("{\"ev\":\"talk_start\"}");
++  sendSnapshot("talk");
++  }
++
++void AiNpc::onDialogEnd(Npc* player, Npc* npc) {
++  (void)player;
++  if(!talking || npc==nullptr || !isAiNpc(*npc))
++    return;
++  talking = false;
++  busy    = false;
++  AiLink::send("{\"ev\":\"talk_end\"}");
++  }
++
++void AiNpc::endDialog() {
++  auto* w = world();
++  if(geralt==nullptr || w==nullptr || !talking)
++    return;
++  // После всех реплик в очереди, как AI_StopProcessInfos скриптов
++  geralt->aiPush(AiQueue::aiStopProcessInfo(owner.aiOutOrderId));
++  ++owner.aiOutOrderId;
++  }
++
++bool AiNpc::dialogChoices(Npc& player, Npc& npc, std::vector<GameScript::DlgChoice>& out) {
++  (void)player;
++  if(!isAiNpc(npc) || !AiLink::enabled())
++    return false;
++  out.clear();
++  auto add = [&out](uint32_t id, const char* title, int32_t sort, bool trade) {
++    GameScript::DlgChoice ch;
++    ch.title    = toCp1251(title);
++    ch.scriptFn = id;
++    ch.sort     = sort;
++    ch.isTrade  = trade;
++    out.push_back(std::move(ch));
++    };
++  add(ChoiceVoice,"Сказать (голосом)",1,false);
++  add(ChoiceType, "Написать",2,false);
++  add(ChoiceTrade,"Покажи свои товары.",3,true);
++  add(ChoiceBye,  "Пока.",999,false);
++  return true;
++  }
++
++bool AiNpc::exec(const GameScript::DlgChoice& dlg, Npc& player, Npc& npc) {
++  (void)player;
++  if(!isAiNpc(npc))
++    return false;
++  switch(dlg.scriptFn) {
++    case ChoiceVoice:
++      busy      = true;
++      busyUntil = owner.tickCount()+BusyMax;
++      AiLink::send("{\"ev\":\"listen\"}");
++      return true;
++    case ChoiceType:
++      busy      = true;
++      busyUntil = owner.tickCount()+BusyMax;
++      AiLink::send("{\"ev\":\"type\"}");
++      return true;
++    case ChoiceTrade:
++      // Торговлю открывает DialogMenu (isTrade); модель узнает об обмене по инвентарю в снимке
++      return true;
++    case ChoiceBye:
++      AiLink::send("{\"ev\":\"bye\"}");
++      endDialog();
++      return true;
++    default:
++      return false;
++    }
++  }
++
++void AiNpc::beforeSave() {
++  if(geralt==nullptr || !AiLink::enabled())
++    return;
++  auto& h = geralt->handle();
++  std::random_device rd;
++  h.aivar[AivToken] = std::max(int32_t(rd() & 0x3FFFFFFFu),1);
++  // Приложение пишет память под этой меткой сразу, в этом же вызове: сохранение и память совпадают
++  AiLink::send(std::string("{\"ev\":\"saving\",\"story\":")+std::to_string(h.aivar[AivStory])+
++               ",\"token\":"+std::to_string(h.aivar[AivToken])+"}");
++  }
++
++void AiNpc::sendReady() {
++  auto& h = geralt->handle();
++  AiLink::send(std::string("{\"ev\":\"ready\",\"story\":")+std::to_string(h.aivar[AivStory])+
++               ",\"token\":"+std::to_string(h.aivar[AivToken])+"}");
++  }
++
++void AiNpc::onHit(Npc& attacker, Npc& victim) {
++  if(geralt==nullptr || !AiLink::enabled())
++    return;
++  auto* w = world();
++  if(w==nullptr)
++    return;
++  if(&victim==geralt) {
++    if(attacker.isPlayer())
++      sendEvent("hero_hit_me","Герой ударил тебя.",&attacker);
++    else
++      sendEvent("hit","Тебя ударил(а) "+fromCp1251(attacker.displayName())+".",&attacker);
++    return;
++    }
++  if(attacker.isPlayer() && victim.qDistTo(*geralt)<SeeDist*SeeDist && !victim.isMonster())
++    sendEvent("hero_attacks","Герой напал на "+fromCp1251(victim.displayName())+".",&victim);
++  else if(&attacker==geralt)
++    return;
++  else if(victim.isPlayer() && attacker.qDistTo(*geralt)<SeeDist*SeeDist)
++    sendEvent("hero_attacked","На героя напал(а) "+fromCp1251(attacker.displayName())+".",&attacker);
++  }
++
++void AiNpc::sendEvent(std::string_view kind, std::string_view text, Npc* who) {
++  // События одного рода - не чаще раза в 4 с: удар за ударом - одно событие
++  const uint64_t now = owner.tickCount();
++  static std::unordered_map<std::string,uint64_t> lastAt;
++  auto& t = lastAt[std::string(kind)];
++  if(t!=0 && now<t+4000 && now>=t)
++    return;
++  t = now;
++
++  rapidjson::StringBuffer buf;
++  JsonOut w(buf);
++  w.StartObject();
++  put(w,"ev","event");
++  put(w,"kind",kind);
++  put(w,"text",text);
++  if(who!=nullptr)
++    put(w,"who",refOf(*who));
++  w.EndObject();
++  AiLink::send(buf.GetString());
++  }
++
++void AiNpc::tickEvents(uint64_t now) {
++  if(now<eventTick)
++    return;
++  eventTick = now+300;
++  auto* w  = world();
++  Npc*  pl = w->player();
++  if(pl==nullptr)
++    return;
++
++  // Герой подошёл или ушёл
++  const float d = dist(*pl,*geralt);
++  if(!heroNear && d<NearDist && !talking) {
++    heroNear = true;
++    if(now>heroNearAt+90000 || heroNearAt==0)
++      sendEvent("hero_near","Герой подошёл к тебе.",pl);
++    heroNearAt = now;
++    }
++  else if(heroNear && d>LeftDist) {
++    heroNear = false;
++    sendEvent("hero_left","Герой ушёл.",pl);
++    }
++
++  // Сам без сознания / очнулся
++  const bool down = geralt->isUnconscious();
++  if(down && !wasDown)
++    sendEvent("down","Тебя сбили с ног, ты без сознания.",nullptr);
++  else if(!down && wasDown)
++    sendEvent("up","Ты пришёл в себя.",nullptr);
++  wasDown = down;
++
++  // Враги рядом и смерти: каждого - один раз
++  w->detectNpc(geralt->position(),SeeDist,[&](Npc& n) {
++    if(&n==geralt || n.isPlayer())
++      return;
++    auto& k = known[&n];
++    const bool dead = n.isDead();
++    if(dead && !k.dead && k.lastSeen!=0)
++      sendEvent("death",fromCp1251(n.displayName())+" погиб(ла) неподалёку.",&n);
++    k.dead = dead;
++    if(dead)
++      return;
++    const bool hostile = (owner.personAttitude(n,*geralt)==ATT_HOSTILE) && !n.isUnconscious();
++    if(hostile && !k.hostile && n.qDistTo(*geralt)<1500.f*1500.f && geralt->canSeeNpc(n,false))
++      sendEvent("enemy","Враг рядом: "+fromCp1251(n.displayName())+".",&n);
++    k.hostile  = hostile;
++    k.lastSeen = now;
++    });
++  for(auto it=known.begin(); it!=known.end();) {
++    if(now>it->second.lastSeen+60000)
++      it = known.erase(it); else
++      ++it;
++    }
++  }
++
++void AiNpc::cancelBody(std::string_view why) {
++  for(auto& a:acts)
++    finish(a,false,std::string("прервано: ")+std::string(why));
++  acts.clear();
++  }
++
++void AiNpc::finish(Action& a, bool ok, std::string_view note) {
++  if(a.id.empty())
++    return;
++  rapidjson::StringBuffer buf;
++  JsonOut w(buf);
++  w.StartObject();
++  put(w,"ev","act_done");
++  put(w,"id",a.id);
++  put(w,"name",a.name);
++  w.Key("ok");
++  w.Bool(ok);
++  put(w,"note",note);
++  w.EndObject();
++  AiLink::send(buf.GetString());
++  a.id.clear();
++  }
++
++const WayPoint* AiNpc::placeByName(std::string_view name) {
++  auto* w = world();
++  if(w==nullptr || name.empty())
++    return nullptr;
++  std::vector<TravelPoints::Spot> spots;
++  TravelPoints::resolve(*w,spots);
++  for(auto& s:spots)
++    if(s.point!=nullptr && name==s.point->name)
++      return s.way!=nullptr ? s.way : s.at;
++  // Похожее имя: модель могла сократить («башня Ксардаса» вместо «У башни Ксардаса»)
++  for(auto& s:spots)
++    if(s.point!=nullptr && std::string_view(s.point->name).find(name)!=std::string_view::npos)
++      return s.way!=nullptr ? s.way : s.at;
++  // Имя точки мира
++  if(auto wp = w->findPoint(upper(name),false))
++    return wp;
++  return nullptr;
++  }
++
++size_t AiNpc::itemSymbol(std::string_view name) {
++  if(name.empty())
++    return size_t(-1);
++  return owner.findSymbolIndex(upper(name));
++  }
++
++std::string AiNpc::itemNameUtf8(size_t symbol) {
++  if(geralt!=nullptr)
++    if(auto* it = geralt->getItem(symbol))
++      return fromCp1251(it->displayName());
++  return {};
++  }
++
++void AiNpc::cmdAct(const std::string& id, const std::string& name, const void* argsPtr) {
++  const auto& args = *reinterpret_cast<const rapidjson::Value*>(argsPtr);
++  auto* w  = world();
++  Npc*  pl = w!=nullptr ? w->player() : nullptr;
++  if(w==nullptr || pl==nullptr || geralt==nullptr)
++    return;
++  Npc& npc = *geralt;
++  const uint64_t now = owner.tickCount();
++
++  Action a;
++  a.id       = id;
++  a.name     = name;
++  a.started  = now;
++  a.deadline = now+60000;
++
++  auto fail = [&](std::string_view why) { finish(a,false,why); };
++  auto done = [&](std::string_view note) { finish(a,true,note); };
++  auto target = [&]() -> Npc* {
++    const std::string t = str(args,"target");
++    if(t.empty() || t=="hero")
++      return pl;
++    return npcByRef(t);
++    };
++  // Действие тела: новое заменяет прежнее
++  auto body = [&]() {
++    if(talking && name!="give_item" && name!="gesture")
++      endDialog();
++    cancelBody("новое действие");
++    };
++
++  if(npc.isDown() && name!="say") {
++    fail("ты без сознания");
++    return;
++    }
++
++  if(name=="go_to_place") {
++    auto* wp = placeByName(str(args,"place"));
++    if(wp==nullptr) {
++      fail("нет такого места; возьми название из списка мест в обстановке");
++      return;
++      }
++    body();
++    setParty(npc,false);
++    npc.aiPush(AiQueue::aiGoToPoint(*wp));
++    a.wp       = wp;
++    a.deadline = now+180000;
++    acts.push_back(a);
++    return;
++    }
++  if(name=="go_to_npc" || name=="approach") {
++    Npc* t = target();
++    if(t==nullptr || t==&npc) {
++      fail("не вижу такого");
++      return;
++      }
++    body();
++    setParty(npc,false);
++    npc.aiPush(AiQueue::aiGoToNpc(t));
++    a.target   = t;
++    a.deadline = now+90000;
++    acts.push_back(a);
++    return;
++    }
++  if(name=="follow_hero") {
++    body();
++    setParty(npc,true);
++    done("идёшь за героем и защищаешь его (ты в его отряде)");
++    return;
++    }
++  if(name=="wait_here" || name=="stop_following") {
++    body();
++    setParty(npc,false);
++    done("стоишь на месте");
++    return;
++    }
++  if(name=="attack") {
++    Npc* t = target();
++    if(t==nullptr || t==&npc || t->isDead()) {
++      fail("цели нет");
++      return;
++      }
++    body();
++    owner.invokeAttack(npc,*t,owner.attackReason(npc,*t));
++    a.target   = t;
++    a.deadline = now+120000;
++    acts.push_back(a);
++    return;
++    }
++  if(name=="stop_fight") {
++    body();
++    npc.setTarget(nullptr);
++    if(owner.isPartyMember(npc))
++      setParty(npc,true); else
++      setActivity(npc,"ZS_STAND_ARMSCROSSED");
++    npc.aiPush(AiQueue::aiRemoveWeapon());
++    done("ты прекратил бой");
++    return;
++    }
++  if(name=="draw_weapon") {
++    npc.aiPush(AiQueue::aiDrawWeapon());
++    done("оружие наготове");
++    return;
++    }
++  if(name=="holster_weapon") {
++    npc.aiPush(AiQueue::aiRemoveWeapon());
++    done("оружие убрано");
++    return;
++    }
++  if(name=="give_item") {
++    const size_t sym   = itemSymbol(str(args,"item"));
++    const size_t count = size_t(std::clamp<int64_t>(num(args,"count",1),1,1000));
++    Npc* to = target();
++    if(to==nullptr)
++      to = pl;
++    if(sym==size_t(-1) || npc.itemCount(sym)==0) {
++      fail("у тебя нет такого предмета; смотри свой инвентарь в обстановке");
++      return;
++      }
++    const size_t n    = std::min(count,npc.itemCount(sym));
++    const auto   item = itemNameUtf8(sym);
++    if(auto* it = npc.getItem(sym); it!=nullptr && it->isEquipped())
++      npc.unequipItem(sym);
++    to->addItem(sym,npc,n);
++    if(to->isPlayer()) {
++      std::string msg = "Геральт дал тебе: "+item+(n>1 ? " x"+std::to_string(n) : std::string());
++      Gothic::inst().onPrint(toCp1251(msg));
++      }
++    done("отдано: "+item+" x"+std::to_string(n));
++    return;
++    }
++  if(name=="take_item") {
++    Item* itm = itemByRef(str(args,"item"));
++    if(itm==nullptr) {
++      fail("такого предмета на земле нет");
++      return;
++      }
++    body();
++    npc.aiPush(AiQueue::aiGotoItem(*itm));
++    npc.aiPush(AiQueue::aiTakeItem(*itm));
++    a.item     = itm;
++    a.text     = fromCp1251(itm->displayName());
++    a.deadline = now+40000;
++    acts.push_back(a);
++    return;
++    }
++  if(name=="use_item") {
++    const size_t sym = itemSymbol(str(args,"item"));
++    if(sym==size_t(-1) || npc.itemCount(sym)==0) {
++      fail("у тебя нет такого предмета");
++      return;
++      }
++    npc.aiPush(AiQueue::aiUseItem(int32_t(sym)));
++    done("использовано: "+itemNameUtf8(sym));
++    return;
++    }
++  if(name=="gesture") {
++    static const struct { const char* name; const char* ani; } gestures[] = {
++      {"nod","T_YES"}, {"no","T_NO"}, {"shrug","T_DONTKNOW"}, {"come_here","T_COMEOVERHERE"},
++      {"greet","T_GREETNOV"}, {"dismiss","T_FORGETIT"}, {"get_lost","T_GETLOST"}, {"salute","T_GREETRIGHT"},
++      {"look_around","T_SEARCH"}, {"cheer","T_WATCHFIGHT_YEAH"}, {"angry","T_WATCHFIGHT_OHNO"},
++      };
++    const std::string g = str(args,"name");
++    for(auto& i:gestures)
++      if(g==i.name) {
++        npc.aiPush(AiQueue::aiPlayAnim(i.ani));
++        done("жест");
++        return;
++        }
++    fail("нет такого жеста");
++    return;
++    }
++  if(name=="look_at" || name=="turn_to") {
++    Npc* t = target();
++    if(t==nullptr) {
++      fail("не вижу такого");
++      return;
++      }
++    if(name=="turn_to")
++      npc.aiPush(AiQueue::aiTurnToNpc(t));
++    npc.aiPush(AiQueue::aiLookAtNpc(t));
++    done("смотришь на цель");
++    return;
++    }
++  if(name=="activity") {
++    static const struct { const char* name; const char* zs; } list[] = {
++      {"stand","ZS_STAND_ARMSCROSSED"}, {"guard","ZS_STAND_GUARDING"}, {"sit","ZS_SIT_CAMPFIRE"},
++      {"practice_sword","ZS_PRACTICE_SWORD"}, {"eat","ZS_STAND_EATING"}, {"drink","ZS_STAND_DRINKING"},
++      {"look_around","ZS_STAND_WP"}, {"sweep","ZS_STAND_SWEEPING"}, {"meditate","ZS_PRAY_INNOS"},
++      {"smoke","ZS_SMOKE_JOINT"}, {"sleep","ZS_SLEEP"}, {"roast","ZS_ROAST_SCAVENGER"},
++      };
++    const std::string act = str(args,"name");
++    for(auto& i:list)
++      if(act==i.name) {
++        if(owner.findSymbolIndex(i.zs)==size_t(-1)) {
++          fail("так не умеешь");
++          return;
++          }
++        body();
++        setParty(npc,false);
++        setActivity(npc,i.zs);
++        done(std::string("занят: ")+act);
++        return;
++        }
++    fail("нет такого занятия");
++    return;
++    }
++  if(name=="use_mob") {
++    const std::string scheme = upper(str(args,"scheme"));
++    auto* mob = w->availableMob(npc,scheme);
++    if(mob==nullptr) {
++      fail("рядом нет свободного предмета такого вида");
++      return;
++      }
++    body();
++    setParty(npc,false);
++    npc.aiPush(AiQueue::aiUseMob(scheme,1));
++    a.text     = fromCp1251(mob->displayName());
++    a.deadline = now+30000;
++    acts.push_back(a);
++    return;
++    }
++  if(name=="leave_mob") {
++    if(npc.interactive()!=nullptr)
++      npc.aiPush(AiQueue::aiUseMob("",-1));
++    done("встал");
++    return;
++    }
++  if(name=="loot") {
++    Npc* t = target();
++    if(t==nullptr || t==pl || !(t->isDead() || t->isUnconscious())) {
++      fail("обыскать можно только мёртвого или без сознания");
++      return;
++      }
++    body();
++    npc.aiPush(AiQueue::aiGoToNpc(t));
++    a.target   = t;
++    a.deadline = now+40000;
++    acts.push_back(a);
++    return;
++    }
++  if(name=="set_attitude") {
++    const std::string v = str(args,"value");
++    Attitude att = ATT_NEUTRAL;
++    if(v=="friendly")
++      att = ATT_FRIENDLY;
++    else if(v=="angry")
++      att = ATT_ANGRY;
++    else if(v=="hostile")
++      att = ATT_HOSTILE;
++    npc.setAttitude(att);
++    npc.setTempAttitude(att);
++    done("отношение к герою: "+v);
++    return;
++    }
++  if(name=="wait") {
++    a.deadline = now+uint64_t(std::clamp<int64_t>(num(args,"seconds",3),1,60))*1000;
++    a.phase    = -1;
++    acts.push_back(a);
++    return;
++    }
++  if(name=="end_conversation") {
++    endDialog();
++    done("разговор окончен");
++    return;
++    }
++  fail("нет такого действия");
++  }
++
++void AiNpc::tickActions(uint64_t now) {
++  auto* w  = world();
++  Npc*  pl = w->player();
++  Npc&  npc = *geralt;
++  for(auto& a:acts) {
++    if(a.id.empty())
++      continue;
++    if(npc.isDown()) {
++      finish(a,false,"тебя сбили с ног");
++      continue;
++      }
++    if(a.target!=nullptr && !npcAlive(a.target)) {
++      finish(a,false,"цель пропала");
++      continue;
++      }
++    if(a.name=="wait") {
++      if(now>=a.deadline)
++        finish(a,true,"подождал");
++      continue;
++      }
++    if(a.name=="go_to_place") {
++      if(a.wp!=nullptr && npc.qDistTo(a.wp)<300.f*300.f) {
++        setActivity(npc,"ZS_STAND_ARMSCROSSED");
++        float d = 0;
++        finish(a,true,"пришёл: "+placeName(npc.position(),d));
++        }
++      }
++    else if(a.name=="go_to_npc" || a.name=="approach") {
++      if(npc.qDistTo(*a.target)<300.f*300.f) {
++        npc.aiPush(AiQueue::aiTurnToNpc(a.target));
++        if(!a.target->isPlayer() && !a.target->isDown() && a.target->isAiQueueEmpty() && !a.target->isAttack())
++          a.target->aiPush(AiQueue::aiTurnToNpc(&npc));
++        setActivity(npc,"ZS_STAND_ARMSCROSSED");
++        finish(a,true,"подошёл к "+fromCp1251(a.target->displayName()));
++        }
++      }
++    else if(a.name=="attack") {
++      if(a.target->isDead())
++        finish(a,true,fromCp1251(a.target->displayName())+" мёртв(а)");
++      else if(a.target->isUnconscious())
++        finish(a,true,fromCp1251(a.target->displayName())+" без сознания");
++      else if(now>a.started+3000 && !npc.isAttack() && npc.weaponState()==WeaponState::NoWeapon)
++        finish(a,false,"бой прекратился");
++      }
++    else if(a.name=="take_item") {
++      bool still = false;
++      w->detectItem(npc.position(),ItemDist,[&](Item& it){ if(&it==a.item) still = true; });
++      if(!still) {
++        a.item = nullptr;
++        finish(a,true,"поднял: "+a.text);
++        }
++      }
++    else if(a.name=="use_mob") {
++      if(npc.interactive()!=nullptr)
++        finish(a,true,"используешь: "+a.text);
++      }
++    else if(a.name=="loot") {
++      if(npc.qDistTo(*a.target)<250.f*250.f) {
++        // Забирает всё, кроме надетого, как герой при обыске
++        std::vector<std::pair<size_t,size_t>> take;
++        for(auto it=a.target->inventory().iterator(Inventory::T_Ransack); it.isValid(); ++it)
++          take.emplace_back(it->clsId(),it.count());
++        std::string got;
++        for(auto& [cls,n]:take) {
++          npc.addItem(cls,*a.target,n);
++          if(got.size()<300)
++            got += (got.empty() ? "" : ", ")+itemNameUtf8(cls)+(n>1 ? " x"+std::to_string(n) : std::string());
++          }
++        npc.aiPush(AiQueue::aiPlayAnim("T_PLUNDER"));
++        finish(a,true,got.empty() ? "ничего не нашёл" : "забрал: "+got);
++        }
++      }
++    if(!a.id.empty() && now>a.deadline)
++      finish(a,false,"не вышло вовремя");
++    }
++  acts.erase(std::remove_if(acts.begin(),acts.end(),[](const Action& a){ return a.id.empty(); }),acts.end());
++  (void)pl;
++  }
++
++std::string AiNpc::refOf(Npc& npc) {
++  if(npc.isPlayer())
++    return "hero";
++  if(&npc==geralt)
++    return "self";
++  auto it = npcRefs.find(&npc);
++  if(it!=npcRefs.end())
++    return "n"+std::to_string(it->second);
++  const uint32_t id = nextRef++;
++  npcRefs[&npc] = id;
++  npcByNum[id]  = &npc;
++  return "n"+std::to_string(id);
++  }
++
++std::string AiNpc::refOf(Item& itm) {
++  auto it = itmRefs.find(&itm);
++  if(it!=itmRefs.end())
++    return "i"+std::to_string(it->second);
++  const uint32_t id = nextRef++;
++  itmRefs[&itm] = id;
++  itmByNum[id]  = &itm;
++  return "i"+std::to_string(id);
++  }
++
++Npc* AiNpc::npcByRef(std::string_view ref) {
++  auto* w = world();
++  if(w==nullptr)
++    return nullptr;
++  if(ref=="hero")
++    return w->player();
++  if(ref=="self")
++    return geralt;
++  if(ref.size()<2 || ref[0]!='n')
++    return nullptr;
++  const uint32_t id = uint32_t(std::strtoul(std::string(ref.substr(1)).c_str(),nullptr,10));
++  auto it = npcByNum.find(id);
++  if(it==npcByNum.end())
++    return nullptr;
++  // Указатель проверяется по списку мира: NPC мог исчезнуть
++  for(uint32_t i=0; i<w->npcCount(); ++i)
++    if(w->npcById(i)==it->second)
++      return w->npcById(i);
++  return nullptr;
++  }
++
++Item* AiNpc::itemByRef(std::string_view ref) {
++  auto* w = world();
++  if(w==nullptr || geralt==nullptr || ref.size()<2 || ref[0]!='i')
++    return nullptr;
++  const uint32_t id = uint32_t(std::strtoul(std::string(ref.substr(1)).c_str(),nullptr,10));
++  auto it = itmByNum.find(id);
++  if(it==itmByNum.end())
++    return nullptr;
++  Item* ret = nullptr;
++  w->detectItem(geralt->position(),ItemDist*2,[&](Item& i){ if(&i==it->second) ret = &i; });
++  return ret;
++  }
++
++std::string AiNpc::guildName(int32_t guild) {
++  auto* s = owner.findSymbol("TXT_GUILDS");
++  if(s==nullptr || guild<0 || uint32_t(guild)>=s->count())
++    return {};
++  return fromCp1251(s->get_string(uint16_t(guild)));
++  }
++
++std::string AiNpc::placeName(const Tempest::Vec3& pos, float& dist) {
++  auto* w = world();
++  dist = 0;
++  if(w==nullptr)
++    return {};
++  std::vector<TravelPoints::Spot> spots;
++  TravelPoints::resolve(*w,spots);
++  const TravelPoints::Spot* best = nullptr;
++  float bestD = 0;
++  for(auto& s:spots) {
++    if(s.at==nullptr || s.point==nullptr)
++      continue;
++    auto  d  = s.at->position() - pos;
++    float qd = d.x*d.x + d.y*d.y + d.z*d.z;
++    if(best==nullptr || qd<bestD) {
++      best  = &s;
++      bestD = qd;
++      }
++    }
++  if(best==nullptr)
++    return {};
++  dist = std::sqrt(bestD);
++  return best->point->name;
++  }
++
++void AiNpc::sendSnapshot(std::string_view reason) {
++  // Метка запроса - только буквы и цифры: вставляется в JSON как есть
++  std::string req;
++  for(char c:reason)
++    if(std::isalnum(uint8_t(c)) || c=='_')
++      req.push_back(c);
++  AiLink::send(snapshot().insert(1,"\"req\":\""+req+"\","));
++  }
++
++std::string AiNpc::snapshot() {
++  auto* w  = world();
++  Npc*  pl = w->player();
++  Npc&  me = *geralt;
++
++  rapidjson::StringBuffer buf;
++  JsonOut j(buf);
++  j.StartObject();
++  put(j,"ev","snapshot");
++
++  const auto t = w->time();
++  char tm[16] = {};
++  std::snprintf(tm,sizeof(tm),"%02d:%02d",int(t.hour()),int(t.minute()));
++  put(j,"time",tm);
++  put(j,"day",int64_t(t.day()+1));
++  put(j,"talking",talking ? 1 : 0);
++
++  {
++  float d = 0;
++  auto  place = placeName(me.position(),d);
++  put(j,"place",place);
++  putMeters(j,"placeDist",d);
++  if(auto wp = w->findWayPoint(me.position()))
++    put(j,"waypoint",wp->name);
++  }
++
++  // Ближние места - куда можно пойти (go_to_place)
++  {
++  std::vector<TravelPoints::Spot> spots;
++  TravelPoints::resolve(*w,spots);
++  std::vector<std::pair<float,const TravelPoints::Spot*>> near;
++  for(auto& s:spots) {
++    if(s.at==nullptr || s.point==nullptr)
++      continue;
++    near.emplace_back(std::sqrt(me.qDistTo(s.at)),&s);
++    }
++  std::sort(near.begin(),near.end(),[](auto& a, auto& b){ return a.first<b.first; });
++  j.Key("places");
++  j.StartArray();
++  for(size_t i=0; i<near.size() && i<10; ++i) {
++    j.StartObject();
++    put(j,"name",near[i].second->point->name);
++    putMeters(j,"dist",near[i].first);
++    j.EndObject();
++    }
++  j.EndArray();
++  }
++
++  // Сам
++  j.Key("self");
++  j.StartObject();
++  put(j,"hp",me.attribute(ATR_HITPOINTS));
++  put(j,"hpMax",me.attribute(ATR_HITPOINTSMAX));
++  put(j,"inParty",owner.isPartyMember(me) ? 1 : 0);
++  put(j,"down",me.isUnconscious() ? 1 : 0);
++  {
++  const char* ws = "убрано";
++  switch(me.weaponState()) {
++    case WeaponState::NoWeapon: ws = "убрано"; break;
++    case WeaponState::Fist:     ws = "кулаки"; break;
++    case WeaponState::W1H:
++    case WeaponState::W2H:      ws = "меч в руке"; break;
++    case WeaponState::Bow:
++    case WeaponState::CBow:     ws = "лук"; break;
++    case WeaponState::Mage:     ws = "магия"; break;
++    }
++  put(j,"weapon",ws);
++  }
++  if(me.isAttack())
++    put(j,"fighting",1);
++  if(auto* mob = me.interactive())
++    put(j,"using",fromCp1251(mob->displayName()));
++  j.Key("items");
++  j.StartArray();
++  for(auto it=me.inventory().iterator(Inventory::T_Inventory); it.isValid(); ++it) {
++    j.StartObject();
++    auto* sym = owner.findSymbol(it->clsId());
++    put(j,"id",sym!=nullptr ? std::string_view(sym->name()) : std::string_view());
++    put(j,"name",fromCp1251(it->displayName()));
++    put(j,"n",int64_t(it.count()));
++    if(it.isEquipped())
++      put(j,"equipped",1);
++    j.EndObject();
++    }
++  j.EndArray();
++  j.EndObject();
++
++  // Герой
++  j.Key("hero");
++  j.StartObject();
++  putMeters(j,"dist",dist(*pl,me));
++  put(j,"side",sideOf(me,pl->position()));
++  put(j,"hp",pl->attribute(ATR_HITPOINTS));
++  put(j,"hpMax",pl->attribute(ATR_HITPOINTSMAX));
++  put(j,"level",pl->level());
++  put(j,"guild",guildName(int32_t(pl->guild())));
++  if(auto* ar = pl->currentArmor())
++    put(j,"armor",fromCp1251(ar->displayName()));
++  if(auto* mw = pl->currentMeleeWeapon())
++    put(j,"melee",fromCp1251(mw->displayName()));
++  put(j,"weaponDrawn",pl->weaponState()!=WeaponState::NoWeapon ? 1 : 0);
++  put(j,"sees",me.canSeeNpc(*pl,false) ? 1 : 0);
++  {
++  const auto att = owner.personAttitude(me,*pl);
++  put(j,"attitude",att==ATT_HOSTILE ? "враждебно" : att==ATT_ANGRY ? "сердито" : att==ATT_FRIENDLY ? "дружески" : "нейтрально");
++  }
++  j.EndObject();
++
++  // Кто рядом
++  std::vector<std::pair<float,Npc*>> npcs;
++  w->detectNpc(me.position(),SeeDist,[&](Npc& n){
++    if(&n==&me || n.isPlayer())
++      return;
++    npcs.emplace_back(std::sqrt(me.qDistTo(n)),&n);
++    });
++  std::sort(npcs.begin(),npcs.end(),[](auto& a, auto& b){ return a.first<b.first; });
++  j.Key("npcs");
++  j.StartArray();
++  for(size_t i=0; i<npcs.size() && i<14; ++i) {
++    Npc& n = *npcs[i].second;
++    j.StartObject();
++    put(j,"ref",refOf(n));
++    put(j,"name",fromCp1251(n.displayName()));
++    if(!n.isMonster()) {
++      put(j,"guild",guildName(int32_t(n.guild())));
++      put(j,"female",n.handle().voice==16 || n.handle().voice==17 ? 1 : 0);
++      put(j,"voice",n.handle().voice);
++      } else {
++      put(j,"monster",1);
++      }
++    putMeters(j,"dist",npcs[i].first);
++    put(j,"side",sideOf(me,n.position()));
++    const int32_t hmax = std::max(1,n.attribute(ATR_HITPOINTSMAX));
++    put(j,"hp%",int64_t(n.attribute(ATR_HITPOINTS))*100/hmax);
++    const char* st = "";
++    if(n.isDead())
++      st = "мёртв";
++    else if(n.isUnconscious())
++      st = "без сознания";
++    else if(n.isAttack())
++      st = "дерётся";
++    else if(n.isTalk())
++      st = "разговаривает";
++    else if(n.hasState(BS_SIT))
++      st = "сидит";
++    else if(n.hasState(BS_LIE))
++      st = "лежит";
++    if(*st)
++      put(j,"state",st);
++    if(!n.isDead() && owner.personAttitude(n,me)==ATT_HOSTILE)
++      put(j,"hostile",1);
++    if(auto* tg = n.target(); tg!=nullptr && n.isAttack())
++      put(j,"fights",refOf(*tg));
++    put(j,"seen",me.canSeeNpc(n,false) ? 1 : 0);
++    j.EndObject();
++    }
++  j.EndArray();
++
++  // Предметы на земле
++  std::vector<std::pair<float,Item*>> items;
++  w->detectItem(me.position(),ItemDist,[&](Item& it){
++    items.emplace_back(std::sqrt(me.qDistTo(it)),&it);
++    });
++  std::sort(items.begin(),items.end(),[](auto& a, auto& b){ return a.first<b.first; });
++  j.Key("ground");
++  j.StartArray();
++  for(size_t i=0; i<items.size() && i<10; ++i) {
++    j.StartObject();
++    put(j,"ref",refOf(*items[i].second));
++    put(j,"name",fromCp1251(items[i].second->displayName()));
++    putMeters(j,"dist",items[i].first);
++    j.EndObject();
++    }
++  j.EndArray();
++
++  // Предметы мира: скамьи, костры, сундуки, наковальни (use_mob)
++  j.Key("mobs");
++  j.StartArray();
++  {
++  std::vector<std::pair<float,Interactive*>> mobs;
++  for(uint32_t i=0; ; ++i) {
++    auto* m = w->mobsiById(i);
++    if(m==nullptr)
++      break;
++    auto  d  = m->displayPosition() - me.position();
++    float qd = d.x*d.x+d.y*d.y+d.z*d.z;
++    if(qd<MobDist*MobDist)
++      mobs.emplace_back(std::sqrt(qd),m);
++    }
++  std::sort(mobs.begin(),mobs.end(),[](auto& a, auto& b){ return a.first<b.first; });
++  std::vector<std::string> seen;
++  size_t n = 0;
++  for(auto& [d,m]:mobs) {
++    std::string sc(m->schemeName());
++    if(sc.empty() || std::find(seen.begin(),seen.end(),sc)!=seen.end())
++      continue;
++    seen.push_back(sc);
++    j.StartObject();
++    put(j,"scheme",sc);
++    put(j,"name",fromCp1251(m->displayName()));
++    putMeters(j,"dist",d);
++    if(m->isContainer())
++      put(j,"container",1);
++    j.EndObject();
++    if(++n>=8)
++      break;
++    }
++  }
++  j.EndArray();
++
++  j.EndObject();
++  return buf.GetString();
++  }
+diff --git a/common/game/ainpc.h b/common/game/ainpc.h
+new file mode 100644
+index 0000000..889f77d
+--- /dev/null
++++ b/common/game/ainpc.h
+@@ -0,0 +1,169 @@
++#pragma once
++
++#include <Tempest/Painter>
++#include <Tempest/Vec>
++
++#include <cstdint>
++#include <string>
++#include <string_view>
++#include <unordered_map>
++#include <vector>
++
++#include "gamescript.h"
++
++class Npc;
++class Item;
++class Interactive;
++class World;
++class WayPoint;
++
++// Gothic II Mobile: живой NPC - Геральт из Ривии в пещере у водопада под башней Ксардаса (docs/AI_NPC.md).
++// Думает языковая модель в приложении (Java, gothic2.mobile.og.ai), движок - её глаза и руки: вставляет
++// Геральта в мир, описывает обстановку (снимок в JSON), исполняет действия (идти, следовать, драться,
++// отдать, поднять, жесты, занятия, говорить с NPC) и показывает реплики - субтитры, лицо и жесты; звук
++// реплики играет приложение. В диалоге с героем выбор реплик - «Сказать голосом», «Написать», торговля.
++//
++// Геральт - неиспользуемый в игре NPC Vlk_2000_Thorus (остаток от Gothic 1: без диалогов, нигде не
++// вставляется) с другим именем, внешностью и умениями: сохраняется и загружается как обычный NPC.
++class AiNpc final {
++  public:
++    explicit AiNpc(GameScript& owner);
++    ~AiNpc();
++
++    void tick(uint64_t dt);
++
++    bool isAiNpc(const Npc& npc) const;
++    // Модель думает или игрок говорит: выбор реплик в диалоге с ним ждёт (DialogMenu::haveToWaitOutput)
++    bool isBusy (const Npc& npc) const;
++
++    // Диалог с ним: свой выбор реплик вместо скриптов игры
++    bool dialogChoices(Npc& player, Npc& npc, std::vector<GameScript::DlgChoice>& out);
++    bool exec         (const GameScript::DlgChoice& dlg, Npc& player, Npc& npc);
++    void onDialogStart(Npc& player, Npc& npc);
++    void onDialogEnd  (Npc* player, Npc* npc);
++
++    // Реплики модели: текст (Windows-1251) и длительность для GameScript::messageByName/messageTime
++    bool lineText (std::string_view id, std::string_view& out) const;
++    bool lineTime (std::string_view id, uint32_t& ms) const;
++    // Реплика началась (в диалоге или вне его): звук - в приложении. false - не наша реплика
++    bool lineStart(Npc& speaker, std::string_view id, bool inDialog);
++
++    // Субтитры реплик вне диалога (MainWindow::paintEvent)
++    void paint(Tempest::Painter& p, int w, int h, float scale);
++
++    // Перед записью сохранения: метка памяти модели (память - у приложения, своя у каждого сохранения)
++    void beforeSave();
++    // Удар: кто кого (Npc::takeDamage) - события для модели
++    void onHit(Npc& attacker, Npc& victim);
++
++    enum : uint32_t {
++      ChoiceVoice = 0xFFFFFF20u,
++      ChoiceType  = 0xFFFFFF21u,
++      ChoiceTrade = 0xFFFFFF22u,
++      ChoiceBye   = 0xFFFFFF23u,
++      };
++
++  private:
++    struct Line {
++      std::string id;
++      std::string text;      // Windows-1251 - для шрифтов игры
++      std::string speaker;   // имя говорящего, Windows-1251
++      uint32_t    ms        = 0;
++      uint64_t    shownTill = 0; // субтитр вне диалога виден до
++      uint64_t    endsAt    = 0; // когда сказать приложению, что реплика кончилась
++      bool        started   = false;
++      bool        overlay   = false;
++      Npc*        npc       = nullptr;
++      };
++
++    struct Action {
++      std::string     id;
++      std::string     name;
++      uint64_t        started  = 0;
++      uint64_t        deadline = 0;
++      Npc*            target   = nullptr;
++      Item*           item     = nullptr;
++      const WayPoint* wp       = nullptr;
++      Tempest::Vec3   pos;
++      std::string     text;    // talk_to_npc: что сказать по приходе
++      std::string     mood;
++      int             phase    = 0;
++      };
++
++    struct Known {
++      uint64_t lastSeen = 0;
++      int32_t  hp       = 0;
++      bool     hostile  = false;
++      bool     dead     = false;
++      };
++
++    World* world();
++    Npc*   resolve();
++    void   insert(World& w);
++    void   setup(Npc& npc, bool fresh);
++    bool   isTargetWorld(World& w) const;
++
++    void   handle(const std::string& json);
++    void   cmdSay(const std::string& id, const std::string& who, const std::string& text, uint32_t ms,
++                  const std::string& to, const std::string& mood);
++    void   cmdAct(const std::string& id, const std::string& name, const void* args);
++    void   finish(Action& a, bool ok, std::string_view note);
++    void   tickActions(uint64_t now);
++    void   tickLines(uint64_t now);
++    void   tickEvents(uint64_t now);
++    void   cancelBody(std::string_view why);
++    void   speakOverlay(Npc& speaker, Npc* to, const std::string& id, const std::string& text, uint32_t ms);
++    void   endDialog();
++
++    void   sendReady();
++    void   sendSnapshot(std::string_view reason);
++    void   sendEvent(std::string_view kind, std::string_view text, Npc* who);
++    std::string snapshot();
++
++    // Ссылки на NPC и предметы для модели: n17, i42 - живут, пока живёт объект
++    std::string refOf(Npc& npc);
++    std::string refOf(Item& itm);
++    Npc*        npcByRef(std::string_view ref);
++    Item*       itemByRef(std::string_view ref);
++    bool        npcAlive(const Npc* npc);
++    std::string guildName(int32_t guild);
++    std::string placeName(const Tempest::Vec3& pos, float& dist);
++    size_t      itemSymbol(std::string_view name);
++    std::string itemNameUtf8(size_t symbol);
++    const WayPoint* placeByName(std::string_view name);
++    void        setParty(Npc& npc, bool on);
++    void        setActivity(Npc& npc, std::string_view zs);
++    bool        inDialogWithHero() const;
++    static float dist(const Npc& a, const Npc& b);
++
++    GameScript&                    owner;
++    size_t                         thorusSym   = size_t(-1);
++    Npc*                           geralt      = nullptr;
++    World*                         geraltWorld = nullptr;
++    bool                           readySent   = false;
++    bool                           wasEnabled  = false;
++    uint64_t                       insertTry   = 0;
++
++    bool                           talking     = false;
++    bool                           busy        = false;
++    uint64_t                       busyUntil   = 0;
++
++    std::vector<Line>              lines;
++    std::vector<Action>            acts;
++    std::vector<std::string>       inbox;
++
++    std::unordered_map<const Npc*,uint32_t>  npcRefs;
++    std::unordered_map<uint32_t,const Npc*>  npcByNum;
++    std::unordered_map<const Item*,uint32_t> itmRefs;
++    std::unordered_map<uint32_t,const Item*> itmByNum;
++    uint32_t                       nextRef     = 1;
++
++    std::unordered_map<const Npc*,Known>     known;
++    std::vector<std::string>       pendingEvents;
++    uint64_t                       eventTick   = 0;
++    uint64_t                       snapTick    = 0;
++    uint64_t                       heroNearAt  = 0;
++    bool                           heroNear    = false;
++    int32_t                        lastHp      = -1;
++    bool                           wasDown     = false;
++  };
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
 index 0000000..3fcd5aa
@@ -1624,10 +3371,41 @@ index b1d951f..8d5f5cd 100644
  
    if(hitFlg) {
 diff --git a/common/game/gamescript.cpp b/common/game/gamescript.cpp
-index 4b32af2..468e769 100644
+index 4b32af2..1d07293 100644
 --- a/common/game/gamescript.cpp
 +++ b/common/game/gamescript.cpp
-@@ -920,6 +920,12 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
+@@ -6,6 +6,7 @@
+ #include <cctype>
+ 
+ #include "game/compatibility/directmemory.h"
++#include "game/ainpc.h"
+ #include "game/definitions/spelldefinitions.h"
+ #include "game/serialize.h"
+ #include "utils/string_frm.h"
+@@ -98,6 +99,7 @@ GameScript::GameScript(GameSession &owner)
+   Gothic::inst().setupCommonScriptClasses(vm);
+   Gothic::inst().setupVmCommonApi(vm);
+   aiDefaultPipe.reset(new GlobalOutput(*this));
++  aiNpcPtr.reset(new AiNpc(*this));
+   initCommon();
+   initSettings();
+   Gothic::inst().onSettingsChanged.bind(this,&GameScript::initSettings);
+@@ -872,6 +874,14 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
+                                                              std::shared_ptr<zenkit::INpc> hnpc,
+                                                              const std::vector<uint32_t>& except,
+                                                              bool includeImp) {
++  // Gothic II Mobile: живой NPC - свой выбор реплик (голос, текст, торговля)
++  {
++  auto pl  = findNpc(player);
++  auto npc = findNpc(hnpc);
++  std::vector<DlgChoice> ai;
++  if(pl!=nullptr && npc!=nullptr && aiNpcPtr->dialogChoices(*pl,*npc,ai))
++    return ai;
++  }
+   ScopeVar self (*vm.global_self(),  hnpc);
+   ScopeVar other(*vm.global_other(), player);
+   std::vector<zenkit::IInfo*> hDialog;
+@@ -920,6 +930,12 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
        ch.sort     = info.nr;
        choice.emplace_back(std::move(ch));
        }
@@ -1640,19 +3418,21 @@ index 4b32af2..468e769 100644
      if(!choice.empty()){
        sort(choice);
        return choice;
-@@ -954,6 +960,11 @@ std::vector<GameScript::DlgChoice> GameScript::updateDialog(const GameScript::Dl
+@@ -954,6 +970,13 @@ std::vector<GameScript::DlgChoice> GameScript::updateDialog(const GameScript::Dl
    }
  
  void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
 +  if(dlg.handle==nullptr) {
-+    // Gothic II Mobile: реплика без скрипта - найм напарника
++    // Gothic II Mobile: реплика без скрипта - живой NPC или найм напарника
++    if(aiNpcPtr->exec(dlg,player,npc))
++      return;
 +    execCompanion(dlg,player,npc);
 +    return;
 +    }
    ScopeVar self (*vm.global_self(), npc.handlePtr());
    ScopeVar other(*vm.global_other(), player.handlePtr());
  
-@@ -1118,6 +1129,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
+@@ -1118,6 +1141,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
    return ret;
    }
  
@@ -1682,28 +3462,76 @@ index 4b32af2..468e769 100644
  void GameScript::invokeItem(Npc *npc, ScriptFn fn) {
    if(fn==size_t(-1) || fn == 0)
      return;
-@@ -1472,6 +1506,8 @@ uint64_t GameScript::tickCount() const {
+@@ -1281,6 +1327,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
+   }
+ 
+ bool GameScript::aiOutput(Npc &npc, std::string_view outputname, bool overlay) {
++  // Gothic II Mobile: реплика живого NPC вне диалога - звук играет приложение, субтитры - AiNpc::paint
++  if(aiNpcPtr->lineStart(npc,outputname,false)) {
++    npc.setAiOutputBarrier(messageTime(outputname),overlay);
++    return true;
++    }
+   string_frm name(outputname,".WAV");
+   uint64_t   dt = 0;
+ 
+@@ -1323,6 +1374,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
+   }
+ 
+ std::string_view GameScript::messageByName(std::string_view id) const {
++  // Gothic II Mobile: реплика живого NPC - текст от языковой модели
++  std::string_view ai;
++  if(aiNpcPtr!=nullptr && aiNpcPtr->lineText(id,ai))
++    return ai;
+   auto blk = dialogs.block_by_name(id);
+   if(blk == nullptr)
+     return "";
+@@ -1333,6 +1388,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
+   }
+ 
+ uint32_t GameScript::messageTime(std::string_view id) const {
++  // Gothic II Mobile: длительность реплики живого NPC - по голосу из приложения
++  uint32_t aiMs = 0;
++  if(aiNpcPtr!=nullptr && aiNpcPtr->lineTime(id,aiMs))
++    return aiMs;
+   static std::string tmp;
+   tmp.assign(id);
+ 
+@@ -1472,6 +1531,10 @@ uint64_t GameScript::tickCount() const {
  void GameScript::tick(uint64_t dt) {
    if(dma!=nullptr)
      dma->tick(dt);
 +  // Gothic II Mobile: напарники защищают героя, приказы отряду
 +  tickSquad();
++  // Gothic II Mobile: живой NPC - команды приложения, действия, события
++  aiNpcPtr->tick(dt);
    }
  
  uint32_t GameScript::rand(uint32_t max) {
 diff --git a/common/game/gamescript.h b/common/game/gamescript.h
-index 2cccb63..8400351 100644
+index 2cccb63..d6ecd59 100644
 --- a/common/game/gamescript.h
 +++ b/common/game/gamescript.h
-@@ -25,6 +25,7 @@ class Npc;
+@@ -25,8 +25,10 @@ class Npc;
  class Item;
  class VisualFx;
  class ParticleFx;
 +class WayPoint;
  class Serialize;
  class Gothic;
++class AiNpc;
  
-@@ -52,6 +53,8 @@ class GameScript final {
+ class ScriptFn final {
+   public:
+@@ -43,6 +45,8 @@ class ScriptFn final {
+   };
+ 
+ class GameScript final {
++  // Gothic II Mobile: живой NPC пользуется помощниками отряда (причина нападения, очередь реплик)
++  friend class AiNpc;
+   public:
+     GameScript(GameSession &owner);
+     ~GameScript();
+@@ -52,6 +56,8 @@ class GameScript final {
        int32_t          sort     = 0;
        uint32_t         scriptFn = 0;
        bool             isTrade  = false;
@@ -1712,7 +3540,7 @@ index 2cccb63..8400351 100644
        zenkit::IInfo*   handle   = nullptr;
        };
  
-@@ -121,6 +124,37 @@ class GameScript final {
+@@ -121,6 +127,39 @@ class GameScript final {
      auto updateDialog (const GameScript::DlgChoice &dlg, Npc &player, Npc &npc) -> std::vector<GameScript::DlgChoice>;
      void exec(const DlgChoice &dlg, Npc &player, Npc &npc);
  
@@ -1737,6 +3565,8 @@ index 2cccb63..8400351 100644
 +    void   invokeNpcFn (std::string_view name, Npc& npc, Npc& other);
 +    // Удар в бою: кого ударил герой и кто ударил своего - враги отряда на 30 с (Npc::takeDamage)
 +    void   squadNoteHit(Npc& attacker, Npc& victim);
++    // Gothic II Mobile: живой NPC под управлением языковой модели (ainpc.cpp, docs/AI_NPC.md)
++    AiNpc& aiNpc() { return *aiNpcPtr; }
 +    // Герой перенёсся («Путь», мгновенно): кто идёт следом - рядом с ним в строю; ждущие - в лагере
 +    void   squadArrive ();
 +    // Нанятый напарник: не погибает, только теряет сознание; его не добить и не обобрать
@@ -1750,7 +3580,7 @@ index 2cccb63..8400351 100644
      void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
      void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
      void  printCannotBuyError         (Npc &npc);
-@@ -445,6 +479,57 @@ class GameScript final {
+@@ -445,6 +484,57 @@ class GameScript final {
      void exitsession         ();
  
      void sort(std::vector<DlgChoice>& dlg);
@@ -1808,7 +3638,15 @@ index 2cccb63..8400351 100644
      void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
      bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
  
-@@ -486,6 +571,16 @@ class GameScript final {
+@@ -460,6 +550,7 @@ class GameScript final {
+     NpcProcessPolicy                                            aiProcessPolicy = NpcProcessPolicy::AiNormal;
+ 
+     std::unique_ptr<DirectMemory>                               dma;
++    std::unique_ptr<AiNpc>                                      aiNpcPtr;
+ 
+     std::unique_ptr<SpellDefinitions>                           spells;
+     std::unique_ptr<SvmDefinitions>                             svm;
+@@ -486,6 +577,16 @@ class GameScript final {
      size_t                                                      gilCount=0;
      std::vector<int32_t>                                        gilAttitudes;
      int                                                         aiOutOrderId=0;
@@ -4378,7 +6216,7 @@ index 4c01505..36cb23a 100644
    }
  
 diff --git a/common/mainwindow.cpp b/common/mainwindow.cpp
-index 52b66d3..25bad5c 100644
+index 52b66d3..a7d6d94 100644
 --- a/common/mainwindow.cpp
 +++ b/common/mainwindow.cpp
 @@ -1,5 +1,8 @@
@@ -4398,7 +6236,7 @@ index 52b66d3..25bad5c 100644
  
  #include "ui/dialogmenu.h"
  #include "ui/menuroot.h"
-@@ -18,10 +22,16 @@
+@@ -18,10 +22,17 @@
  #include "utils/string_frm.h"
  #include "world/triggers/abstracttrigger.h"
  #include "world/objects/npc.h"
@@ -4412,10 +6250,11 @@ index 52b66d3..25bad5c 100644
 +#include "utils/mobileperf.h"
 +#include "utils/perfstats.h"
 +#include "game/savegameheader.h"
++#include "game/ainpc.h"
  
  #include "commandline.h"
  #include "gothic.h"
-@@ -34,7 +44,7 @@ MainWindow::MainWindow(Device& device)
+@@ -34,7 +45,7 @@ MainWindow::MainWindow(Device& device)
      dialogs(inventory),document(keycodec),
      console(*this),
  #if defined(__MOBILE_PLATFORM__)
@@ -4424,7 +6263,17 @@ index 52b66d3..25bad5c 100644
  #endif
      player(dialogs,inventory) {
    Gothic::inst().onSettingsChanged.bind(this,&MainWindow::onSettings);
-@@ -224,6 +234,32 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -210,6 +221,9 @@ void MainWindow::paintEvent(PaintEvent& event) {
+       p.setBrush(Color(1.0));
+ 
+       drawMsg(p);
++      // Gothic II Mobile: субтитры живого NPC вне диалога
++      if(!dialogs.isActive())
++        world->script().aiNpc().paint(p,w(),h(),Gothic::interfaceScale(this));
+ 
+       auto focus = world->validateFocus(player.focus());
+       paintFocus(p,focus,vp);
+@@ -224,6 +238,32 @@ void MainWindow::paintEvent(PaintEvent& event) {
            bool showManaBar   = (opt.showManaBar==2) || (opt.showManaBar==1 && (pl->weaponState()==WeaponState::Mage || inventory.isActive()));
            bool showSwimBar   = (opt.showSwimBar==2) || (opt.showSwimBar==1 && pl->isDive());
  
@@ -4457,7 +6306,7 @@ index 52b66d3..25bad5c 100644
            if(showHealthBar)
              drawBar(p,barHp, 10, h()-10, hp, AlignLeft | AlignBottom);
            if(showManaBar)
-@@ -236,6 +272,7 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -236,6 +276,7 @@ void MainWindow::paintEvent(PaintEvent& event) {
                drawBar(p,barMisc,w()/2,h()-10, (v-t)/(v), AlignHCenter | AlignBottom);
                }
              }
@@ -4465,7 +6314,7 @@ index 52b66d3..25bad5c 100644
            }
          }
        }
-@@ -257,10 +294,18 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -257,10 +298,18 @@ void MainWindow::paintEvent(PaintEvent& event) {
    const float scale = Gothic::interfaceScale(this);
    if(Gothic::inst().doFrate() && !Gothic::inst().isDesktop()) {
      char fpsT[64]={};
@@ -4484,7 +6333,7 @@ index 52b66d3..25bad5c 100644
      }
  
    if(!Gothic::inst().isDesktop() && world!=nullptr) {
-@@ -304,6 +349,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
+@@ -304,6 +353,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
    }
  
  void MainWindow::mouseDownEvent(MouseEvent &event) {
@@ -4496,7 +6345,7 @@ index 52b66d3..25bad5c 100644
    if(event.button<sizeof(mouseP))
      mouseP[event.button]=true;
    auto act     = keycodec.tr(event);
-@@ -312,6 +362,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
+@@ -312,6 +366,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
    }
  
  void MainWindow::mouseUpEvent(MouseEvent &event) {
@@ -4507,7 +6356,7 @@ index 52b66d3..25bad5c 100644
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
    player.onKeyReleased(act,mapping);
-@@ -333,6 +387,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
+@@ -333,6 +391,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
    }
  
  void MainWindow::processMouse(MouseEvent& event, bool enable) {
@@ -4520,7 +6369,7 @@ index 52b66d3..25bad5c 100644
    auto center = Point(w()/2,h()/2);
    if(enable && event.pos()!=center && hasFocus()) {
      dMouse += (event.pos()-center);
-@@ -344,21 +404,23 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -344,21 +408,23 @@ void MainWindow::tickMouse(uint64_t dt) {
    auto camera = Gothic::inst().camera();
    if(dialogs.hasContent() || Gothic::inst().isPause() || camera==nullptr || camera->isCutscene()) {
      dMouse = Point();
@@ -4546,7 +6395,7 @@ index 52b66d3..25bad5c 100644
    dpScaled.x/=float(w());
    dpScaled.y/=float(h());
    if(camLookaroundInverse)
-@@ -375,12 +437,22 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -375,12 +441,22 @@ void MainWindow::tickMouse(uint64_t dt) {
    // Log::d("mouse dMouse   = ", dMouse.x,   ", ", dMouse.y);
    // Log::d("mouse dpScaled = ", dpScaled.x, ", ", dpScaled.y);
  
@@ -4569,7 +6418,7 @@ index 52b66d3..25bad5c 100644
    }
  
  void MainWindow::onSettings() {
-@@ -390,14 +462,74 @@ void MainWindow::onSettings() {
+@@ -390,14 +466,74 @@ void MainWindow::onSettings() {
    if(zMaxFps>0)
      maxFpsInv = 1000u/uint64_t(zMaxFps); else
      maxFpsInv = 0;
@@ -4644,7 +6493,7 @@ index 52b66d3..25bad5c 100644
    if(video.isActive()){
      event.accept();
      video.keyDownEvent(event);
-@@ -495,6 +627,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
+@@ -495,6 +631,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
    }
  
  void MainWindow::keyUpEvent(KeyEvent &event) {
@@ -4660,7 +6509,7 @@ index 52b66d3..25bad5c 100644
    if(uiKeyUp==&video){
      video.keyUpEvent(event);
      if(event.isAccepted())
-@@ -529,6 +670,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -529,6 +674,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
  
@@ -4672,7 +6521,7 @@ index 52b66d3..25bad5c 100644
    std::string_view menuEv;
    if(act==KeyCodec::Escape)
      menuEv = Gothic::inst().menuMain();
-@@ -543,6 +689,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -543,6 +693,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
      if(auto pl = Gothic::inst().player())
        rootMenu.setPlayer(*pl);
      clearInput();
@@ -4680,7 +6529,7 @@ index 52b66d3..25bad5c 100644
      }
    else if(act==KeyCodec::Inventory && !dialogs.isActive()) {
      if(inventory.isActive()) {
-@@ -553,10 +700,136 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -553,10 +704,136 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
          inventory.open(*pl);
        }
      clearInput();
@@ -4818,7 +6667,7 @@ index 52b66d3..25bad5c 100644
  void MainWindow::focusEvent(FocusEvent &event) {
    if(!event.in)
      return;
-@@ -882,8 +1155,16 @@ uint64_t MainWindow::tick() {
+@@ -882,8 +1159,16 @@ uint64_t MainWindow::tick() {
      Gothic::inst().finishLoading();
      if(st==Gothic::LoadState::FailedLoad)
        rootMenu.setMainMenu();
@@ -4835,7 +6684,7 @@ index 52b66d3..25bad5c 100644
      return 0;
      }
    else if(st!=Gothic::LoadState::Idle) {
-@@ -949,6 +1230,30 @@ void MainWindow::tickCamera(uint64_t dt) {
+@@ -949,6 +1234,30 @@ void MainWindow::tickCamera(uint64_t dt) {
                               ws==WeaponState::W2H);
    auto       pos          = pl!=nullptr ? pl->cameraBone(camera.isFirstPerson()) : Vec3();
  
@@ -4866,7 +6715,7 @@ index 52b66d3..25bad5c 100644
    if(!camera.isCutscene() && !camera.isFree()) {
      const bool fs = SystemApi::isFullscreen(hwnd());
      if(!fs && mouseP[Event::ButtonLeft]) {
-@@ -1102,20 +1407,46 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
+@@ -1102,20 +1411,49 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
    auto& thumb = lres.isEmpty() ? tex : lres;
    auto  pm    = device.readPixels(textureCast<const Texture2d&>(thumb));
  
@@ -4874,6 +6723,9 @@ index 52b66d3..25bad5c 100644
 +  // Gothic II Mobile: путь и сбор ведут героя очередью ИИ - она не должна попасть в сохранение
 +  player.onSaveGame();
 +#endif
++  // Gothic II Mobile: метка памяти живого NPC - приложение пишет его память под ней (docs/AI_NPC.md)
++  if(auto w = Gothic::inst().world())
++    w->script().aiNpc().beforeSave();
    Gothic::inst().startSave(std::move(textureCast<Texture2d&>(tex)),[slot=std::string(slot),name=std::string(name),pm](std::unique_ptr<GameSession>&& game){
      if(!game)
        return std::move(game);
@@ -4913,7 +6765,7 @@ index 52b66d3..25bad5c 100644
  
    update();
    }
-@@ -1127,6 +1458,11 @@ void MainWindow::onVideo(std::string_view fname) {
+@@ -1127,6 +1465,11 @@ void MainWindow::onVideo(std::string_view fname) {
    }
  
  void MainWindow::onStartLoading() {
@@ -4925,7 +6777,7 @@ index 52b66d3..25bad5c 100644
    player   .clearInput();
    inventory.onWorldChanged();
    dialogs  .onWorldChanged();
-@@ -1240,16 +1576,37 @@ void MainWindow::render(){
+@@ -1240,16 +1583,37 @@ void MainWindow::render(){
        once player position is updated, animation bones(cameraBone in particular) can be updated
        lastly - camera position
        */
@@ -4963,7 +6815,7 @@ index 52b66d3..25bad5c 100644
      Resources::resetRecycled(cmdId);
  
      if(video.isActive()) {
-@@ -1274,9 +1631,47 @@ void MainWindow::render(){
+@@ -1274,9 +1638,47 @@ void MainWindow::render(){
      renderer.draw(swapchain[swapchain.currentImage()],enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
      }
      sync = device.submit(cmd);
@@ -5011,7 +6863,7 @@ index 52b66d3..25bad5c 100644
      auto t = Application::tickCount();
      auto frameTime = maxFpsInv;
      if(!Gothic::inst().isInGame() && !video.isActive())
-@@ -1286,6 +1681,7 @@ void MainWindow::render(){
+@@ -1286,6 +1688,7 @@ void MainWindow::render(){
        Application::sleep(delay);
        t += delay;
        }
@@ -5138,10 +6990,70 @@ index 3fb2713..a49b58a 100644
 +#endif
    };
 diff --git a/common/ui/dialogmenu.cpp b/common/ui/dialogmenu.cpp
-index 5a7db4d..817dea1 100644
+index 5a7db4d..6b7023c 100644
 --- a/common/ui/dialogmenu.cpp
 +++ b/common/ui/dialogmenu.cpp
-@@ -391,7 +391,7 @@ bool DialogMenu::haveToShowSubtitles(bool isPl) const {
+@@ -5,9 +5,11 @@
+ #include <algorithm>
+ #include <cassert>
+ 
++#include "game/ainpc.h"
+ #include "utils/gthfont.h"
+ #include "utils/string_frm.h"
+ #include "world/objects/npc.h"
++#include "world/world.h"
+ #include "gothic.h"
+ #include "inventorymenu.h"
+ #include "resources.h"
+@@ -230,10 +232,14 @@ bool DialogMenu::aiOutput(Npc &npc, std::string_view msg) {
+   current.txt     = Gothic::inst().messageByName(msg);
+   current.msgTime = Gothic::inst().messageTime(msg);
+   current.time    = current.msgTime + (dlgAnimation ? ANIM_TIME*2 : 0);
+-  currentSnd      = soundDevice.load(Resources::loadSoundBuffer(string_frm(msg,".wav")));
+   curentIsPl      = (pl==&npc);
+-
+-  currentSnd.play();
++  // Gothic II Mobile: реплика живого NPC - голос играет приложение (docs/AI_NPC.md)
++  if(npc.world().script().aiNpc().lineStart(npc,msg,true)) {
++    currentSnd = SoundEffect();
++    } else {
++    currentSnd = soundDevice.load(Resources::loadSoundBuffer(string_frm(msg,".wav")));
++    currentSnd.play();
++    }
+   npc.setAiOutputBarrier(current.msgTime,false);
+   update();
+   return true;
+@@ -268,6 +274,9 @@ bool DialogMenu::hasContent() const {
+   }
+ 
+ bool DialogMenu::onStart(Npc &p, Npc &ot) {
++  // Gothic II Mobile: разговор с живым NPC - событие для языковой модели
++  if(state==State::PreStart)
++    ot.world().script().aiNpc().onDialogStart(p,ot);
+   choice         = ot.dialogChoices(p,except,state==State::PreStart);
+   state          = State::Active;
+   depth          = 0;
+@@ -372,6 +381,8 @@ void DialogMenu::close() {
+     }
+   if(prevNpc && prevNpc!=prevPl){
+     prevNpc->stopDlgAnim();
++    // Gothic II Mobile: разговор с живым NPC окончен
++    prevNpc->world().script().aiNpc().onDialogEnd(prevPl,prevNpc);
+     }
+   }
+ 
+@@ -382,6 +393,10 @@ bool DialogMenu::haveToWaitOutput() const {
+   if(other && other->haveOutput()){
+     return true;
+     }
++  // Gothic II Mobile: живой NPC думает или герой говорит в микрофон - выбор реплик подождёт
++  if(other && other->world().script().aiNpc().isBusy(*other)){
++    return true;
++    }
+   return false;
+   }
+ 
+@@ -391,7 +406,7 @@ bool DialogMenu::haveToShowSubtitles(bool isPl) const {
  
  void DialogMenu::startTrade() {
    if(pl!=nullptr && other!=nullptr)
@@ -5150,7 +7062,7 @@ index 5a7db4d..817dea1 100644
    dlgTrade=false;
    }
  
-@@ -411,6 +411,7 @@ void DialogMenu::onEntry(const GameScript::DlgChoice &e) {
+@@ -411,6 +426,7 @@ void DialogMenu::onEntry(const GameScript::DlgChoice &e) {
      selected = e;
      depth    = 1;
      dlgTrade = e.isTrade;
@@ -5158,7 +7070,7 @@ index 5a7db4d..817dea1 100644
      except.push_back(e.scriptFn);
      Gothic::inst().dialogExec(e,*pl,*other);
  
-@@ -527,6 +528,48 @@ void DialogMenu::paintChoice(PaintEvent &e) {
+@@ -527,6 +543,48 @@ void DialogMenu::paintChoice(PaintEvent &e) {
      }
    }
  
@@ -8676,10 +10588,10 @@ index f46becc..69f1ee1 100644
 +  };
 diff --git a/common/utils/cp1251.h b/common/utils/cp1251.h
 new file mode 100644
-index 0000000..64f5b91
+index 0000000..e0f2d62
 --- /dev/null
 +++ b/common/utils/cp1251.h
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,98 @@
 +#pragma once
 +
 +#include <cstdint>
@@ -8733,6 +10645,48 @@ index 0000000..64f5b91
 +      ret.append("...");
 +    else
 +      ret.push_back('?');
++    }
++  return ret;
++  }
++
++// Gothic II Mobile: обратно - строки игры (имена, предметы) для приложения и языковой модели (docs/AI_NPC.md)
++inline std::string fromCp1251(std::string_view cp) {
++  std::string ret;
++  ret.reserve(cp.size()*2);
++  auto put = [&ret](uint32_t u) {
++    if(u<0x80) {
++      ret.push_back(char(u));
++      }
++    else if(u<0x800) {
++      ret.push_back(char(0xC0u | (u>>6)));
++      ret.push_back(char(0x80u | (u & 0x3Fu)));
++      }
++    else {
++      ret.push_back(char(0xE0u | (u>>12)));
++      ret.push_back(char(0x80u | ((u>>6) & 0x3Fu)));
++      ret.push_back(char(0x80u | (u & 0x3Fu)));
++      }
++    };
++  for(char ch:cp) {
++    const uint8_t c = uint8_t(ch);
++    if(c<0x80)
++      put(c);
++    else if(c>=0xC0)
++      put(0x410u + uint32_t(c-0xC0));
++    else if(c==0xA8)
++      put(0x401);   // Ё
++    else if(c==0xB8)
++      put(0x451);   // ё
++    else if(c==0x96 || c==0x97)
++      put(0x2014);  // тире
++    else if(c==0x85)
++      put(0x2026);  // многоточие
++    else if(c==0xAB || c==0xBB || c==0x93 || c==0x94)
++      put('"');
++    else if(c==0xA0)
++      put(' ');
++    else
++      put('?');
 +    }
 +  return ret;
 +  }
@@ -9008,10 +10962,10 @@ index f8badbd..a918201 100644
    while(true) {
      {
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..8bce0cc 100644
+index e015398..2c91f89 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
-@@ -4,6 +4,7 @@
+@@ -4,10 +4,12 @@
  #include <Tempest/Log>
  
  #include "graphics/mesh/skeleton.h"
@@ -9019,7 +10973,12 @@ index e015398..8bce0cc 100644
  #include "graphics/visualfx.h"
  #include "game/damagecalculator.h"
  #include "game/serialize.h"
-@@ -39,6 +40,9 @@ void Npc::GoTo::load(Serialize& fin) {
+ #include "game/gamescript.h"
++#include "game/ainpc.h"
+ #include "utils/string_frm.h"
+ #include "world/objects/interactive.h"
+ #include "world/objects/item.h"
+@@ -39,6 +41,9 @@ void Npc::GoTo::load(Serialize& fin) {
      if(flag==GoToHint::GT_Enemy || flag==GoToHint::GT_EnemyG)
        clear(); // not persistent flags, and should be cleared by FAI
    //  }
@@ -9029,7 +10988,7 @@ index e015398..8bce0cc 100644
    }
  
  Vec3 Npc::GoTo::target() const {
-@@ -56,6 +60,14 @@ bool Npc::GoTo::isClose(const Npc& self, float dist) const {
+@@ -56,6 +61,14 @@ bool Npc::GoTo::isClose(const Npc& self, float dist) const {
      return MoveAlgo::isClose(self, *npc, dist);
    if(wp!=nullptr)
      return MoveAlgo::isClose(self, *wp, dist);
@@ -9044,7 +11003,7 @@ index e015398..8bce0cc 100644
    return MoveAlgo::isClose(self, pos, dist);
    }
  
-@@ -87,8 +99,9 @@ void Npc::GoTo::set(const Item* to) {
+@@ -87,8 +100,9 @@ void Npc::GoTo::set(const Item* to) {
    }
  
  void Npc::GoTo::set(const Vec3& to) {
@@ -9056,7 +11015,7 @@ index e015398..8bce0cc 100644
    }
  
  void Npc::GoTo::setFlee() {
-@@ -502,6 +515,14 @@ bool Npc::resetPositionToTA() {
+@@ -502,6 +516,14 @@ bool Npc::resetPositionToTA() {
    if(isPlayer())
      return true;
  
@@ -9071,11 +11030,12 @@ index e015398..8bce0cc 100644
    auto at = currentTaPoint();
    if(at==nullptr)
      return false;
-@@ -593,9 +614,22 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
+@@ -593,9 +615,23 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
    }
  
  void Npc::onNoHealth(bool death, HitSound sndMask) {
-+  const bool hired = owner.script().isHired(*this);
++  // Gothic II Mobile: живой NPC (Геральт) тоже не погибает - только теряет сознание
++  const bool hired = owner.script().isHired(*this) || owner.script().aiNpc().isAiNpc(*this);
 +  if(death && hired) {
 +    // Gothic II Mobile: нанятый напарник не погибает - теряет сознание, потом встаёт, пьёт зелья и
 +    // идёт дальше (ZS_Unconscious -> ZS_HealSelf). В воде без сознания утонул бы - там просто держится
@@ -9096,7 +11056,7 @@ index e015398..8bce0cc 100644
    dropTorch();
    visual.setToFightMode(WeaponState::NoWeapon);
    updateWeaponSkeleton();
-@@ -1555,7 +1589,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
+@@ -1555,7 +1591,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
    }
  
  bool Npc::implAttack(uint64_t dt) {
@@ -9105,7 +11065,7 @@ index e015398..8bce0cc 100644
      return false;
  
    if(currentTarget->isDown()){
-@@ -1580,8 +1614,11 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1580,8 +1616,11 @@ bool Npc::implAttack(uint64_t dt) {
      return true;
      }
  
@@ -9119,7 +11079,7 @@ index e015398..8bce0cc 100644
  
    if(bs==BS_LIE) {
      setAnim(Npc::Anim::Idle);
-@@ -1882,6 +1919,10 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1882,6 +1921,10 @@ bool Npc::implAttack(uint64_t dt) {
  bool Npc::implAiTick(uint64_t dt) {
    // Note AI-action queue takes priority, test case: Vatras pray at night
    if(aiQueue.size()==0) {
@@ -9130,16 +11090,17 @@ index e015398..8bce0cc 100644
      tickRoutine();
      if(aiQueue.size()>0)
        nextAiAction(aiQueue,dt);
-@@ -2077,6 +2118,8 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2077,6 +2120,9 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
  
    if(!isSpell || splCat==SpellCategory::SPELL_BAD) {
      perceptionProcess(other,this,0,PERC_ASSESSDAMAGE);
 +    // Gothic II Mobile: отряд нападает на того, кого ударил герой, и на того, кто ударил своего
 +    owner.script().squadNoteHit(other,*this);
++    owner.script().aiNpc().onHit(other,*this);
      fghAlgo.onTakeHit();
      implFaiWait(0);
      }
-@@ -2529,6 +2572,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2529,6 +2575,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -9151,7 +11112,7 @@ index e015398..8bce0cc 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -3504,6 +3552,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -3504,6 +3555,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -9160,18 +11121,18 @@ index e015398..8bce0cc 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +3843,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +3846,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
-+  // Gothic II Mobile: нанятого напарника добить нельзя - он только без сознания
-+  if(owner.script().isHired(oth))
++  // Gothic II Mobile: нанятого напарника и живого NPC добить нельзя - они только без сознания
++  if(owner.script().isHired(oth) || owner.script().aiNpc().isAiNpc(oth))
 +    return false;
 +
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -4158,6 +4212,61 @@ bool Npc::isPrehit() const {
+@@ -4158,6 +4215,61 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -9233,7 +11194,7 @@ index e015398..8bce0cc 100644
  bool Npc::isImmortal() const {
    return hnpc->flags & zenkit::NpcFlag::IMMORTAL;
    }
-@@ -4238,6 +4347,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4350,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -9244,7 +11205,7 @@ index e015398..8bce0cc 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4356,6 +4469,20 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4472,20 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -9265,7 +11226,7 @@ index e015398..8bce0cc 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4822,3 +4949,40 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4822,3 +4952,40 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
    if(syncAtt)
      visual.syncAttaches();
    }
