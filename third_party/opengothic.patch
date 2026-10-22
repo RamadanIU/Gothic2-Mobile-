@@ -3870,7 +3870,7 @@ index 0000000..915c632
 +    static void             resolve(World& w, std::vector<Spot>& out);
 +  };
 diff --git a/common/gothic.cpp b/common/gothic.cpp
-index 56c5d58..cc5a0b2 100644
+index 56c5d58..bbc1188 100644
 --- a/common/gothic.cpp
 +++ b/common/gothic.cpp
 @@ -18,6 +18,7 @@
@@ -3881,7 +3881,7 @@ index 56c5d58..cc5a0b2 100644
  #include "utils/fileutil.h"
  #include "utils/fileext.h"
  #include "utils/inifile.h"
-@@ -149,6 +150,24 @@ Gothic::Gothic(GameModDescriptor desc) {
+@@ -149,6 +150,36 @@ Gothic::Gothic(GameModDescriptor desc) {
      iniFile->set("INTERNAL", "vidResIndex", 0); // full-res
      }
    {
@@ -3898,15 +3898,27 @@ index 56c5d58..cc5a0b2 100644
 +    iniFile->set("RENDERER_D3D","zFogRadial",         g2m.getI("GRAPHICS","sunshafts",1)!=0 ? 1 : 0);
 +    iniFile->set("ENGINE",      "zCloudShadowScale",  g2m.getI("GRAPHICS","ssao",0)!=0 ? 1 : 0);
 +    iniFile->set("ENGINE",      "zWindEnabled",       g2m.getI("GRAPHICS","wind",1)!=0 ? 1 : 0);
++    // Оптимизация для телефона: масштабирование до экрана, частота анимации дальних NPC, дальность ветра (м; 0 - без ветра)
++    opts.sharpUpscale     = g2m.getI("GRAPHICS","upscale",1)!=0;
++    opts.animLod          = g2m.getI("GRAPHICS","animLod",1)!=0;
++    if(g2m.getI("GRAPHICS","showFps",0)!=0)
++      setFRate(true);
++    if(g2m.has("GRAPHICS","windRange")) {
++      const float wind = std::max(0.f, g2m.getF("GRAPHICS","windRange",80));
++      opts.windRange = wind*100.f;
++      iniFile->set("ENGINE","zWindEnabled", wind>0 ? 1 : 0);
++      }
 +    Tempest::Log::i("[g2m] graphics: fps=",opts.fpsLimit," res=",iniFile->getI("INTERNAL","vidResIndex"),
-+                    " shadows=",int(opts.shadowResolution)," view=",int(opts.viewDistance/100.f),"m detail=",opts.detailRatio);
++                    " shadows=",int(opts.shadowResolution)," view=",int(opts.viewDistance/100.f),"m detail=",opts.detailRatio,
++                    " upscale=",(opts.sharpUpscale ? "sharp" : "bilinear")," animLod=",int(opts.animLod),
++                    " wind=",int(iniFile->getI("ENGINE","zWindEnabled")!=0 ? opts.windRange/100.f : 0.f),"m");
 +    }
 +  }
 +  {
    defaults.reset(new IniFile());
    defaults->set("GAME", "enableMouse",         1);
    defaults->set("GAME", "mouseSensitivity",    0.5f);
-@@ -644,7 +663,12 @@ void Gothic::updateAnimation(uint64_t dt) {
+@@ -644,7 +675,12 @@ void Gothic::updateAnimation(uint64_t dt) {
    }
  
  void Gothic::quickSave() {
@@ -3920,10 +3932,10 @@ index 56c5d58..cc5a0b2 100644
  
  void Gothic::quickLoad() {
 diff --git a/common/gothic.h b/common/gothic.h
-index 2654cc4..d991c5e 100644
+index 2654cc4..687159b 100644
 --- a/common/gothic.h
 +++ b/common/gothic.h
-@@ -71,6 +71,11 @@ class Gothic final {
+@@ -71,6 +71,14 @@ class Gothic final {
        bool     showHealthBar     = true;
        uint8_t  showManaBar       = 2;
        uint8_t  showSwimBar       = 1;
@@ -3932,14 +3944,17 @@ index 2654cc4..d991c5e 100644
 +      uint32_t shadowResolution  = 2048; // 0 - без теней
 +      float    viewDistance      = 0;    // дальность прорисовки, см; 0 - без ограничения
 +      float    detailRatio       = 0;    // мелочь дальше radius/detailRatio не рисуется; 0 - всё
++      bool     animLod           = true; // далёкие и невидимые NPC пересчитывают скелет реже
++      float    windRange         = 8000; // ветер качает траву и деревья ближе этого, см; 0 - везде
++      bool     sharpUpscale      = true; // масштабирование до экрана: Ланцош (чётче) или билинейное
        };
  
      auto         version() const -> const VersionInfo&;
 diff --git a/common/graphics/drawcommands.cpp b/common/graphics/drawcommands.cpp
-index 1bf7897..00616c0 100644
+index 1bf7897..06ad0da 100644
 --- a/common/graphics/drawcommands.cpp
 +++ b/common/graphics/drawcommands.cpp
-@@ -286,10 +286,13 @@ void DrawCommands::visibilityPass(Encoder<CommandBuffer>& cmd, int pass) {
+@@ -286,10 +286,17 @@ void DrawCommands::visibilityPass(Encoder<CommandBuffer>& cmd, int pass) {
      const size_t visClustersSz = maxPayload*sizeof(uint32_t)*4;
      usesSsbo(view.visClusters, visClustersSz);
  
@@ -3948,9 +3963,13 @@ index 1bf7897..00616c0 100644
      push.firstMeshlet = 0;
      push.meshletCount = uint32_t(clusters.size());
      push.znear        = scene.znear;
-+    // Gothic II Mobile: дальность прорисовки и мелочь вдали - из настроек экрана запуска
++    // Gothic II Mobile: дальность прорисовки и мелочь вдали - из настроек экрана запуска. В тенях мелочь
++    // отсекается вдвое ближе (и даже при «все»): тень травинки или камешка в карте теней - пара точек,
++    // а рисовать её приходится с проверкой прозрачности текстуры
 +    push.viewDist     = Gothic::options().viewDistance;
 +    push.detailRatio  = Gothic::options().detailRatio;
++    if(SceneGlobals::isShadowView(viewport))
++      push.detailRatio = std::max(push.detailRatio*2.f, 0.004f);
  
      auto* pso = &Shaders::inst().visibilityPassSh;
      if(viewport==SceneGlobals::V_Main)
@@ -4025,8 +4044,36 @@ index 216d392..f0244f8 100644
  
      float              translateY() const { return trY; }
      auto               rootNode() const -> const Tempest::Matrix4x4;
+diff --git a/common/graphics/meshobjects.cpp b/common/graphics/meshobjects.cpp
+index cd3875e..7c23319 100644
+--- a/common/graphics/meshobjects.cpp
++++ b/common/graphics/meshobjects.cpp
+@@ -71,6 +71,11 @@ void MeshObjects::Mesh::setFatness(float f) {
+     sub[i].setFatness(f);
+   }
+ 
++void MeshObjects::Mesh::setCullScale(float k) {
++  for(size_t i=0;i<subCount;++i)
++    sub[i].setCullScale(k);
++  }
++
+ void MeshObjects::Mesh::setWind(zenkit::AnimationType m, float intensity) {
+   for(size_t i=0;i<subCount;++i)
+     sub[i].setWind(m,intensity);
+diff --git a/common/graphics/meshobjects.h b/common/graphics/meshobjects.h
+index b002cf6..243ff9b 100644
+--- a/common/graphics/meshobjects.h
++++ b/common/graphics/meshobjects.h
+@@ -58,6 +58,7 @@ class MeshObjects final {
+         void   setFatness  (float f);
+         void   setWind     (zenkit::AnimationType m, float intensity);
+         void   startMMAnim (std::string_view anim, float intensity, uint64_t timeUntil);
++        void   setCullScale(float k);
+ 
+         bool   isEmpty()    const { return subCount==0; }
+         size_t nodesCount() const { return subCount;    }
 diff --git a/common/graphics/renderer.cpp b/common/graphics/renderer.cpp
-index 03a64b2..3b56b9f 100644
+index 03a64b2..a72ab35 100644
 --- a/common/graphics/renderer.cpp
 +++ b/common/graphics/renderer.cpp
 @@ -111,6 +111,7 @@ Renderer::~Renderer() {
@@ -4048,7 +4095,67 @@ index 03a64b2..3b56b9f 100644
      }
    }
  
-@@ -1768,7 +1771,7 @@ void Renderer::drawUnderwater(Encoder<CommandBuffer>& cmd, const WorldView& wvie
+@@ -469,7 +472,13 @@ void Renderer::resetSkyFog() {
+   switch(sky.quality) {
+     case None:
+     case VolumetricLQ:
++#if defined(__ANDROID__)
++      // Gothic II Mobile: туман - плавный градиент, таблица 128x72x48 вдвое дешевле в расчёте каждый
++      // кадр (fog_view_lut.comp) и на глаз не отличается
++      sky.fogLut3D   = device.image3d(sky.lutRGBAFormat, 128, 72, 48);
++#else
+       sky.fogLut3D   = device.image3d(sky.lutRGBAFormat, 160, 90, 64);
++#endif
+       break;
+     case VolumetricHQ:
+       // fogLut and oclussion are decupled
+@@ -517,7 +526,16 @@ void Renderer::prepareSky(Tempest::Encoder<Tempest::CommandBuffer>& cmd, WorldVi
+     cmd.setPushData(&sz, sizeof(sz));
+     cmd.setPipeline(shaders.skyMultiScattering);
+     cmd.draw(nullptr, 0, 3);
++    sky.viewLutSkip = 0;
++    }
++
++  // Gothic II Mobile: небо по направлениям взгляда (viewLut, с облаками - 512x256 RGBA32F) зависит от высоты
++  // камеры, солнца и облаков, а не от поворота камеры, и меняется медленно - обновлять раз в 4 кадра
++  if(sky.viewLutSkip>0) {
++    --sky.viewLutSkip;
++    return;
+     }
++  sky.viewLutSkip = 3;
+ 
+   auto sz = Vec2(float(sky.viewLut.w()), float(sky.viewLut.h()));
+   cmd.setFramebuffer({{sky.viewLut, Tempest::Discard, Tempest::Preserve}});
+@@ -751,7 +769,10 @@ void Renderer::drawTonemapping(Attachment& result, Encoder<CommandBuffer>& cmd,
+   if(mul>0)
+     p.mul = mul;
+ 
+-  auto& pso = (settings.vidResIndex==0) ? shaders.tonemapping : shaders.tonemappingUpscale;
++  // Gothic II Mobile: «простое» масштабирование - одна билинейная выборка вместо 12 выборок Ланцоша
++  // на каждый пиксель экрана (полное разрешение экрана, самый дорогой по числу пикселей проход)
++  const bool sharp = Gothic::options().sharpUpscale;
++  auto& pso = (settings.vidResIndex==0 || !sharp) ? shaders.tonemapping : shaders.tonemappingUpscale;
+   cmd.setFramebuffer({ {result, Tempest::Discard, Tempest::Preserve} });
+   cmd.setBinding(0, wview.sceneGlobals().uboGlobal[SceneGlobals::V_Main]);
+   // This Lanczos implementation pairs adjacent weights using bilinear sampling.
+@@ -861,6 +882,16 @@ void Renderer::drawFog(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const Worl
+     case PathTrace:
+       return;
+     }
++  // Gothic II Mobile: дымка у границы прорисовки (fog.frag): с 60 % дальности, к 95 % - цвет неба
++  struct Push { float fadeStart; float fadeEnd; } push = {};
++  if(Gothic::options().viewDistance>0) {
++    push.fadeStart = Gothic::options().viewDistance*0.60f;
++    push.fadeEnd   = Gothic::options().viewDistance*0.95f;
++    }
++  if(sky.quality!=Epipolar) {
++    cmd.setBinding(5, sky.viewLut, sky.sampler);
++    cmd.setPushData(push);
++    }
+   cmd.draw(nullptr, 0, 3);
+   }
+ 
+@@ -1768,7 +1799,7 @@ void Renderer::drawUnderwater(Encoder<CommandBuffer>& cmd, const WorldView& wvie
  
  void Renderer::drawShadowMap(Encoder<CommandBuffer>& cmd, uint8_t fId, WorldView& view) {
    for(uint8_t i=0; i<Resources::ShadowLayers; ++i) {
@@ -4057,7 +4164,7 @@ index 03a64b2..3b56b9f 100644
        continue;
      cmd.setDebugMarker(string_frm("ShadowMap #",i));
      cmd.setFramebuffer({}, {shadowMap[i], 0.f, Tempest::Preserve});
-@@ -1816,7 +1819,8 @@ void Renderer::drawShadowResolve(Encoder<CommandBuffer>& cmd, const WorldView& w
+@@ -1816,7 +1847,8 @@ void Renderer::drawShadowResolve(Encoder<CommandBuffer>& cmd, const WorldView& w
      }
    else {
      for(size_t r=0; r<Resources::ShadowLayers; ++r) {
@@ -4067,8 +4174,21 @@ index 03a64b2..3b56b9f 100644
          continue;
        cmd.setBinding(4+r, shadowMap[r], Resources::shadowSampler());
        }
+@@ -1859,9 +1891,10 @@ void Renderer::drawLights(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
+     cmd.setBinding(11,scene.rtScene.rtDesc);
+     }
+ 
+-  auto  originLwc = scene.originLwc;
++  // Gothic II Mobile: и дальность прорисовки - свет дальше неё не рисуется (light.vert)
++  struct Push { Vec3 originLwc; float viewDist; } push = {scene.originLwc, Gothic::options().viewDistance};
+   auto& ibo       = Resources::cubeIbo();
+-  cmd.setPushData(&originLwc, sizeof(originLwc));
++  cmd.setPushData(&push, sizeof(push));
+   cmd.setPipeline(*lights.directLightPso);
+   cmd.draw(nullptr,ibo, 0,ibo.size(), 0,wview.lights().size());
+   }
 diff --git a/common/graphics/renderer.h b/common/graphics/renderer.h
-index 912ea33..e80688b 100644
+index 912ea33..a8085ba 100644
 --- a/common/graphics/renderer.h
 +++ b/common/graphics/renderer.h
 @@ -124,7 +124,7 @@ class Renderer final {
@@ -4080,19 +4200,197 @@ index 912ea33..e80688b 100644
        bool           vsmEnabled         = false;
        bool           rtsmEnabled        = false;
        bool           swrEnabled         = false;
+@@ -191,6 +191,7 @@ class Renderer final {
+       Tempest::Sampler       sampler = Tempest::Sampler::bilinear();
+ 
+       bool                   lutIsInitialized = false;
++      uint8_t                viewLutSkip      = 0; // Gothic II Mobile: сколько кадров ещё не обновлять viewLut
+       Tempest::Attachment    transLut, multiScatLut, viewLut, viewCldLut;
+       Tempest::StorageImage  cloudsLut, fogLut3D, fogLut3DMs;
+       Tempest::StorageImage  occlusionLut, irradianceLut;
+diff --git a/common/graphics/sceneglobals.h b/common/graphics/sceneglobals.h
+index 09a9183..51d87e7 100644
+--- a/common/graphics/sceneglobals.h
++++ b/common/graphics/sceneglobals.h
+@@ -54,6 +54,7 @@ class SceneGlobals final {
+     const Tempest::Matrix4x4& viewProjectInv() const;
+     const Tempest::Matrix4x4& viewShadow(uint8_t view) const;
+     const Tempest::Vec3       clipInfo() const;
++    const Tempest::Vec3&      camPos() const { return uboGlobalCpu.camPos; } // Gothic II Mobile: ветер у камеры
+ 
+     const Tempest::Matrix4x4  viewProjectLwc() const;
+     const Tempest::Matrix4x4  viewProjectLwcInv() const;
+diff --git a/common/graphics/visualobjects.cpp b/common/graphics/visualobjects.cpp
+index b7b6f25..82c1fae 100644
+--- a/common/graphics/visualobjects.cpp
++++ b/common/graphics/visualobjects.cpp
+@@ -4,6 +4,7 @@
+ #include <cassert>
+ 
+ #include "graphics/mesh/submesh/animmesh.h"
++#include "utils/perfstats.h"
+ #include "gothic.h"
+ 
+ using namespace Tempest;
+@@ -63,6 +64,11 @@ void VisualObjects::Item::setAsGhost(bool g) {
+     }
+   }
+ 
++void VisualObjects::Item::setCullScale(float k) {
++  if(owner!=nullptr)
++    owner->setCullScale(id, k);
++  }
++
+ void VisualObjects::Item::setFatness(float f) {
+   if(owner!=nullptr) {
+     if(owner->objects[id].fatness == f)
+@@ -370,6 +376,24 @@ uint32_t VisualObjects::clusterId(const DrawBuckets::Bucket& bucket, size_t firs
+   return uint32_t(ret);
+   }
+ 
++void VisualObjects::setCullScale(size_t i, float k) {
++  // Gothic II Mobile: сфера кластера для отсечения - в k раз больше. Отсечение мелочи вдали (detailRatio)
++  // считает объект крупнее и рисует его дальше; проверки видимости остаются верными (сфера с запасом)
++  auto& obj = objects[i];
++  if(obj.isEmpty() || obj.type==DrawCommands::Landscape || obj.clusterId==uint32_t(-1))
++    return;
++  auto& bk = *obj.bucketId;
++  float r  = 0;
++  if(bk.staticMesh!=nullptr)
++    r = bk.staticMesh->bbox.rConservative + bk.mat.waveMaxAmplitude;
++  else if(bk.animMesh!=nullptr)
++    r = bk.animMesh->bbox.rConservative;
++  else
++    return;
++  clustersMem[obj.clusterId].r = r*k;
++  clustersMem.markClusters(obj.clusterId);
++  }
++
+ void VisualObjects::startMMAnim(size_t i, std::string_view animName, float intensity, uint64_t timeUntil) {
+   auto& obj        = objects[i];
+   auto  staticMesh = obj.bucketId->staticMesh;
+@@ -478,10 +502,41 @@ void VisualObjects::preFrameUpdateWind() {
+   float ax = float(scene.tickCount%period)/float(period);
+   ax = ax*2.f-1.f;
+ 
++  // Gothic II Mobile: ветер сдвигал каждый кадр все деревья и кусты мира (тысячи объектов) - процессор и
++  // перезаливка их данных в видеопамять. Теперь: ближе 30 м - каждый кадр, дальше - через кадр (у
++  // соседних объектов в разные кадры), у границы windRange качание плавно затухает до покоя, за ней объект
++  // стоит в покое и не трогается. Покачивание вдали всё равно не разглядеть.
++  static uint32_t frame = 0;
++  ++frame;
++  const float   range    = Gothic::options().windRange;
++  const float   fadeFrom = range*0.75f;
++  const float   nearDist = std::min(3000.f, fadeFrom);
++  const auto    cam      = scene.camPos();
++  uint32_t      updated  = 0;
++
+   for(auto id:objectsWind) {
+     auto& i = objects[id];
+     float m = 0;
+ 
++    float fade = 1;
++    if(range>0) {
++      const float dx = i.pos[3][0]-cam.x, dy = i.pos[3][1]-cam.y, dz = i.pos[3][2]-cam.z;
++      const float d2 = dx*dx + dy*dy + dz*dz;
++      if(d2>=range*range) {
++        if(!i.windRest) {
++          updateInstance(id);
++          i.windRest = true;
++          ++updated;
++          }
++        continue;
++        }
++      if(d2>nearDist*nearDist && ((id+frame)&1)!=0)
++        continue;
++      const float d = std::sqrt(d2);
++      if(d>fadeFrom)
++        fade = std::max(0.f, (range-d)/(range-fadeFrom));
++      }
++
+     switch(i.wind) {
+       case zenkit::AnimationType::WIND:
+         // tree. note: mods tent to bump Intensity to insane values
+@@ -506,11 +561,15 @@ void VisualObjects::preFrameUpdateWind() {
+     float shift = i.pos[3][0]*scene.windDir.x + i.pos[3][2]*scene.windDir.y;
+     const float a = m * std::cos(float(ax*M_PI) + shift*0.0001f);
+ 
+-    pos[1][0] += scene.windDir.x*a;
+-    pos[1][2] += scene.windDir.y*a;
++    pos[1][0] += scene.windDir.x*a*fade;
++    pos[1][2] += scene.windDir.y*a*fade;
+ 
+     updateInstance(id, &pos);
++    i.windRest = false;
++    ++updated;
+     }
++  PerfStats::windTotal.store(uint32_t(objectsWind.size()));
++  PerfStats::windUpdated.store(updated);
+   }
+ 
+ void VisualObjects::preFrameUpdateMorph() {
+diff --git a/common/graphics/visualobjects.h b/common/graphics/visualobjects.h
+index 422eca3..5a1bbe5 100644
+--- a/common/graphics/visualobjects.h
++++ b/common/graphics/visualobjects.h
+@@ -42,6 +42,7 @@ class VisualObjects final {
+       void     setFatness  (float f);
+       void     setWind     (zenkit::AnimationType m, float intensity);
+       void     startMMAnim (std::string_view anim, float intensity, uint64_t timeUntil);
++      void     setCullScale(float k); // Gothic II Mobile: отсекать мелочь как объект в k раз больше
+ 
+       const Material&    material() const;
+       const Bounds&      bounds()   const;
+@@ -119,6 +120,7 @@ class VisualObjects final {
+       MorphAnim           morphAnim[Resources::MAX_MORPH_LAYERS];
+       zenkit::AnimationType wind        = zenkit::AnimationType::NONE;
+       float               windIntensity = 0;
++      bool                windRest      = true; // Gothic II Mobile: ветер не сдвигает (в покое)
+       float               fatness       = 0;
+       bool                isGhost       = false;
+       };
+@@ -134,6 +136,7 @@ class VisualObjects final {
+ 
+     void     startMMAnim(size_t i, std::string_view animName, float intensity, uint64_t timeUntil);
+     void     setAsGhost(size_t i, bool g);
++    void     setCullScale(size_t i, float k);
+ 
+     void     notifyTlas(const Material& m, RtScene::Category cat);
+     void     updateInstance(size_t id, Tempest::Matrix4x4* pos = nullptr);
+diff --git a/common/graphics/worldview.cpp b/common/graphics/worldview.cpp
+index 4c01505..36cb23a 100644
+--- a/common/graphics/worldview.cpp
++++ b/common/graphics/worldview.cpp
+@@ -167,8 +167,13 @@ MeshObjects::Mesh WorldView::addView(const ProtoMesh* mesh) {
+   }
+ 
+ MeshObjects::Mesh WorldView::addItmView(std::string_view visual, int32_t material) {
+-  if(auto mesh=Resources::loadMesh(visual))
+-    return MeshObjects::Mesh(objGroup,*mesh,material,0,0,true);
++  if(auto mesh=Resources::loadMesh(visual)) {
++    auto view = MeshObjects::Mesh(objGroup,*mesh,material,0,0,true);
++    // Gothic II Mobile: лежащие предметы (травы, оружие, добыча) пропадают втрое дальше прочей мелочи:
++    // их немного, а находить их глазами - часть игры
++    view.setCullScale(3.f);
++    return view;
++    }
+   return MeshObjects::Mesh();
+   }
+ 
 diff --git a/common/mainwindow.cpp b/common/mainwindow.cpp
-index 52b66d3..3f34061 100644
+index 52b66d3..25bad5c 100644
 --- a/common/mainwindow.cpp
 +++ b/common/mainwindow.cpp
-@@ -1,5 +1,7 @@
+@@ -1,5 +1,8 @@
  #include "mainwindow.h"
  
++#include <cmath>
 +#include <cstdio>
 +
  #include <Tempest/Except>
  #include <Tempest/Painter>
  
-@@ -8,6 +10,7 @@
+@@ -8,6 +11,7 @@
  #include <Tempest/Layout>
  #include <Tempest/Application>
  #include <Tempest/Log>
@@ -4100,7 +4398,7 @@ index 52b66d3..3f34061 100644
  
  #include "ui/dialogmenu.h"
  #include "ui/menuroot.h"
-@@ -18,10 +21,14 @@
+@@ -18,10 +22,16 @@
  #include "utils/string_frm.h"
  #include "world/triggers/abstracttrigger.h"
  #include "world/objects/npc.h"
@@ -4111,11 +4409,13 @@ index 52b66d3..3f34061 100644
  #include "utils/dbgpainter.h"
 +#include "utils/cp1251.h"
 +#include "utils/fileutil.h"
++#include "utils/mobileperf.h"
++#include "utils/perfstats.h"
 +#include "game/savegameheader.h"
  
  #include "commandline.h"
  #include "gothic.h"
-@@ -34,7 +41,7 @@ MainWindow::MainWindow(Device& device)
+@@ -34,7 +44,7 @@ MainWindow::MainWindow(Device& device)
      dialogs(inventory),document(keycodec),
      console(*this),
  #if defined(__MOBILE_PLATFORM__)
@@ -4124,7 +4424,7 @@ index 52b66d3..3f34061 100644
  #endif
      player(dialogs,inventory) {
    Gothic::inst().onSettingsChanged.bind(this,&MainWindow::onSettings);
-@@ -224,6 +231,32 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -224,6 +234,32 @@ void MainWindow::paintEvent(PaintEvent& event) {
            bool showManaBar   = (opt.showManaBar==2) || (opt.showManaBar==1 && (pl->weaponState()==WeaponState::Mage || inventory.isActive()));
            bool showSwimBar   = (opt.showSwimBar==2) || (opt.showSwimBar==1 && pl->isDive());
  
@@ -4157,7 +4457,7 @@ index 52b66d3..3f34061 100644
            if(showHealthBar)
              drawBar(p,barHp, 10, h()-10, hp, AlignLeft | AlignBottom);
            if(showManaBar)
-@@ -236,6 +269,7 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -236,6 +272,7 @@ void MainWindow::paintEvent(PaintEvent& event) {
                drawBar(p,barMisc,w()/2,h()-10, (v-t)/(v), AlignHCenter | AlignBottom);
                }
              }
@@ -4165,7 +4465,26 @@ index 52b66d3..3f34061 100644
            }
          }
        }
-@@ -304,6 +338,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
+@@ -257,10 +294,18 @@ void MainWindow::paintEvent(PaintEvent& event) {
+   const float scale = Gothic::interfaceScale(this);
+   if(Gothic::inst().doFrate() && !Gothic::inst().isDesktop()) {
+     char fpsT[64]={};
++#if defined(__MOBILE_PLATFORM__)
++    // Gothic II Mobile: счётчик кадров (настройка «Счётчик кадров») - вверху посередине: слева вверху
++    // полоски здоровья и маны, справа - кнопки
++    std::snprintf(fpsT,sizeof(fpsT),"FPS %.0f",fps.get());
++    auto& fnt = Resources::font(scale);
++    fnt.drawText(p,(w()-fnt.textSize(fpsT).w)/2,fnt.pixelSize()+5,fpsT);
++#else
+     std::snprintf(fpsT,sizeof(fpsT),"fps = %.2f",fps.get());
+ 
+     auto& fnt = Resources::font(scale);
+     fnt.drawText(p,5,fnt.pixelSize()+5,fpsT);
++#endif
+     }
+ 
+   if(!Gothic::inst().isDesktop() && world!=nullptr) {
+@@ -304,6 +349,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
    }
  
  void MainWindow::mouseDownEvent(MouseEvent &event) {
@@ -4177,7 +4496,7 @@ index 52b66d3..3f34061 100644
    if(event.button<sizeof(mouseP))
      mouseP[event.button]=true;
    auto act     = keycodec.tr(event);
-@@ -312,6 +351,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
+@@ -312,6 +362,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
    }
  
  void MainWindow::mouseUpEvent(MouseEvent &event) {
@@ -4188,7 +4507,7 @@ index 52b66d3..3f34061 100644
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
    player.onKeyReleased(act,mapping);
-@@ -333,6 +376,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
+@@ -333,6 +387,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
    }
  
  void MainWindow::processMouse(MouseEvent& event, bool enable) {
@@ -4201,7 +4520,7 @@ index 52b66d3..3f34061 100644
    auto center = Point(w()/2,h()/2);
    if(enable && event.pos()!=center && hasFocus()) {
      dMouse += (event.pos()-center);
-@@ -344,21 +393,23 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -344,21 +404,23 @@ void MainWindow::tickMouse(uint64_t dt) {
    auto camera = Gothic::inst().camera();
    if(dialogs.hasContent() || Gothic::inst().isPause() || camera==nullptr || camera->isCutscene()) {
      dMouse = Point();
@@ -4227,7 +4546,7 @@ index 52b66d3..3f34061 100644
    dpScaled.x/=float(w());
    dpScaled.y/=float(h());
    if(camLookaroundInverse)
-@@ -375,12 +426,22 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -375,12 +437,22 @@ void MainWindow::tickMouse(uint64_t dt) {
    // Log::d("mouse dMouse   = ", dMouse.x,   ", ", dMouse.y);
    // Log::d("mouse dpScaled = ", dpScaled.x, ", ", dpScaled.y);
  
@@ -4250,7 +4569,67 @@ index 52b66d3..3f34061 100644
    }
  
  void MainWindow::onSettings() {
-@@ -398,6 +459,14 @@ void MainWindow::mouseWheelEvent(MouseEvent &event) {
+@@ -390,14 +462,74 @@ void MainWindow::onSettings() {
+   if(zMaxFps>0)
+     maxFpsInv = 1000u/uint64_t(zMaxFps); else
+     maxFpsInv = 0;
++#if defined(__MOBILE_PLATFORM__)
++  fpsBase = std::max(0, zMaxFps);
++#endif
++  }
++
++#if defined(__MOBILE_PLATFORM__)
++int MainWindow::effectiveFps() const {
++  int fps = fpsBase;
++  if(thermalCap>0)
++    fps = (fps>0) ? std::min(fps, thermalCap) : thermalCap;
++  // меню и загрузка - не чаще 60 кадров
++  if(!Gothic::inst().isInGame() && !video.isActive())
++    fps = (fps>0) ? std::min(fps, 60) : 60;
++  return fps;
+   }
+ 
++void MainWindow::perfReport(uint64_t now) {
++  if(perf.start==0) {
++    perf = PerfWindow();
++    perf.start = now;
++    return;
++    }
++  if(now-perf.start<10000 || perf.frames==0)
++    return;
++
++  const double n      = double(perf.frames);
++  const double fpsAvg = perf.interval>0 ? 1000.0*n/perf.interval : 0.0;
++  const auto   st     = MobilePerf::thermalStatus();
++  const float  head   = MobilePerf::thermalHeadroom();
++  char buf[320] = {};
++  std::snprintf(buf, sizeof(buf),
++                "[perf] fps=%.1f frame=%.1fms max=%.0fms | logic=%.1f anim=%.1f render=%.1f gpu-wait=%.1f present=%.1f"
++                " | npc %u/%u wind %u/%u | thermal=%d headroom=%.2f hints=%d cap=%d",
++                fpsAvg, perf.frame/n, perf.frameMax, perf.logic/n, perf.anim/n, perf.record/n, perf.gpuWait/n, perf.present/n,
++                PerfStats::npcAnimated.load(), PerfStats::npcTotal.load(),
++                PerfStats::windUpdated.load(), PerfStats::windTotal.load(),
++                int(st), std::isnan(head) ? -1.0 : double(head), MobilePerf::hasHints() ? 1 : 0, effectiveFps());
++  Log::i(buf);
++
++  // Охлаждение: сильный нагрев - не больше 30 кадров, пока не остынет до «лёгкого»
++  if(st>=MobilePerf::T_Severe && thermalCap==0) {
++    thermalCap = 30;
++    Log::i("[perf] overheat (thermal=",int(st),"): fps limited to ",thermalCap);
++    }
++  else if(st!=MobilePerf::T_Unknown && st<=MobilePerf::T_Light && thermalCap>0) {
++    thermalCap = 0;
++    Log::i("[perf] cooled down (thermal=",int(st),"): fps limit restored");
++    }
++
++  perf = PerfWindow();
++  perf.start = now;
++  }
++#endif
++
+ void MainWindow::mouseWheelEvent(MouseEvent &event) {
+   if(auto camera = Gothic::inst().camera())
+     camera->changeZoom(event.delta);
    }
  
  void MainWindow::keyDownEvent(KeyEvent &event) {
@@ -4265,7 +4644,7 @@ index 52b66d3..3f34061 100644
    if(video.isActive()){
      event.accept();
      video.keyDownEvent(event);
-@@ -495,6 +564,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
+@@ -495,6 +627,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
    }
  
  void MainWindow::keyUpEvent(KeyEvent &event) {
@@ -4281,7 +4660,7 @@ index 52b66d3..3f34061 100644
    if(uiKeyUp==&video){
      video.keyUpEvent(event);
      if(event.isAccepted())
-@@ -529,6 +607,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -529,6 +670,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
  
@@ -4293,7 +4672,7 @@ index 52b66d3..3f34061 100644
    std::string_view menuEv;
    if(act==KeyCodec::Escape)
      menuEv = Gothic::inst().menuMain();
-@@ -543,6 +626,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -543,6 +689,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
      if(auto pl = Gothic::inst().player())
        rootMenu.setPlayer(*pl);
      clearInput();
@@ -4301,7 +4680,7 @@ index 52b66d3..3f34061 100644
      }
    else if(act==KeyCodec::Inventory && !dialogs.isActive()) {
      if(inventory.isActive()) {
-@@ -553,10 +637,136 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -553,10 +700,136 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
          inventory.open(*pl);
        }
      clearInput();
@@ -4363,8 +4742,8 @@ index 52b66d3..3f34061 100644
 +    return "Нельзя сохраниться во время боя";
 +  g.quickSave();
 +  return nullptr;
-+  }
-+
+   }
+ 
 +bool MainWindow::touchQuickSaveInfo(std::string& out) const {
 +  static const char* slot = "save_slot_0.sav";
 +  if(!FileUtil::exists(TextCodec::toUtf16(slot)))
@@ -4391,8 +4770,8 @@ index 52b66d3..3f34061 100644
 +  player.stopTravel(nullptr);
 +  if(Gothic::inst().checkLoading()==Gothic::LoadState::Idle && FileUtil::exists(u"save_slot_0.sav"))
 +    Gothic::inst().quickLoad();
-   }
- 
++  }
++
 +bool MainWindow::touchIsLockPick() const {
 +  if(inventory.isOpen()==InventoryMenu::State::LockPicking)
 +    return true;
@@ -4439,7 +4818,7 @@ index 52b66d3..3f34061 100644
  void MainWindow::focusEvent(FocusEvent &event) {
    if(!event.in)
      return;
-@@ -882,8 +1092,16 @@ uint64_t MainWindow::tick() {
+@@ -882,8 +1155,16 @@ uint64_t MainWindow::tick() {
      Gothic::inst().finishLoading();
      if(st==Gothic::LoadState::FailedLoad)
        rootMenu.setMainMenu();
@@ -4456,7 +4835,7 @@ index 52b66d3..3f34061 100644
      return 0;
      }
    else if(st!=Gothic::LoadState::Idle) {
-@@ -949,6 +1167,30 @@ void MainWindow::tickCamera(uint64_t dt) {
+@@ -949,6 +1230,30 @@ void MainWindow::tickCamera(uint64_t dt) {
                               ws==WeaponState::W2H);
    auto       pos          = pl!=nullptr ? pl->cameraBone(camera.isFirstPerson()) : Vec3();
  
@@ -4487,7 +4866,7 @@ index 52b66d3..3f34061 100644
    if(!camera.isCutscene() && !camera.isFree()) {
      const bool fs = SystemApi::isFullscreen(hwnd());
      if(!fs && mouseP[Event::ButtonLeft]) {
-@@ -1102,20 +1344,46 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
+@@ -1102,20 +1407,46 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
    auto& thumb = lres.isEmpty() ? tex : lres;
    auto  pm    = device.readPixels(textureCast<const Texture2d&>(thumb));
  
@@ -4534,7 +4913,7 @@ index 52b66d3..3f34061 100644
  
    update();
    }
-@@ -1127,6 +1395,11 @@ void MainWindow::onVideo(std::string_view fname) {
+@@ -1127,6 +1458,11 @@ void MainWindow::onVideo(std::string_view fname) {
    }
  
  void MainWindow::onStartLoading() {
@@ -4546,14 +4925,34 @@ index 52b66d3..3f34061 100644
    player   .clearInput();
    inventory.onWorldChanged();
    dialogs  .onWorldChanged();
-@@ -1245,11 +1518,17 @@ void MainWindow::render(){
+@@ -1240,16 +1576,37 @@ void MainWindow::render(){
+       once player position is updated, animation bones(cameraBone in particular) can be updated
+       lastly - camera position
+       */
++#if defined(__MOBILE_PLATFORM__)
++    using Clock = std::chrono::steady_clock;
++    auto msBetween = [](Clock::time_point a, Clock::time_point b) {
++      return std::chrono::duration<double,std::milli>(b-a).count();
++      };
++    const auto tStart = Clock::now();
++#endif
+     const uint64_t dt = tick();
++#if defined(__MOBILE_PLATFORM__)
++    const auto tLogic = Clock::now();
++#endif
+     updateAnimation(dt);
++#if defined(__MOBILE_PLATFORM__)
++    const auto tAnim = Clock::now();
++#endif
      tickCamera(dt);
  
      auto& sync = fence[cmdId];
 +#if defined(__MOBILE_PLATFORM__)
 +    // Gothic II Mobile: ждать видеокарту, а не крутить цикл: холостой цикл держал ядро процессора
 +    // занятым на 100 % (игровая логика до 200 раз в секунду) и грел телефон
++    const auto tWait0 = Clock::now();
 +    sync.wait();
++    const auto tWait1 = Clock::now();
 +#else
      if(!sync.wait(0)) {
        // GPU rendering is not done, pass to next frame
@@ -4564,11 +4963,74 @@ index 52b66d3..3f34061 100644
      Resources::resetRecycled(cmdId);
  
      if(video.isActive()) {
+@@ -1274,9 +1631,47 @@ void MainWindow::render(){
+     renderer.draw(swapchain[swapchain.currentImage()],enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
+     }
+     sync = device.submit(cmd);
++#if defined(__MOBILE_PLATFORM__)
++    const auto tSubmit = Clock::now();
++#endif
+     device.present(swapchain);
+     cmdId = (cmdId+1u)%Resources::MaxFramesInFlight;
+ 
++#if defined(__MOBILE_PLATFORM__)
++    const auto tPresent = Clock::now();
++    // Gothic II Mobile: точный ограничитель - кадры через равные промежутки по часам с микросекундами
++    // (а не «доспать до 33 мс» с точностью до миллисекунды): ровный темп на дисплее 60/120 Гц
++    const int     fpsCap = effectiveFps();
++    const int64_t period = fpsCap>0 ? 1000000000ll/fpsCap : 0;
++    if(period>0) {
++      frameDeadline += std::chrono::nanoseconds(period);
++      const auto now = Clock::now();
++      if(frameDeadline+std::chrono::nanoseconds(period)<now)
++        frameDeadline = now; // отстали больше чем на кадр - не догонять
++      else if(frameDeadline>now)
++        std::this_thread::sleep_until(frameDeadline);
++      } else {
++      frameDeadline = Clock::now();
++      }
++    auto t = Application::tickCount();
++
++    // Работа процессора на кадр - без ожидания видеокарты и вывода; бюджет - один кадр
++    const double cpuMs = msBetween(tStart,tPresent) - msBetween(tWait0,tWait1) - msBetween(tSubmit,tPresent);
++    MobilePerf::reportFrame(int64_t(cpuMs*1000000.0), period>0 ? period : 1000000000ll/60);
++    if(Gothic::inst().isInGame() && dt>0) {
++      const double frameMs = msBetween(tStart,Clock::now());
++      perf.frames++;
++      perf.logic    += msBetween(tStart,tLogic);
++      perf.anim     += msBetween(tLogic,tAnim);
++      perf.gpuWait  += msBetween(tWait0,tWait1);
++      perf.record   += msBetween(tWait1,tSubmit);
++      perf.present  += msBetween(tSubmit,tPresent);
++      perf.frame    += frameMs;
++      perf.frameMax  = std::max(perf.frameMax, frameMs);
++      perf.interval += double(t-time);
++      perfReport(t);
++      }
++#else
+     auto t = Application::tickCount();
+     auto frameTime = maxFpsInv;
+     if(!Gothic::inst().isInGame() && !video.isActive())
+@@ -1286,6 +1681,7 @@ void MainWindow::render(){
+       Application::sleep(delay);
+       t += delay;
+       }
++#endif
+     fps.push(t-time);
+     if(Gothic::inst().isBenchmarkMode() && Gothic::inst().world()!=nullptr && Gothic::inst().world()->currentCs()!=nullptr)
+       benchmark.push(t-time);
 diff --git a/common/mainwindow.h b/common/mainwindow.h
-index 3fb2713..fe61cda 100644
+index 3fb2713..a49b58a 100644
 --- a/common/mainwindow.h
 +++ b/common/mainwindow.h
-@@ -25,6 +25,7 @@
+@@ -19,12 +19,14 @@
+ #include <Tempest/Timer>
+ #include <Tempest/Swapchain>
+ 
++#include <chrono>
+ #include <vector>
+ #include <thread>
+ 
  #include "world/world.h"
  #include "world/focus.h"
  #include "game/playercontrol.h"
@@ -4576,7 +5038,7 @@ index 3fb2713..fe61cda 100644
  #include "graphics/renderer.h"
  #include "ui/dialogmenu.h"
  #include "ui/inventorymenu.h"
-@@ -49,6 +50,46 @@ class MainWindow : public Tempest::Window {
+@@ -49,6 +51,46 @@ class MainWindow : public Tempest::Window {
  
      float uiScale() const;
  
@@ -4623,7 +5085,7 @@ index 3fb2713..fe61cda 100644
    private:
      void paintEvent     (Tempest::PaintEvent& event) override;
      void resizeEvent    (Tempest::SizeEvent & event) override;
-@@ -89,6 +130,7 @@ class MainWindow : public Tempest::Window {
+@@ -89,6 +131,7 @@ class MainWindow : public Tempest::Window {
      void setFullscreen(bool fs);
  
      void processMouse(Tempest::MouseEvent& event, bool enable);
@@ -4631,7 +5093,7 @@ index 3fb2713..fe61cda 100644
      void tickMouse(uint64_t dt);
      void onSettings();
  
-@@ -152,11 +194,15 @@ class MainWindow : public Tempest::Window {
+@@ -152,11 +195,15 @@ class MainWindow : public Tempest::Window {
      ConsoleWidget             console;
  #if defined(__MOBILE_PLATFORM__)
      TouchInput                mobileUi;
@@ -4647,6 +5109,34 @@ index 3fb2713..fe61cda 100644
      PlayerControl             player;
      uint64_t                  lastTick=0;
  
+@@ -178,4 +225,27 @@ class MainWindow : public Tempest::Window {
+     Fps           fps;
+     BenchmarkData benchmark;
+     uint64_t      maxFpsInv = 0;
++
++#if defined(__MOBILE_PLATFORM__)
++    // Gothic II Mobile: время кадра по частям - строка [perf] в журнале раз в 10 с; подсказки планировщику;
++    // точный ограничитель кадров; охлаждение - 30 FPS, пока телефон сильно нагрет
++    struct PerfWindow {
++      uint64_t start    = 0;  // мс, начало окна
++      uint32_t frames   = 0;
++      double   logic    = 0;  // мс, суммы за окно
++      double   anim     = 0;
++      double   record   = 0;
++      double   gpuWait  = 0;
++      double   present  = 0;
++      double   frame    = 0;
++      double   frameMax = 0;
++      double   interval = 0;  // мс, сумма промежутков между кадрами - для FPS
++      };
++    PerfWindow    perf;
++    int           fpsBase    = 0; // FPS из настроек (0 - без ограничения)
++    int           thermalCap = 0; // FPS при перегреве (0 - не ограничено)
++    std::chrono::steady_clock::time_point frameDeadline;
++    int           effectiveFps() const;
++    void          perfReport(uint64_t now);
++#endif
+   };
 diff --git a/common/ui/dialogmenu.cpp b/common/ui/dialogmenu.cpp
 index 5a7db4d..817dea1 100644
 --- a/common/ui/dialogmenu.cpp
@@ -8280,11 +8770,256 @@ index 1624d79..461c1e1 100644
    auto path = Tempest::AndroidApi::externalDataPath().u16string();
    if(path.empty())
      return u"";
+diff --git a/common/utils/mobileperf.cpp b/common/utils/mobileperf.cpp
+new file mode 100644
+index 0000000..527dac3
+--- /dev/null
++++ b/common/utils/mobileperf.cpp
+@@ -0,0 +1,116 @@
++#include "mobileperf.h"
++
++#include <Tempest/Log>
++#include <algorithm>
++#include <cmath>
++#include <limits>
++
++#if defined(__ANDROID__)
++#include <dlfcn.h>
++#include <unistd.h>
++#endif
++
++using namespace Tempest;
++
++MobilePerf& MobilePerf::inst() {
++  static MobilePerf p;
++  return p;
++  }
++
++MobilePerf::MobilePerf() {
++#if defined(__ANDROID__)
++  lib = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
++  if(lib==nullptr)
++    return;
++  getManager   = reinterpret_cast<GetManagerFn> (dlsym(lib, "APerformanceHint_getManager"));
++  createSess   = reinterpret_cast<CreateFn>     (dlsym(lib, "APerformanceHint_createSession"));
++  updateTarget = reinterpret_cast<UpdateFn>     (dlsym(lib, "APerformanceHint_updateTargetWorkDuration"));
++  reportActual = reinterpret_cast<ReportFn>     (dlsym(lib, "APerformanceHint_reportActualWorkDuration"));
++  auto acquire = reinterpret_cast<ThermalAcqFn> (dlsym(lib, "AThermal_acquireManager"));
++  thermalStat  = reinterpret_cast<ThermalStatFn>(dlsym(lib, "AThermal_getCurrentThermalStatus"));
++  thermalHead  = reinterpret_cast<ThermalHeadFn>(dlsym(lib, "AThermal_getThermalHeadroom"));
++  if(acquire!=nullptr)
++    thermal = acquire();
++#endif
++  }
++
++int32_t MobilePerf::currentThreadId() {
++#if defined(__ANDROID__)
++  return int32_t(gettid());
++#else
++  return 0;
++#endif
++  }
++
++void MobilePerf::registerThread() {
++  auto& p = inst();
++  std::lock_guard<std::mutex> guard(p.sync);
++  p.threads.push_back(currentThreadId());
++  }
++
++bool MobilePerf::hasHints() {
++  return inst().session!=nullptr;
++  }
++
++void MobilePerf::createSession(int64_t targetNs) {
++  std::vector<int32_t> tids;
++  {
++    std::lock_guard<std::mutex> guard(sync);
++    tids = threads;
++  }
++  if(getManager==nullptr || createSess==nullptr || reportActual==nullptr || tids.empty()) {
++    failed = true;
++    Log::i("[perf] performance hints: not available");
++    return;
++    }
++  hintMgr = getManager();
++  if(hintMgr!=nullptr)
++    session = createSess(hintMgr, tids.data(), tids.size(), targetNs);
++  if(session==nullptr) {
++    failed = true;
++    Log::i("[perf] performance hints: no session");
++    return;
++    }
++  target = targetNs;
++  Log::i("[perf] performance hints: ", int(tids.size()), " threads, target ", int(targetNs/1000), "us");
++  }
++
++void MobilePerf::reportFrame(int64_t actualNs, int64_t targetNs) {
++  auto& p = inst();
++  if(p.failed || targetNs<=0)
++    return;
++  // Рабочие потоки создаются при первых кадрах мира - сессия после того, как они записались (или,
++  // если их всё нет, через ~30 с - с одним главным потоком)
++  if(p.session==nullptr) {
++    ++p.frames;
++    size_t count = 0;
++    {
++      std::lock_guard<std::mutex> guard(p.sync);
++      count = p.threads.size();
++    }
++    if(p.frames<120 || (count<2 && p.frames<1800))
++      return;
++    p.createSession(targetNs);
++    if(p.session==nullptr)
++      return;
++    }
++  if(targetNs!=p.target && p.updateTarget!=nullptr) {
++    p.updateTarget(p.session, targetNs);
++    p.target = targetNs;
++    }
++  p.reportActual(p.session, std::max<int64_t>(actualNs, 1));
++  }
++
++MobilePerf::Thermal MobilePerf::thermalStatus() {
++  auto& p = inst();
++  if(p.thermal==nullptr || p.thermalStat==nullptr)
++    return T_Unknown;
++  return Thermal(p.thermalStat(p.thermal));
++  }
++
++float MobilePerf::thermalHeadroom() {
++  auto& p = inst();
++  if(p.thermal==nullptr || p.thermalHead==nullptr)
++    return std::numeric_limits<float>::quiet_NaN();
++  return p.thermalHead(p.thermal, 0);
++  }
+diff --git a/common/utils/mobileperf.h b/common/utils/mobileperf.h
+new file mode 100644
+index 0000000..bf88d71
+--- /dev/null
++++ b/common/utils/mobileperf.h
+@@ -0,0 +1,70 @@
++#pragma once
++
++#include <cstdint>
++#include <mutex>
++#include <vector>
++
++// Gothic II Mobile: возможности Android для игр, которых нет в Tempest.
++//  - подсказки планировщику (ADPF, Android 13+): сколько времени процессора кадр занял и сколько ему
++//    положено - система сама держит частоты ядер не выше нужного (меньше нагрев), а при нехватке
++//    поднимает их раньше (меньше рывков);
++//  - состояние перегрева (Android 10+/11+): в журнал и для снижения частоты кадров при сильном нагреве.
++// Функции берутся из libandroid.so по имени: приложение ставится и на Android 9, где их нет.
++class MobilePerf final {
++  public:
++    // Состояния перегрева - как AThermalStatus
++    enum Thermal : int32_t {
++      T_Unknown  = -1,
++      T_None     = 0,
++      T_Light    = 1,
++      T_Moderate = 2,
++      T_Severe   = 3,
++      T_Critical = 4,
++      T_Emergency= 5,
++      T_Shutdown = 6,
++      };
++
++    static int32_t currentThreadId();
++
++    // Потоки, чью работу видит подсказка (главный и рабочие); вызывать из этих потоков
++    static void    registerThread();
++
++    // Конец работы кадра: actualNs - время процессора на кадр, targetNs - бюджет (1/FPS)
++    static void    reportFrame(int64_t actualNs, int64_t targetNs);
++
++    static Thermal thermalStatus();
++    // Запас до перегрева: 1.0 - начнётся снижение частот; NaN - неизвестно (не чаще раза в секунду)
++    static float   thermalHeadroom();
++    static bool    hasHints();
++
++  private:
++    static MobilePerf& inst();
++    MobilePerf();
++
++    void           createSession(int64_t targetNs);
++
++    void*          lib       = nullptr;
++    void*          hintMgr   = nullptr;
++    void*          session   = nullptr;
++    void*          thermal   = nullptr;
++    int64_t        target    = 0;
++    bool           failed    = false;
++    uint32_t       frames    = 0;
++    std::mutex     sync;
++    std::vector<int32_t> threads;
++
++    using GetManagerFn  = void*   (*)();
++    using CreateFn      = void*   (*)(void*, const int32_t*, size_t, int64_t);
++    using UpdateFn      = int     (*)(void*, int64_t);
++    using ReportFn      = int     (*)(void*, int64_t);
++    using ThermalAcqFn  = void*   (*)();
++    using ThermalStatFn = int     (*)(void*);
++    using ThermalHeadFn = float   (*)(void*, int);
++
++    GetManagerFn  getManager    = nullptr;
++    CreateFn      createSess    = nullptr;
++    UpdateFn      updateTarget  = nullptr;
++    ReportFn      reportActual  = nullptr;
++    ThermalStatFn thermalStat   = nullptr;
++    ThermalHeadFn thermalHead   = nullptr;
++  };
+diff --git a/common/utils/perfstats.h b/common/utils/perfstats.h
+new file mode 100644
+index 0000000..019e4b0
+--- /dev/null
++++ b/common/utils/perfstats.h
+@@ -0,0 +1,13 @@
++#pragma once
++
++#include <atomic>
++#include <cstdint>
++
++// Gothic II Mobile: счётчики для строки [perf] в журнале (MainWindow::perfReport):
++// сколько работы движок сделал за кадр - видно, что оптимизации действуют на телефоне игрока
++struct PerfStats final {
++  static inline std::atomic<uint32_t> npcTotal{0};    // NPC в мире
++  static inline std::atomic<uint32_t> npcAnimated{0}; // из них скелет пересчитан в этом кадре
++  static inline std::atomic<uint32_t> windTotal{0};   // объекты с ветром (трава, деревья)
++  static inline std::atomic<uint32_t> windUpdated{0}; // из них сдвинуты в этом кадре
++  };
+diff --git a/common/utils/workers.cpp b/common/utils/workers.cpp
+index f8badbd..a918201 100644
+--- a/common/utils/workers.cpp
++++ b/common/utils/workers.cpp
+@@ -1,4 +1,5 @@
+ #include "workers.h"
++#include "utils/mobileperf.h"
+ #include "utils/string_frm.h"
+ 
+ #include <Tempest/Platform>
+@@ -109,6 +110,9 @@ void Workers::threadFunc(size_t id) {
+   string_frm tname("Workers [",int(id),"]");
+   setThreadName(tname.c_str());
+   }
++  // Gothic II Mobile: рабочие потоки (анимация NPC) - в подсказку планировщику вместе с главным
++  if(id<maxThreads())
++    MobilePerf::registerThread();
+ 
+   while(true) {
+     {
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..a9297cf 100644
+index e015398..8bce0cc 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
-@@ -39,6 +39,9 @@ void Npc::GoTo::load(Serialize& fin) {
+@@ -4,6 +4,7 @@
+ #include <Tempest/Log>
+ 
+ #include "graphics/mesh/skeleton.h"
++#include "graphics/dynamic/frustrum.h"
+ #include "graphics/visualfx.h"
+ #include "game/damagecalculator.h"
+ #include "game/serialize.h"
+@@ -39,6 +40,9 @@ void Npc::GoTo::load(Serialize& fin) {
      if(flag==GoToHint::GT_Enemy || flag==GoToHint::GT_EnemyG)
        clear(); // not persistent flags, and should be cleared by FAI
    //  }
@@ -8294,7 +9029,7 @@ index e015398..a9297cf 100644
    }
  
  Vec3 Npc::GoTo::target() const {
-@@ -56,6 +59,14 @@ bool Npc::GoTo::isClose(const Npc& self, float dist) const {
+@@ -56,6 +60,14 @@ bool Npc::GoTo::isClose(const Npc& self, float dist) const {
      return MoveAlgo::isClose(self, *npc, dist);
    if(wp!=nullptr)
      return MoveAlgo::isClose(self, *wp, dist);
@@ -8309,7 +9044,7 @@ index e015398..a9297cf 100644
    return MoveAlgo::isClose(self, pos, dist);
    }
  
-@@ -87,8 +98,9 @@ void Npc::GoTo::set(const Item* to) {
+@@ -87,8 +99,9 @@ void Npc::GoTo::set(const Item* to) {
    }
  
  void Npc::GoTo::set(const Vec3& to) {
@@ -8321,7 +9056,7 @@ index e015398..a9297cf 100644
    }
  
  void Npc::GoTo::setFlee() {
-@@ -502,6 +514,14 @@ bool Npc::resetPositionToTA() {
+@@ -502,6 +515,14 @@ bool Npc::resetPositionToTA() {
    if(isPlayer())
      return true;
  
@@ -8336,7 +9071,7 @@ index e015398..a9297cf 100644
    auto at = currentTaPoint();
    if(at==nullptr)
      return false;
-@@ -593,9 +613,22 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
+@@ -593,9 +614,22 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
    }
  
  void Npc::onNoHealth(bool death, HitSound sndMask) {
@@ -8361,7 +9096,7 @@ index e015398..a9297cf 100644
    dropTorch();
    visual.setToFightMode(WeaponState::NoWeapon);
    updateWeaponSkeleton();
-@@ -1555,7 +1588,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
+@@ -1555,7 +1589,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
    }
  
  bool Npc::implAttack(uint64_t dt) {
@@ -8370,7 +9105,7 @@ index e015398..a9297cf 100644
      return false;
  
    if(currentTarget->isDown()){
-@@ -1580,8 +1613,11 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1580,8 +1614,11 @@ bool Npc::implAttack(uint64_t dt) {
      return true;
      }
  
@@ -8384,7 +9119,7 @@ index e015398..a9297cf 100644
  
    if(bs==BS_LIE) {
      setAnim(Npc::Anim::Idle);
-@@ -1882,6 +1918,10 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1882,6 +1919,10 @@ bool Npc::implAttack(uint64_t dt) {
  bool Npc::implAiTick(uint64_t dt) {
    // Note AI-action queue takes priority, test case: Vatras pray at night
    if(aiQueue.size()==0) {
@@ -8395,7 +9130,7 @@ index e015398..a9297cf 100644
      tickRoutine();
      if(aiQueue.size()>0)
        nextAiAction(aiQueue,dt);
-@@ -2077,6 +2117,8 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2077,6 +2118,8 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
  
    if(!isSpell || splCat==SpellCategory::SPELL_BAD) {
      perceptionProcess(other,this,0,PERC_ASSESSDAMAGE);
@@ -8404,7 +9139,7 @@ index e015398..a9297cf 100644
      fghAlgo.onTakeHit();
      implFaiWait(0);
      }
-@@ -2529,6 +2571,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2529,6 +2572,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -8416,7 +9151,7 @@ index e015398..a9297cf 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -3504,6 +3551,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -3504,6 +3552,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -8425,7 +9160,7 @@ index e015398..a9297cf 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +3842,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +3843,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
@@ -8436,7 +9171,7 @@ index e015398..a9297cf 100644
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -4158,6 +4211,61 @@ bool Npc::isPrehit() const {
+@@ -4158,6 +4212,61 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -8498,7 +9233,7 @@ index e015398..a9297cf 100644
  bool Npc::isImmortal() const {
    return hnpc->flags & zenkit::NpcFlag::IMMORTAL;
    }
-@@ -4238,6 +4346,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4347,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -8509,7 +9244,7 @@ index e015398..a9297cf 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4356,6 +4468,20 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4469,20 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -8530,11 +9265,77 @@ index e015398..a9297cf 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
+@@ -4822,3 +4949,40 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+   if(syncAtt)
+     visual.syncAttaches();
+   }
++
++bool Npc::animLodDue(uint64_t dt, const AnimLod& lod) {
++  // Gothic II Mobile: скелет (десятки костей) и его выгрузка в видеопамять - основная работа процессора на
++  // кадр; движок считал её для всех NPC мира. Рядом с героем и камерой - каждый кадр, дальше - реже
++  // (через 2/4/8 кадров), вне экрана - ещё вдвое реже. Кадр пропуска у каждого NPC свой, чтобы нагрузка
++  // не собиралась в один кадр. Время пропущенных кадров не теряется: позу задаёт время мира,
++  // звуки и частицы анимации берутся за весь промежуток (Pose::processSfx от прошлого обновления).
++  animLodDt += dt;
++  if(isPlayer())
++    return true;
++
++  const Tempest::Vec3 at   = position();
++  const float         dist = std::sqrt(std::min((at-lod.camera).quadLength(), (at-lod.player).quadLength()));
++  uint32_t step = 1;
++  if(dist<4000)
++    step = 1;
++  else if(dist<8000)
++    step = 2;
++  else if(dist<16000)
++    step = 4;
++  else
++    step = 8;
++  if(dist>=2000 && lod.view!=nullptr && !lod.view->testPoint(at+Tempest::Vec3(0,100,0), 200.f))
++    step = std::min(step*2, 16u);
++  if(lod.viewDist>0 && dist>lod.viewDist+2000)
++    step = 16;
++
++  const uint32_t seed = uint32_t(reinterpret_cast<uintptr_t>(this) >> 4);
++  return step<=1 || (lod.frame+seed)%step==0;
++  }
++
++void Npc::updateAnimationLod() {
++  const uint64_t dt = animLodDt;
++  animLodDt = 0;
++  updateAnimation(dt);
++  }
++
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..4b6959b 100644
+index 7309936..1cddb9a 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
-@@ -289,6 +289,56 @@ class Npc final {
+@@ -21,6 +21,7 @@
+ 
+ class Interactive;
+ class WayPoint;
++class Frustrum;
+ 
+ class Npc final {
+   public:
+@@ -137,6 +138,16 @@ class Npc final {
+ 
+     void       updateAnimation(uint64_t dt, bool force = false);
+     void       updateTransform();
++    // Gothic II Mobile: скелет далёких и невидимых NPC пересчитывается реже (WorldObjects::updateAnimation)
++    struct AnimLod final {
++      Tempest::Vec3   camera;
++      Tempest::Vec3   player;
++      const Frustrum* view     = nullptr;
++      float           viewDist = 0;     // дальность прорисовки, см; 0 - без ограничения
++      uint32_t        frame    = 0;
++      };
++    bool       animLodDue(uint64_t dt, const AnimLod& lod); // пора ли пересчитать скелет; иначе копит время
++    void       updateAnimationLod();                         // пересчитать за всё накопленное время
+ 
+     std::string_view displayName() const;
+     auto       displayPosition() const -> Tempest::Vec3;
+@@ -289,6 +300,56 @@ class Npc final {
  
      bool      isAttackAnim() const;
      bool      isPrehit() const;
@@ -8591,7 +9392,7 @@ index 7309936..4b6959b 100644
      bool      isImmortal() const;
  
      void      setPerceptionTime   (uint64_t time);
-@@ -456,6 +506,7 @@ class Npc final {
+@@ -456,6 +517,7 @@ class Npc final {
        Npc*             npc  = nullptr;
        const WayPoint*  wp   = nullptr;
        Tempest::Vec3    pos  = {};
@@ -8599,7 +9400,15 @@ index 7309936..4b6959b 100644
  
        void             save(Serialize& fout) const;
        void             load(Serialize&  fin);
-@@ -629,6 +680,7 @@ class Npc final {
+@@ -555,6 +617,7 @@ class Npc final {
+ 
+     // visual props (cache)
+     uint8_t                        durtyTranform=0;
++    uint64_t                       animLodDt    =0; // Gothic II Mobile: время, накопленное за пропущенные кадры
+     Tempest::Vec3                  lastGroundNormal;
+ 
+     DynamicWorld::NpcItem          physic;
+@@ -629,6 +692,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;
@@ -8620,8 +9429,158 @@ index 915e49b..8a1732c 100644
  
    private:
      std::vector<const WayPoint*> dat;
+diff --git a/common/world/worldobjects.cpp b/common/world/worldobjects.cpp
+index 4877c70..27c52de 100644
+--- a/common/world/worldobjects.cpp
++++ b/common/world/worldobjects.cpp
+@@ -14,6 +14,9 @@
+ #include "world.h"
+ #include "utils/workers.h"
+ #include "utils/dbgpainter.h"
++#include "utils/perfstats.h"
++#include "graphics/dynamic/frustrum.h"
++#include "camera.h"
+ #include "gothic.h"
+ 
+ #include <Tempest/Painter>
+@@ -431,9 +434,35 @@ void WorldObjects::updateAnimation(uint64_t dt) {
+     return;
+   if(dt==0)
+     return;
+-  Workers::parallelTasks(npcArr,[dt](std::unique_ptr<Npc>& i){
+-    i->updateAnimation(dt);
+-    });
++  // Gothic II Mobile: частота пересчёта скелета - по дальности и видимости (Npc::animLodDue)
++  const auto camera = Gothic::inst().camera();
++  if(camera!=nullptr && Gothic::options().animLod) {
++    static uint32_t frame = 0;
++    Frustrum   view;
++    view.make(camera->viewProj(), 1, 1);
++    Npc::AnimLod lod;
++    lod.camera   = camera->originLwc();
++    lod.player   = owner.player()!=nullptr ? owner.player()->position() : lod.camera;
++    lod.view     = &view;
++    lod.viewDist = Gothic::options().viewDistance;
++    lod.frame    = frame++;
++    // Решение - на главном потоке (дёшево), пересчёт - только тех, кому пора: рабочие потоки не будятся
++    // ради сотен пустых задач
++    animDue.clear();
++    for(auto& i:npcArr)
++      if(i->animLodDue(dt,lod))
++        animDue.push_back(i.get());
++    Workers::parallelTasks(animDue,[](Npc* i){
++      i->updateAnimationLod();
++      });
++    PerfStats::npcAnimated.store(uint32_t(animDue.size()));
++    } else {
++    Workers::parallelTasks(npcArr,[dt](std::unique_ptr<Npc>& i){
++      i->updateAnimation(dt);
++      });
++    PerfStats::npcAnimated.store(uint32_t(npcArr.size()));
++    }
++  PerfStats::npcTotal.store(uint32_t(npcArr.size()));
+   interactiveObj.parallelFor([dt](Interactive& i){
+     i.updateAnimation(dt);
+     });
+diff --git a/common/world/worldobjects.h b/common/world/worldobjects.h
+index 59470b9..fe8f94c 100644
+--- a/common/world/worldobjects.h
++++ b/common/world/worldobjects.h
+@@ -176,6 +176,7 @@ class WorldObjects final {
+     std::vector<std::unique_ptr<Npc>>  npcInvalid; // dead or invalid TA
+     std::vector<std::unique_ptr<Npc>>  npcRemoved; // removed, but may have a dangling references in game
+     std::vector<Npc*>                  npcNear;
++    std::vector<Npc*>                  animDue;   // Gothic II Mobile: чей скелет пересчитать в этом кадре
+ 
+     std::vector<AbstractTrigger*>      triggers;
+     std::vector<AbstractTrigger*>      triggersTk;
+diff --git a/game/main.cpp b/game/main.cpp
+index dc4d2dd..059429f 100644
+--- a/game/main.cpp
++++ b/game/main.cpp
+@@ -20,6 +20,8 @@
+ #endif
+ 
+ #include "utils/crashlog.h"
++#include "utils/inifile.h"
++#include "utils/mobileperf.h"
+ #include "mainwindow.h"
+ #include "gothic.h"
+ #include "build.h"
+@@ -132,8 +134,19 @@ int main(int argc,const char** argv) {
+ 
+   Tempest::Log::i(appBuild);
+   Workers::setThreadName("Main thread");
++  MobilePerf::registerThread();
+ 
+   CommandLine          cmd{argc,argv};
++  {
++  // Gothic II Mobile: предел анизотропной фильтрации - до создания устройства (сэмплер по умолчанию
++  // создаётся вместе с ним). 16x на телефоне - до 16 выборок текстуры на пиксель земли под углом
++  IniFile g2m(u"g2m.ini");
++  const int anisotropy = g2m.getI("GRAPHICS","anisotropy",0);
++  if(anisotropy>0) {
++    Tempest::Sampler::setAnisotropyLimit(float(std::clamp(anisotropy, 1, 16)));
++    Tempest::Log::i("[g2m] anisotropy=",anisotropy);
++    }
++  }
+   auto                 api     = mkApi(cmd);
+   const auto           gpuName = selectDevice(*api);
+   CrashLog::setGpu(gpuName);
+diff --git a/shader/CMakeLists.txt b/shader/CMakeLists.txt
+index a405d35..84bfb23 100644
+--- a/shader/CMakeLists.txt
++++ b/shader/CMakeLists.txt
+@@ -57,9 +57,11 @@ function(add_shader OUTPUT SOURCE)
+   endif()
+ 
+   # debug info in shaders
++  # Gothic II Mobile: в Release без отладочной информации - SPIR-V в 6 раз меньше (≈16 МБ -> ≈3 МБ в .so),
++  # быстрее создание шейдеров при запуске
+   if(${CMAKE_BUILD_TYPE} MATCHES "Debug")
+     list(APPEND VARS "-g")
+-  else()
++  elseif(NOT ANDROID)
+     list(APPEND VARS "-g")
+   endif()
+ 
+diff --git a/shader/lighting/light.frag b/shader/lighting/light.frag
+index eed0730..7698d9b 100644
+--- a/shader/lighting/light.frag
++++ b/shader/lighting/light.frag
+@@ -17,6 +17,7 @@ layout(location = 0) out vec4 outColor;
+ 
+ layout(push_constant, std140) uniform Pbo {
+   vec3  origin; //lwc
++  float viewDist; // Gothic II Mobile: дальность прорисовки, см; 0 - без ограничения
+   } push;
+ layout(binding = 0, std140) uniform UboScene {
+   SceneDesc scene;
+diff --git a/shader/lighting/light.vert b/shader/lighting/light.vert
+index 0fb903f..c096e45 100644
+--- a/shader/lighting/light.vert
++++ b/shader/lighting/light.vert
+@@ -11,6 +11,7 @@ out gl_PerVertex {
+ 
+ layout(push_constant, std140) uniform Pbo {
+   vec3  origin; //lwc
++  float viewDist; // Gothic II Mobile: дальность прорисовки, см; 0 - без ограничения
+   } push;
+ 
+ layout(binding = 0, std140) uniform UboScene {
+@@ -48,7 +49,9 @@ bool testFrustrum(in vec3 at, in float R){
+ void main(void) {
+   LightSource light = lights[gl_InstanceIndex];
+ 
+-  if(!testFrustrum(light.pos,light.range)) {
++  // Gothic II Mobile: свет за дальностью прорисовки освещал бы то, чего нет на экране
++  const bool farAway = push.viewDist>0 && distance(light.pos, scene.camPos)-light.range>push.viewDist;
++  if(farAway || !testFrustrum(light.pos,light.range)) {
+     // skip invisible lights, make sure that they don't turn into FQS
+     gl_Position = vec4(0.0,0.0,-1.0,1.0);
+     cenPosition = vec4(0.0);
 diff --git a/shader/materials/visibility_pass.comp b/shader/materials/visibility_pass.comp
-index 378d837..570542f 100644
+index 378d837..657ea67 100644
 --- a/shader/materials/visibility_pass.comp
 +++ b/shader/materials/visibility_pass.comp
 @@ -23,6 +23,8 @@ layout(push_constant, std430) uniform UboPush {
@@ -8633,7 +9592,24 @@ index 378d837..570542f 100644
    } push;
  
  Instance pullInstance(uint i) {
-@@ -182,6 +184,16 @@ void runCluster(const uint clusterId) {
+@@ -161,6 +163,16 @@ bool projectCluster(const Cluster cluster, out vec4 aabb, out float depthMin) {
+   }
+ #endif
+ 
++// Gothic II Mobile: свой порог отсечения мелочи у каждого объекта (0,7..1,3 от общего): трава редеет вдали
++// постепенно, без видимой линии, за которой она пропадает. Хеш от номера объекта - порог не меняется
++// от кадра к кадру, мерцания нет.
++float detailJitter(uint id) {
++  id = id*747796405u + 2891336453u;
++  id = ((id >> ((id >> 28u) + 4u)) ^ id) * 277803737u;
++  id = (id >> 22u) ^ id;
++  return 0.7 + 0.6*float(id & 0xFFFFu)/65535.0;
++  }
++
+ bool frustrumTest(const vec4 sphere) {
+   if(sphere.w<0.f)
+     return false;
+@@ -182,6 +194,17 @@ void runCluster(const uint clusterId) {
    if(!frustrumTest(cluster.sphere))
      return;
  
@@ -8643,10 +9619,48 @@ index 378d837..570542f 100644
 +    const float dist = distance(cluster.sphere.xyz, scene.camPos) - cluster.sphere.w;
 +    if(push.viewDist>0 && dist>push.viewDist)
 +      return;
-+    if(push.detailRatio>0 && cluster.instanceId!=0xFFFFFFFF && cluster.sphere.w<dist*push.detailRatio)
++    if(push.detailRatio>0 && cluster.instanceId!=0xFFFFFFFF &&
++       cluster.sphere.w<dist*push.detailRatio*detailJitter(cluster.instanceId))
 +      return;
 +    }
 +
  #if defined(MAIN_VIEW)
    vec4  aabb     = vec4(0);
    float depthMin = 1;
+diff --git a/shader/sky/fog.frag b/shader/sky/fog.frag
+index be1c08b..f8a2606 100644
+--- a/shader/sky/fog.frag
++++ b/shader/sky/fog.frag
+@@ -24,6 +24,13 @@ layout(location = 0) out vec4 outColor;
+ #else
+ layout(binding = 0) uniform sampler3D fogLut;
+ layout(binding = 1) uniform sampler3D fogLutMs;
++// Gothic II Mobile: дымка у границы прорисовки - земля и предметы вдали переходят в цвет неба, а не
++// обрываются; skyLUT - небо по направлениям (как в sky.frag)
++layout(binding = 5) uniform sampler2D skyLUT;
++layout(push_constant, std430) uniform UboPush {
++  float fadeStart; // см; fadeEnd==0 - без дымки
++  float fadeEnd;
++  } push;
+ #endif
+ 
+ layout(binding = 2) uniform sampler2D depth;
+@@ -199,6 +206,18 @@ void main_frag() {
+   lum *= scene.GSunIntensity;
+   lum *= scene.exposure;
+ 
++  if(!isSky && push.fadeEnd>0) {
++    const vec3  wpos = inverse(vec3(inPos,dMax));    // метры
++    const vec3  ray  = wpos - scene.camPos*0.01;
++    const float k    = smoothstep(push.fadeStart, push.fadeEnd, length(ray)*100.0);
++    if(k>0) {
++      const vec3 viewPos = vec3(0.0, RPlanet + scene.plPosY, 0.0);
++      const vec3 skyLum  = textureSkyLUT(skyLUT, viewPos, normalize(ray), sunDir)*scene.GSunIntensity*scene.exposure;
++      lum = mix(lum, skyLum, k);
++      tr  = tr*(1.0-k);
++      }
++    }
++
+   outColor = vec4(lum, 1.0-tr);
+   }
+ #else

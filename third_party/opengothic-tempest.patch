@@ -13,6 +13,71 @@ index 6763126..8cd3597 100644
    if(WIN32)
      target_link_libraries(${PROJECT_NAME} PRIVATE vulkan-1)
    else()
+diff --git a/Engine/gapi/abstractgraphicsapi.cpp b/Engine/gapi/abstractgraphicsapi.cpp
+index d92ef35..7d3b9df 100644
+--- a/Engine/gapi/abstractgraphicsapi.cpp
++++ b/Engine/gapi/abstractgraphicsapi.cpp
+@@ -33,6 +33,16 @@ const Sampler& Sampler::anisotrophy() {
+   return s;
+   }
+ 
++static float samplerAnisotropyLimit = 0;
++
++void Sampler::setAnisotropyLimit(float limit) {
++  samplerAnisotropyLimit = limit;
++  }
++
++float Sampler::anisotropyLimit() {
++  return samplerAnisotropyLimit;
++  }
++
+ const Sampler& Sampler::bilinear() {
+   static Sampler s = mkBilinear();
+   return s;
+diff --git a/Engine/gapi/abstractgraphicsapi.h b/Engine/gapi/abstractgraphicsapi.h
+index 7938dfe..abf0368 100644
+--- a/Engine/gapi/abstractgraphicsapi.h
++++ b/Engine/gapi/abstractgraphicsapi.h
+@@ -225,6 +225,10 @@ namespace Tempest {
+     bool             anisotropic = true;
+ 
+     static const Sampler& anisotrophy();
++    // Gothic II Mobile: предел анизотропной фильтрации для всех сэмплеров (до создания устройства:
++    // сэмплер по умолчанию создаётся вместе с ним); 0 - как у видеокарты
++    static void           setAnisotropyLimit(float limit);
++    static float          anisotropyLimit();
+     static const Sampler& bilinear();
+     static const Sampler& trillinear();
+     static const Sampler& nearest();
+diff --git a/Engine/gapi/vulkan/vsamplercache.cpp b/Engine/gapi/vulkan/vsamplercache.cpp
+index 024986d..4bf59fc 100644
+--- a/Engine/gapi/vulkan/vsamplercache.cpp
++++ b/Engine/gapi/vulkan/vsamplercache.cpp
+@@ -5,6 +5,8 @@
+ #include "vdevice.h"
+ #include "vtexture.h"
+ 
++#include <algorithm>
++
+ using namespace Tempest;
+ using namespace Tempest::Detail;
+ 
+@@ -33,9 +35,13 @@ VkSamplerCreateInfo VSamplerCache::createInfo(const VDevice& dev, const Sampler&
+   samplerInfo.addressModeU            = nativeFormat(s.uClamp);
+   samplerInfo.addressModeV            = nativeFormat(s.vClamp);
+   samplerInfo.addressModeW            = nativeFormat(s.wClamp);
+-  if(s.anisotropic && dev.props.anisotropy) {
++  // Gothic II Mobile: предел анизотропии из настроек игры (Sampler::setAnisotropyLimit)
++  float maxAnisotropy = dev.props.maxAnisotropy;
++  if(Sampler::anisotropyLimit()>0)
++    maxAnisotropy = std::min(maxAnisotropy, Sampler::anisotropyLimit());
++  if(s.anisotropic && dev.props.anisotropy && maxAnisotropy>1.f) {
+     samplerInfo.anisotropyEnable      = VK_TRUE;
+-    samplerInfo.maxAnisotropy         = dev.props.maxAnisotropy;
++    samplerInfo.maxAnisotropy         = maxAnisotropy;
+     } else {
+     samplerInfo.anisotropyEnable      = VK_FALSE;
+     samplerInfo.maxAnisotropy         = 1.f;
 diff --git a/Engine/system/api/androidapi.cpp b/Engine/system/api/androidapi.cpp
 index 96b7829..b10c79c 100644
 --- a/Engine/system/api/androidapi.cpp
