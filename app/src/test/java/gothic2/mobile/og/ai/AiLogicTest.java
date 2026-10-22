@@ -53,10 +53,10 @@ public class AiLogicTest {
         List<String> c = Speech.chunks("Да. Пойдём. Только не отставай — тут волки.");
         assertEquals(1, c.size());
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < 12; i++) sb.append("Это довольно длинное предложение номер ").append(i).append(". ");
+        for (int i = 0; i < 20; i++) sb.append("Это довольно длинное предложение номер ").append(i).append(". ");
         List<String> many = Speech.chunks(sb.toString().trim());
         assertTrue(many.size() > 1);
-        for (String s : many) assertTrue(s.length() <= 260);
+        for (String s : many) assertTrue(s.length() <= 400);
     }
 
     @Test

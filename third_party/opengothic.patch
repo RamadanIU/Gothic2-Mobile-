@@ -104,10 +104,10 @@ index 3696b46..96ff5a5 100644
      float                 calcCameraColision(const Tempest::Vec3& target, const Tempest::Vec3& dir, const Tempest::Vec3& rotSpin, float dist) const;
 diff --git a/common/game/ailink.cpp b/common/game/ailink.cpp
 new file mode 100644
-index 0000000..1dd6c79
+index 0000000..7df68b4
 --- /dev/null
 +++ b/common/game/ailink.cpp
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,102 @@
 +#include "ailink.h"
 +
 +#include <atomic>
@@ -116,6 +116,7 @@ index 0000000..1dd6c79
 +
 +#ifdef __ANDROID__
 +#include <jni.h>
++#include <pthread.h>
 +#endif
 +
 +// Gothic II Mobile: строки идут байтами UTF-8 (byte[]), а не jstring: NewStringUTF роняет приложение на
@@ -132,6 +133,19 @@ index 0000000..1dd6c79
 +  JavaVM*   jvm     = nullptr;
 +  jclass    jcls    = nullptr;
 +  jmethodID onEvent = nullptr;
++  // Поток, подключённый к Java, обязан отключиться перед концом - иначе ART роняет процесс:
++  // отключение - в деструкторе ключа потока
++  pthread_key_t  detachKey;
++  pthread_once_t detachOnce = PTHREAD_ONCE_INIT;
++
++  void detachThread(void*) {
++    if(jvm!=nullptr)
++      jvm->DetachCurrentThread();
++    }
++
++  void makeDetachKey() {
++    pthread_key_create(&detachKey,detachThread);
++    }
 +#endif
 +  }
 +
@@ -152,9 +166,11 @@ index 0000000..1dd6c79
 +    return;
 +  JNIEnv* env = nullptr;
 +  if(jvm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6)!=JNI_OK) {
-+    // Поток игры живёт до конца процесса: подключается к Java один раз
++    // Поток игры подключается к Java один раз и отключается, когда кончится
 +    if(jvm->AttachCurrentThread(&env,nullptr)!=JNI_OK)
 +      return;
++    pthread_once(&detachOnce,makeDetachKey);
++    pthread_setspecific(detachKey,env);
 +    }
 +  jbyteArray arr = env->NewByteArray(jsize(json.size()));
 +  if(arr==nullptr) {
@@ -218,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..90790b1
+index 0000000..b16c8f6
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,1472 @@
+@@ -0,0 +1,1511 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -444,6 +460,8 @@ index 0000000..90790b1
 +  npc.setTrueGuild(GIL_NONE);
 +  h.type         = zenkit::NpcType::G2_AMBIENT;
 +  h.level        = 30;
++  // Голос 0 - пустой набор SVM: в бою и при встрече он не кричит чужим озвученным голосом, говорит только модель
++  h.voice        = 0;
 +  h.fight_tactic = owner.scriptConst("FAI_HUMAN_MASTER",4);
 +  h.attribute[ATR_HITPOINTSMAX] = 900;
 +  h.attribute[ATR_HITPOINTS]    = 900;
@@ -793,7 +811,9 @@ index 0000000..90790b1
 +  if(!isAiNpc(npc))
 +    return;
 +  talking = true;
-+  busy    = false;
++  // Модель здоровается: выбор реплик подождёт её (не дольше 20 с, приложение продлит, пока думает)
++  busy      = true;
++  busyUntil = owner.tickCount()+20000;
 +  // Разговор прерывает дело: стоит лицом к герою
 +  cancelBody("разговор с героем");
 +  AiLink::send("{\"ev\":\"talk_start\"}");
@@ -877,6 +897,7 @@ index 0000000..90790b1
 +  }
 +
 +void AiNpc::sendReady() {
++  Log::i("[g2m] ai: ready story=",geralt->handle().aivar[AivStory]," token=",geralt->handle().aivar[AivToken]);
 +  // load=1 - первый раз за сеанс игры (новая игра или загрузка сохранения): приложение читает память
 +  // этого сохранения; потом (смена мира и обратно) - память сеанса остаётся
 +  auto& h = geralt->handle();
@@ -983,13 +1004,19 @@ index 0000000..90790b1
 +
 +void AiNpc::cancelBody(std::string_view why) {
 +  for(auto& a:acts)
-+    finish(a,false,std::string("прервано: ")+std::string(why));
++    if(!a.closed)
++      finish(a,false,std::string("прервано: ")+std::string(why));
 +  acts.clear();
 +  }
 +
 +void AiNpc::finish(Action& a, bool ok, std::string_view note) {
-+  if(a.id.empty())
++  if(a.closed)
 +    return;
++  a.closed = true;
++  Log::i("[g2m] ai: act ",a.name,ok ? " ok: " : " fail: ",note);
++  if(!a.report || a.id.empty())
++    return;
++  a.report = false;
 +  rapidjson::StringBuffer buf;
 +  JsonOut w(buf);
 +  w.StartObject();
@@ -1001,7 +1028,6 @@ index 0000000..90790b1
 +  put(w,"note",note);
 +  w.EndObject();
 +  AiLink::send(buf.GetString());
-+  a.id.clear();
 +  }
 +
 +const WayPoint* AiNpc::placeByName(std::string_view name) {
@@ -1036,6 +1062,22 @@ index 0000000..90790b1
 +  return {};
 +  }
 +
++namespace {
++  // Действия тела: начинаются вне разговора - конец ZS_Talk и смена состояния стирают очередь ИИ
++  bool isBodyAct(std::string_view n) {
++    static const char* list[] = {"go_to_place","go_to_npc","approach","follow_hero","wait_here","stop_following",
++                                 "attack","stop_fight","take_item","activity","use_mob","loot"};
++    for(auto* i:list)
++      if(n==i)
++        return true;
++    return false;
++    }
++  // Мгновенные из них: итог известен сразу, движение - потом
++  bool isInstantBody(std::string_view n) {
++    return n=="follow_hero" || n=="wait_here" || n=="stop_following" || n=="stop_fight" || n=="activity";
++    }
++  }
++
 +void AiNpc::cmdAct(const std::string& id, const std::string& name, const void* argsPtr) {
 +  const auto& args = *reinterpret_cast<const rapidjson::Value*>(argsPtr);
 +  auto* w  = world();
@@ -1059,81 +1101,88 @@ index 0000000..90790b1
 +      return pl;
 +    return npcByRef(t);
 +    };
-+  // Действие тела: новое заменяет прежнее
-+  auto body = [&]() {
-+    if(talking && name!="give_item" && name!="gesture")
-+      endDialog();
-+    cancelBody("новое действие");
-+    };
 +
-+  if(npc.isDown() && name!="say") {
++  if(npc.isDown()) {
 +    fail("ты без сознания");
 +    return;
 +    }
 +
++  // Сначала - проверка и разбор: ошибку модель получит сразу
 +  if(name=="go_to_place") {
-+    auto* wp = placeByName(str(args,"place"));
-+    if(wp==nullptr) {
++    a.wp = placeByName(str(args,"place"));
++    if(a.wp==nullptr) {
 +      fail("нет такого места; возьми название из списка мест в обстановке");
 +      return;
 +      }
-+    body();
-+    setParty(npc,false);
-+    npc.aiPush(AiQueue::aiGoToPoint(*wp));
-+    a.wp       = wp;
-+    a.deadline = now+180000;
-+    acts.push_back(a);
-+    return;
 +    }
-+  if(name=="go_to_npc" || name=="approach") {
-+    Npc* t = target();
-+    if(t==nullptr || t==&npc) {
++  else if(name=="go_to_npc" || name=="approach" || name=="attack" || name=="loot") {
++    a.target = target();
++    if(a.target==nullptr || a.target==&npc) {
 +      fail("не вижу такого");
 +      return;
 +      }
-+    body();
-+    setParty(npc,false);
-+    npc.aiPush(AiQueue::aiGoToNpc(t));
-+    a.target   = t;
-+    a.deadline = now+90000;
-+    acts.push_back(a);
-+    return;
-+    }
-+  if(name=="follow_hero") {
-+    body();
-+    setParty(npc,true);
-+    done("идёшь за героем и защищаешь его (ты в его отряде)");
-+    return;
-+    }
-+  if(name=="wait_here" || name=="stop_following") {
-+    body();
-+    setParty(npc,false);
-+    done("стоишь на месте");
-+    return;
-+    }
-+  if(name=="attack") {
-+    Npc* t = target();
-+    if(t==nullptr || t==&npc || t->isDead()) {
-+      fail("цели нет");
++    if(name=="attack" && a.target->isDead()) {
++      fail("цель уже мертва");
 +      return;
 +      }
-+    body();
-+    owner.invokeAttack(npc,*t,owner.attackReason(npc,*t));
-+    a.target   = t;
-+    a.deadline = now+120000;
++    if(name=="loot" && (a.target==pl || !(a.target->isDead() || a.target->isUnconscious()))) {
++      fail("обыскать можно только мёртвого или без сознания");
++      return;
++      }
++    }
++  else if(name=="take_item") {
++    a.item = itemByRef(str(args,"item"));
++    if(a.item==nullptr) {
++      fail("такого предмета на земле нет");
++      return;
++      }
++    a.text = fromCp1251(a.item->displayName());
++    }
++  else if(name=="activity") {
++    static const struct { const char* name; const char* zs; } list[] = {
++      {"stand","ZS_STAND_ARMSCROSSED"}, {"guard","ZS_STAND_GUARDING"}, {"sit","ZS_SIT_CAMPFIRE"},
++      {"practice_sword","ZS_PRACTICE_SWORD"}, {"eat","ZS_STAND_EATING"}, {"drink","ZS_STAND_DRINKING"},
++      {"look_around","ZS_STAND_WP"}, {"smoke","ZS_SMOKE_JOINT"},
++      };
++    const std::string act = str(args,"name");
++    for(auto& i:list)
++      if(act==i.name && owner.findSymbolIndex(i.zs)!=size_t(-1)) {
++        a.text = i.zs;
++        a.mood = act;
++        }
++    if(a.text.empty()) {
++      fail("нет такого занятия");
++      return;
++      }
++    }
++  else if(name=="use_mob") {
++    a.text = upper(str(args,"scheme"));
++    auto* mob = w->availableMob(npc,a.text);
++    if(mob==nullptr) {
++      fail("рядом нет свободного предмета такого вида");
++      return;
++      }
++    a.mood = fromCp1251(mob->displayName());
++    }
++
++  if(isBodyAct(name)) {
++    cancelBody("новое действие");
++    if(talking || npc.isTalk()) {
++      // Сначала договорить: начнётся, когда разговор закроется
++      endDialog();
++      if(isInstantBody(name)) {
++        done("сделаешь, как только закончится разговор");
++        a.report = false;
++        a.closed = false;
++        }
++      acts.push_back(a);
++      return;
++      }
 +    acts.push_back(a);
++    beginBody(acts.back());
 +    return;
 +    }
-+  if(name=="stop_fight") {
-+    body();
-+    npc.setTarget(nullptr);
-+    if(owner.isPartyMember(npc))
-+      setParty(npc,true); else
-+      setActivity(npc,"ZS_STAND_ARMSCROSSED");
-+    npc.aiPush(AiQueue::aiRemoveWeapon());
-+    done("ты прекратил бой");
-+    return;
-+    }
++
 +  if(name=="draw_weapon") {
 +    npc.aiPush(AiQueue::aiDrawWeapon());
 +    done("оружие наготове");
@@ -1164,21 +1213,6 @@ index 0000000..90790b1
 +      Gothic::inst().onPrint(toCp1251(msg));
 +      }
 +    done("отдано: "+item+" x"+std::to_string(n));
-+    return;
-+    }
-+  if(name=="take_item") {
-+    Item* itm = itemByRef(str(args,"item"));
-+    if(itm==nullptr) {
-+      fail("такого предмета на земле нет");
-+      return;
-+      }
-+    body();
-+    npc.aiPush(AiQueue::aiGotoItem(*itm));
-+    npc.aiPush(AiQueue::aiTakeItem(*itm));
-+    a.item     = itm;
-+    a.text     = fromCp1251(itm->displayName());
-+    a.deadline = now+40000;
-+    acts.push_back(a);
 +    return;
 +    }
 +  if(name=="use_item") {
@@ -1219,60 +1253,10 @@ index 0000000..90790b1
 +    done("смотришь на цель");
 +    return;
 +    }
-+  if(name=="activity") {
-+    static const struct { const char* name; const char* zs; } list[] = {
-+      {"stand","ZS_STAND_ARMSCROSSED"}, {"guard","ZS_STAND_GUARDING"}, {"sit","ZS_SIT_CAMPFIRE"},
-+      {"practice_sword","ZS_PRACTICE_SWORD"}, {"eat","ZS_STAND_EATING"}, {"drink","ZS_STAND_DRINKING"},
-+      {"look_around","ZS_STAND_WP"}, {"smoke","ZS_SMOKE_JOINT"},
-+      };
-+    const std::string act = str(args,"name");
-+    for(auto& i:list)
-+      if(act==i.name) {
-+        if(owner.findSymbolIndex(i.zs)==size_t(-1)) {
-+          fail("так не умеешь");
-+          return;
-+          }
-+        body();
-+        setParty(npc,false);
-+        setActivity(npc,i.zs);
-+        done(std::string("занят: ")+act);
-+        return;
-+        }
-+    fail("нет такого занятия");
-+    return;
-+    }
-+  if(name=="use_mob") {
-+    const std::string scheme = upper(str(args,"scheme"));
-+    auto* mob = w->availableMob(npc,scheme);
-+    if(mob==nullptr) {
-+      fail("рядом нет свободного предмета такого вида");
-+      return;
-+      }
-+    body();
-+    setParty(npc,false);
-+    npc.aiPush(AiQueue::aiUseMob(scheme,1));
-+    a.text     = fromCp1251(mob->displayName());
-+    a.deadline = now+30000;
-+    acts.push_back(a);
-+    return;
-+    }
 +  if(name=="leave_mob") {
 +    if(npc.interactive()!=nullptr)
 +      npc.aiPush(AiQueue::aiUseMob("",-1));
 +    done("встал");
-+    return;
-+    }
-+  if(name=="loot") {
-+    Npc* t = target();
-+    if(t==nullptr || t==pl || !(t->isDead() || t->isUnconscious())) {
-+      fail("обыскать можно только мёртвого или без сознания");
-+      return;
-+      }
-+    body();
-+    npc.aiPush(AiQueue::aiGoToNpc(t));
-+    a.target   = t;
-+    a.deadline = now+40000;
-+    acts.push_back(a);
 +    return;
 +    }
 +  if(name=="set_attitude") {
@@ -1291,7 +1275,7 @@ index 0000000..90790b1
 +    }
 +  if(name=="wait") {
 +    a.deadline = now+uint64_t(std::clamp<int64_t>(num(args,"seconds",3),1,60))*1000;
-+    a.phase    = -1;
++    a.begun    = true;
 +    acts.push_back(a);
 +    return;
 +    }
@@ -1303,13 +1287,85 @@ index 0000000..90790b1
 +  fail("нет такого действия");
 +  }
 +
++void AiNpc::beginBody(Action& a) {
++  Npc& npc = *geralt;
++  const uint64_t now = owner.tickCount();
++  a.begun   = true;
++  a.started = now;
++  // Заново начатое состояние распорядка (лагерь на месте или ZS_Follow_Player) очищает очередь ИИ -
++  // движение кладётся в неё после
++  auto restart = [&](bool party) {
++    setParty(npc,party);
++    npc.resumeAiRoutine();
++    };
++
++  if(a.name=="go_to_place") {
++    restart(false);
++    npc.aiPush(AiQueue::aiGoToPoint(*a.wp));
++    a.deadline = now+180000;
++    }
++  else if(a.name=="go_to_npc" || a.name=="approach") {
++    restart(false);
++    npc.aiPush(AiQueue::aiGoToNpc(a.target));
++    a.deadline = now+90000;
++    }
++  else if(a.name=="loot") {
++    restart(false);
++    npc.aiPush(AiQueue::aiGoToNpc(a.target));
++    a.deadline = now+40000;
++    }
++  else if(a.name=="take_item") {
++    restart(false);
++    npc.aiPush(AiQueue::aiGotoItem(*a.item));
++    npc.aiPush(AiQueue::aiTakeItem(*a.item));
++    a.deadline = now+40000;
++    }
++  else if(a.name=="use_mob") {
++    restart(false);
++    npc.aiPush(AiQueue::aiUseMob(a.text,1));
++    a.deadline = now+30000;
++    }
++  else if(a.name=="attack") {
++    owner.invokeAttack(npc,*a.target,owner.attackReason(npc,*a.target));
++    a.deadline = now+120000;
++    }
++  else if(a.name=="follow_hero") {
++    restart(true);
++    finish(a,true,"идёшь за героем и защищаешь его (ты в его отряде)");
++    }
++  else if(a.name=="wait_here" || a.name=="stop_following") {
++    restart(false);
++    finish(a,true,"стоишь на месте");
++    }
++  else if(a.name=="stop_fight") {
++    npc.setTarget(nullptr);
++    restart(owner.isPartyMember(npc));
++    npc.aiPush(AiQueue::aiRemoveWeapon());
++    finish(a,true,"ты прекратил бой");
++    }
++  else if(a.name=="activity") {
++    setParty(npc,false);
++    setActivity(npc,a.text);
++    npc.resumeAiRoutine();
++    finish(a,true,"занят: "+a.mood);
++    }
++  }
++
 +void AiNpc::tickActions(uint64_t now) {
 +  auto* w  = world();
-+  Npc*  pl = w->player();
 +  Npc&  npc = *geralt;
-+  for(auto& a:acts) {
-+    if(a.id.empty())
++  for(size_t i=0; i<acts.size(); ++i) {
++    auto& a = acts[i];
++    if(a.closed)
 +      continue;
++    if(!a.begun) {
++      // Ждёт конца разговора (не дольше 10 минут)
++      if(!talking && !npc.isTalk() && !w->isInDialog())
++        beginBody(a);
++      else if(now>a.started+600000)
++        finish(a,false,"разговор так и не закончился");
++      continue;
++      }
 +    if(npc.isDown()) {
 +      finish(a,false,"тебя сбили с ног");
 +      continue;
@@ -1325,17 +1381,17 @@ index 0000000..90790b1
 +      }
 +    if(a.name=="go_to_place") {
 +      if(a.wp!=nullptr && npc.qDistTo(a.wp)<300.f*300.f) {
-+        setActivity(npc,"ZS_STAND_ARMSCROSSED");
++        npc.companionIdle.campPos = npc.position();
 +        float d = 0;
 +        finish(a,true,"пришёл: "+placeName(npc.position(),d));
 +        }
 +      }
 +    else if(a.name=="go_to_npc" || a.name=="approach") {
 +      if(npc.qDistTo(*a.target)<300.f*300.f) {
++        npc.companionIdle.campPos = npc.position();
 +        npc.aiPush(AiQueue::aiTurnToNpc(a.target));
 +        if(!a.target->isPlayer() && !a.target->isDown() && a.target->isAiQueueEmpty() && !a.target->isAttack())
 +          a.target->aiPush(AiQueue::aiTurnToNpc(&npc));
-+        setActivity(npc,"ZS_STAND_ARMSCROSSED");
 +        finish(a,true,"подошёл к "+fromCp1251(a.target->displayName()));
 +        }
 +      }
@@ -1357,11 +1413,11 @@ index 0000000..90790b1
 +      }
 +    else if(a.name=="use_mob") {
 +      if(npc.interactive()!=nullptr)
-+        finish(a,true,"используешь: "+a.text);
++        finish(a,true,"используешь: "+a.mood);
 +      }
 +    else if(a.name=="loot") {
 +      if(npc.qDistTo(*a.target)<250.f*250.f) {
-+        // Забирает всё, кроме надетого, как герой при обыске
++        // Забирает всё, что можно взять при обыске
 +        std::vector<std::pair<size_t,size_t>> take;
 +        for(auto it=a.target->inventory().iterator(Inventory::T_Ransack); it.isValid(); ++it)
 +          take.emplace_back(it->clsId(),it.count());
@@ -1375,11 +1431,10 @@ index 0000000..90790b1
 +        finish(a,true,got.empty() ? "ничего не нашёл" : "забрал: "+got);
 +        }
 +      }
-+    if(!a.id.empty() && now>a.deadline)
++    if(!a.closed && now>a.deadline)
 +      finish(a,false,"не вышло вовремя");
 +    }
-+  acts.erase(std::remove_if(acts.begin(),acts.end(),[](const Action& a){ return a.id.empty(); }),acts.end());
-+  (void)pl;
++  acts.erase(std::remove_if(acts.begin(),acts.end(),[](const Action& a){ return a.closed; }),acts.end());
 +  }
 +
 +std::string AiNpc::refOf(Npc& npc) {
@@ -1696,10 +1751,10 @@ index 0000000..90790b1
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..21ce05e
+index 0000000..17ece40
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,175 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -1791,7 +1846,9 @@ index 0000000..21ce05e
 +      Tempest::Vec3   pos;
 +      std::string     text;    // talk_to_npc: что сказать по приходе
 +      std::string     mood;
-+      int             phase    = 0;
++      bool            begun    = false; // действие тела ждёт конца разговора
++      bool            report   = true;  // сообщить приложению об итоге
++      bool            closed   = false;
 +      };
 +
 +    struct Known {
@@ -1812,6 +1869,7 @@ index 0000000..21ce05e
 +                  const std::string& to, const std::string& mood);
 +    void   cmdAct(const std::string& id, const std::string& name, const void* args);
 +    void   finish(Action& a, bool ok, std::string_view note);
++    void   beginBody(Action& a);
 +    void   tickActions(uint64_t now);
 +    void   tickLines(uint64_t now);
 +    void   tickEvents(uint64_t now);
@@ -5508,10 +5566,10 @@ index 0000000..0dfb1b8
 +  };
 diff --git a/common/game/travelpoints.cpp b/common/game/travelpoints.cpp
 new file mode 100644
-index 0000000..bda359e
+index 0000000..789bcc9
 --- /dev/null
 +++ b/common/game/travelpoints.cpp
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,161 @@
 +#include "travelpoints.h"
 +
 +#include <Tempest/Log>
@@ -5543,6 +5601,9 @@ index 0000000..bda359e
 +  {P::M_Island, true,  "Ферма Лобарта",            {"FARM1", "NW_FARM1_OUT_05", "NW_FARM1_LOBART"}},
 +  {P::M_Island, true,  "Монастырь",                {"KLOSTER"}},
 +  {P::M_Island, true,  "Башня Ксардаса",           {"XARDAS", "NW_XARDAS_START"}},
++  // Gothic II Mobile: здесь живой NPC Геральт (ainpc.cpp) - пещера у водопада под башней
++  {P::M_Island, false, "Пещера у водопада",        {"NW_XARDAS_TOWER_WATERFALL_CAVE_ENTRANCE_02",
++                                                    "NW_XARDAS_TOWER_WATERFALL_CAVE_03"}},
 +  {P::M_Island, true,  "Маяк Джека",               {"LIGHTHOUSE"}},
 +  {P::M_Island, true,  "Раскопки магов Воды",      {"PORTAL", "NW_TROLLAREA_PORTAL_03"}},
 +  // перевал: дорога от фермы Бенгара (ворота перевала открывает сюжет)

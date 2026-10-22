@@ -36,7 +36,7 @@ public final class Speech {
         return t;
     }
 
-    /** Куски для озвучки: по предложениям, короткие склеиваются (до ~200 знаков). */
+    /** Куски для озвучки: по предложениям, склеиваются до ~350 знаков — обычно один запрос озвучки на ответ. */
     public static List<String> chunks(String text) {
         List<String> out = new ArrayList<>();
         if (text.isEmpty()) return out;
@@ -53,7 +53,7 @@ public final class Speech {
         if (start < text.length() && !text.substring(start).trim().isEmpty()) sentences.add(text.substring(start).trim());
         StringBuilder cur = new StringBuilder();
         for (String s : sentences) {
-            if (cur.length() > 0 && cur.length() + s.length() > 200) {
+            if (cur.length() > 0 && cur.length() + s.length() > 350) {
                 out.add(cur.toString());
                 cur.setLength(0);
             }

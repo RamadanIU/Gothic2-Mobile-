@@ -268,7 +268,7 @@ public class LauncherActivity extends Activity {
         File out = new File(downloads, "gothic2-log.txt");
         try (OutputStream os = new FileOutputStream(out)) {
             boolean any = false;
-            for (String name : new String[]{"log.txt", "crash.log"}) {
+            for (String name : new String[]{"log.txt", "crash.log", "ai/ai-log.old.txt", "ai/ai-log.txt"}) {
                 File f = new File(getFilesDir(), name);
                 if (!f.isFile()) continue;
                 any = true;

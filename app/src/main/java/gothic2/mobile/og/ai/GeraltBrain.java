@@ -121,6 +121,8 @@ final class GeraltBrain {
                 // Загрузка сохранения или новая игра - память этого сохранения; смена мира - та же память
                 if (Json.bool(ev, "load", true) || memory.story() != Json.num(ev, "story", 0)) {
                     memory.load(Json.num(ev, "story", 0), Json.num(ev, "token", 0));
+                    AiLog.i("ready: story=" + Json.num(ev, "story", 0) + " token=" + Json.num(ev, "token", 0)
+                        + " journal=" + memory.journal.size());
                 }
                 ready = true;
                 talking = false;
@@ -251,6 +253,7 @@ final class GeraltBrain {
             engine.send(Json.of("cmd", "think", "on", true));
             ui.status("Геральт думает…", 0);
         }
+        AiLog.i("turn" + (dialog ? " (dialog)" : "") + ": " + AiLog.cut(trigger, 160));
         try {
             Map<String, Object> snap = requestSnapshot();
             List<Map<String, Object>> msgs = new ArrayList<>();
@@ -259,8 +262,12 @@ final class GeraltBrain {
             msgs.add(Json.of("role", "user", "content",
                 (mem.isEmpty() ? "" : mem + "\n\n") + Observation.describe(snap) + "\n\n" + trigger));
             for (int step = 0; step < MAX_STEPS; step++) {
+                long t0 = now();
                 LlmClient.Reply r = llm.chat(msgs, tools, 1500);
                 String speech = Speech.clean(r.text);
+                StringBuilder calls = new StringBuilder();
+                for (LlmClient.ToolCall c : r.calls) calls.append(' ').append(c.name).append(c.rawArgs);
+                AiLog.i("model " + (now() - t0) + " ms: «" + AiLog.cut(speech, 200) + "»" + calls);
                 if (dialog && step == 0) ui.hideStatus();
                 if (!speech.isEmpty()) {
                     memory.add(stamp() + " Ты: «" + speech + "»");
@@ -321,6 +328,7 @@ final class GeraltBrain {
         }
         boolean ok = Json.bool(done, "ok", false);
         String note = Json.str(done, "note");
+        AiLog.i("act " + c.name + (ok ? " ok: " : " fail: ") + note);
         memory.add(stamp() + " Ты: " + desc + " → " + (ok ? "" : "не вышло: ") + note);
         return new String[]{(ok ? "готово: " : "не вышло: ") + note, ok ? "" : "again"};
     }
@@ -449,6 +457,7 @@ final class GeraltBrain {
     }
 
     private void showError(String msg) {
+        AiLog.i("error: " + msg);
         long t = now();
         if (t - lastErrorShown < 5000) return;
         lastErrorShown = t;

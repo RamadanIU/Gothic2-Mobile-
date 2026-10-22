@@ -31,6 +31,9 @@ public final class AiBridge {
     private boolean askedMic;
 
     private AiBridge(Activity activity, AiSettings settings) {
+        AiLog.init(new File(activity.getFilesDir(), "ai"));
+        AiLog.i("start: model=" + settings.chat().model + " tts=" + settings.ttsProvider()
+            + " autonomy=" + settings.autonomy());
         this.activity = activity;
         this.settings = settings;
         this.overlay = new AiOverlay(activity);
