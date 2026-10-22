@@ -54,6 +54,8 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
 | «Путь»: карта с местами, путь бегом точками, список, пауза игры; затемнение; строка «В пути»; «Назад» телефона | `TouchInput::openTravelMap/drawTravelMap/mapTap`, `MainWindow::keyDownEvent/keyUpEvent` |
 | «Путь» бегом: ход по сети путей, бой автобоем, сбор добычи, разговоры и стража, лечение, застревание | `PlayerControl::tickTravelRun/travelGo/travelEnemy/travelUnstuck`, `WayPath::points` |
 | «Путь» мгновенно: перенос героя, отряд рядом в строю | `PlayerControl::tickTravelFade`, `GameScript::squadArrive` |
+| «Путь» бегом: галочки «Сражаться», «Собирать лут» | `PlayerControl::TravelOptions`, `TouchInput::mapFight/mapLoot` |
+| Камера в пути: ракурсы (свободная, издалека, с высоты, сбоку, первое лицо, кино с камерой у дороги), палец крутит только камеру, кнопка и колесо ракурсов | `common/game/travelcamera.*`, `Camera::setDirector/tickDirector`, `MainWindow::tickCamera/tickMouse`, `TouchInput` (`C_Camera`, `Wheel::Camera`) |
 | Папка игры из `gothic_path.txt`; имя сохранения по умолчанию — дата | `InstallDetect`, `GameMenu::SavNameDialog` |
 | Путь к заголовкам Vulkan параметром CMake | `Tempest Engine/CMakeLists.txt` (`TEMPEST_VULKAN_SDK`) |
 

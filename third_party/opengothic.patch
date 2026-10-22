@@ -1,3 +1,107 @@
+diff --git a/common/camera.cpp b/common/camera.cpp
+index c98d753..7347071 100644
+--- a/common/camera.cpp
++++ b/common/camera.cpp
+@@ -321,6 +321,43 @@ void Camera::onRotateMouse(const PointF& dpos) {
+   state.spin.y += dpos.y;
+   }
+ 
++void Camera::setDirector(const Tempest::Vec3& from, const Tempest::Vec3& at, bool cut, bool collide) {
++  if(!director.on)
++    cut = true; // первый ракурс - без перелёта от обычной камеры
++  director.on      = true;
++  director.cut     = director.cut || cut;
++  director.collide = collide;
++  director.from    = from;
++  director.at      = at;
++  }
++
++void Camera::clearDirector() {
++  if(!director.on)
++    return;
++  director.on = false;
++  // Обычная камера продолжает отсюда: цель - герой (а не место, где она была до пути), за спиной героя
++  if(auto pl = Gothic::inst().player()) {
++    const auto& def = cameraDef();
++    state.target = pl->cameraBone(false);
++    inter.target = state.target;
++    veloTrans    = Vec3();
++    state.spin   = Vec3(def.best_elevation, pl->rotation()+def.best_azimuth, def.best_rot_z);
++    }
++  }
++
++void Camera::tickDirector(float dtF) {
++  // Gothic II Mobile: откуда и куда смотреть - от TravelCamera; стена между героем и камерой - камера ближе
++  auto dest = director.from;
++  if(director.collide)
++    dest = director.at + calcCameraColision(director.at, director.from-director.at);
++  if(director.cut || dtF<=0.f)
++    origin = dest; else
++    origin = origin + (dest-origin)*std::min(1.f, 5.f*dtF);
++  director.cut = false;
++  inter.target = director.at;
++  angles       = calcLookAtAngles(origin, director.at, Vec3(0), state.spin);
++  }
++
+ Matrix4x4 Camera::projective() const {
+   auto ret = proj;
+   if(auto w = Gothic::inst().world())
+@@ -711,7 +748,10 @@ void Camera::tick(uint64_t dt) {
+ 
+   switch (camMarvinMod) {
+     case M_Normal: {
+-      if(camMod==Camera::FirstPerson) {
++      if(director.on) {
++        tickDirector(dtF);
++        }
++      else if(camMod==Camera::FirstPerson) {
+         tickFirstPerson(dtF);
+         }
+       else {
+diff --git a/common/camera.h b/common/camera.h
+index 3696b46..96ff5a5 100644
+--- a/common/camera.h
++++ b/common/camera.h
+@@ -99,6 +99,12 @@ class Camera final {
+ 
+     void               onRotateMouse(const Tempest::PointF& dpos);
+ 
++    // Gothic II Mobile: ракурс задаёт «режиссёр» (камера в пути, TravelCamera): откуда и куда смотреть.
++    // Здесь - плавность и столкновения; cut - склейка без перелёта
++    void               setDirector(const Tempest::Vec3& from, const Tempest::Vec3& at, bool cut, bool collide);
++    void               clearDirector();
++    bool               hasDirector() const { return director.on; }
++
+     Tempest::Matrix4x4 projective() const;
+     Tempest::Matrix4x4 view() const;
+     Tempest::Matrix4x4 viewProj() const;
+@@ -134,9 +140,18 @@ class Camera final {
+       Tempest::Vec3       rotOffset = {};
+       };
+ 
++    struct Director {
++      bool                on      = false;
++      bool                cut     = false;
++      bool                collide = true;
++      Tempest::Vec3       from    = {};
++      Tempest::Vec3       at      = {};
++      };
++
+     State                 state;
+     Interpolated          inter;
+     Pin                   pin;
++    Director              director;
+ 
+     Tempest::Vec3         origin    = {};
+     Tempest::Vec3         angles    = {};
+@@ -168,6 +183,7 @@ class Camera final {
+ 
+     void                  tickFirstPerson(float dtF);
+     void                  tickThirdPerson(float dtF);
++    void                  tickDirector(float dtF);
+ 
+     Tempest::Vec3         clampRotation(Tempest::Vec3 spin);
+     float                 calcCameraColision(const Tempest::Vec3& target, const Tempest::Vec3& dir, const Tempest::Vec3& rotSpin, float dist) const;
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
 index 0000000..3fcd5aa
@@ -1722,7 +1826,7 @@ index 2cccb63..8400351 100644
      PerDist                                                     perceptionRanges;
  
 diff --git a/common/game/playercontrol.cpp b/common/game/playercontrol.cpp
-index aa16509..925efe7 100644
+index aa16509..2b1bad4 100644
 --- a/common/game/playercontrol.cpp
 +++ b/common/game/playercontrol.cpp
 @@ -1,13 +1,22 @@
@@ -1778,7 +1882,7 @@ index aa16509..925efe7 100644
    setTarget(currentFocus.npc);
  
    if(!ctrl[Action::ActionGeneric])
-@@ -444,6 +462,1173 @@ void PlayerControl::clearInput() {
+@@ -444,6 +462,1193 @@ void PlayerControl::clearInput() {
    std::memset(ctrl, 0,sizeof(ctrl));
    std::memset(actrl,0,sizeof(actrl));
    std::memset(wctrl,0,sizeof(wctrl));
@@ -2326,7 +2430,8 @@ index aa16509..925efe7 100644
 +  return nullptr;
 +  }
 +
-+bool PlayerControl::startTravel(const WayPoint& at, const WayPoint& way, std::string_view name, bool instant) {
++bool PlayerControl::startTravel(const WayPoint& at, const WayPoint& way, std::string_view name, bool instant,
++                                const TravelOptions& opt) {
 +  auto w  = Gothic::inst().world();
 +  auto pl = w ? w->player() : nullptr;
 +  if(pl==nullptr)
@@ -2339,6 +2444,8 @@ index aa16509..925efe7 100644
 +  stopGather(false);
 +  const uint64_t now = w->tickCount();
 +  travelOn       = instant ? TravelMode::Instant : TravelMode::Run;
++  travelOpt      = opt;
++  travelNo++;
 +  travelWorld    = w;
 +  travelAt       = &at;
 +  travelWay      = &way;
@@ -2365,7 +2472,8 @@ index aa16509..925efe7 100644
 +    // В пути - бегом: шаг и подкрадывание - для прогулки, не для дороги
 +    pl->setWalkMode(WalkBit::WM_Run);
 +    }
-+  Tempest::Log::i("[g2m] travel: ", instant ? "instant" : "run", " to \"", travelLabel, "\" (", at.name, ")");
++  Tempest::Log::i("[g2m] travel: ", instant ? "instant" : "run", " to \"", travelLabel, "\" (", at.name, ")",
++                  instant ? "" : (opt.fight ? " fight" : " no-fight"), instant ? "" : (opt.loot ? " loot" : " no-loot"));
 +  return true;
 +  }
 +
@@ -2589,12 +2697,28 @@ index aa16509..925efe7 100644
 +    return;
 +    }
 +
-+  // Враг: бой ведёт автобой (tickAutoFight). Не одолеть за 45 с (на скале, над водой) - дальше своей дорогой
++  // Враг: бой ведёт автобой (tickAutoFight). Не одолеть за 45 с (на скале, над водой) - дальше своей дорогой.
++  // Без «Сражаться» - бежать дальше, не останавливаясь (напарники дерутся сами)
 +  bool guard = false;
 +  Npc* foe   = (pl.isSwim() || pl.isDive()) ? nullptr : travelEnemy(pl,guard);
 +  if(guard) {
 +    stopTravel("На тебя напали - путь прерван");
 +    return;
++    }
++  if(!travelOpt.fight) {
++    foe = nullptr;
++    // Не дерётся - и не погибает молча: здоровья меньше четверти - остановиться и выпить зелье (ниже), зелий
++    // нет - решает игрок
++    if(pl.attribute(ATR_HITPOINTS)*4<pl.attribute(ATR_HITPOINTSMAX)) {
++      if(potionCount(false)==0) {
++        stopTravel("Мало здоровья и нет зелий - путь прерван");
++        return;
++        }
++      if(travelPushed && now>=travelHealAt) {
++        pl.clearAiQueue();
++        travelPushed = false;
++        }
++      }
 +    }
 +  if(foe!=nullptr) {
 +    travelCalmAt = now;
@@ -2670,8 +2794,8 @@ index aa16509..925efe7 100644
 +      }
 +    }
 +
-+  // Добыча у дороги: по пути - в 12 м, после боя - в 20 м (тела побеждённых)
-+  if(now>=travelLootAt && !pl.isSwim() && !pl.isDive()) {
++  // Добыча у дороги: по пути - в 12 м, после боя - в 20 м (тела побеждённых). Без «Собирать лут» - мимо
++  if(travelOpt.loot && now>=travelLootAt && !pl.isSwim() && !pl.isDive()) {
 +    travelLootAt = now+800;
 +    const float r = travelWide ? gatherRadius : 1200.f;
 +    travelWide = false;
@@ -2952,7 +3076,7 @@ index aa16509..925efe7 100644
    }
  
  void PlayerControl::marvinF8(uint64_t dt) {
-@@ -579,6 +1764,10 @@ bool PlayerControl::tickMove(uint64_t dt) {
+@@ -579,6 +1784,10 @@ bool PlayerControl::tickMove(uint64_t dt) {
    if(pl==nullptr)
      return true;
  
@@ -2963,7 +3087,7 @@ index aa16509..925efe7 100644
    implMove(dt);
  
    float runAngle = pl->runAngle();
-@@ -675,6 +1864,12 @@ void PlayerControl::implMove(uint64_t dt) {
+@@ -675,6 +1884,12 @@ void PlayerControl::implMove(uint64_t dt) {
        }
      }
  
@@ -2977,7 +3101,7 @@ index aa16509..925efe7 100644
      runAngleDest = 0;
      return;
 diff --git a/common/game/playercontrol.h b/common/game/playercontrol.h
-index fb8d625..6904be2 100644
+index fb8d625..22f11cf 100644
 --- a/common/game/playercontrol.h
 +++ b/common/game/playercontrol.h
 @@ -5,6 +5,9 @@
@@ -2998,7 +3122,7 @@ index fb8d625..6904be2 100644
  
  class PlayerControl final {
    public:
-@@ -48,6 +52,60 @@ class PlayerControl final {
+@@ -48,6 +52,70 @@ class PlayerControl final {
      bool  tickMove(uint64_t dt);
      bool  tickCameraMove(uint64_t dt);
  
@@ -3039,14 +3163,24 @@ index fb8d625..6904be2 100644
 +      Talk,
 +      Fade,
 +      };
++    // Что делать по дороге бегом: драться с напавшими и зверями, собирать добычу (галочки на карте «Путь»)
++    struct TravelOptions {
++      bool fight = true;
++      bool loot  = true;
++      };
 +    // Почему сейчас нельзя отправиться в путь; nullptr - можно
 +    const char* travelBlocked(bool instant) const;
-+    bool  startTravel(const WayPoint& at, const WayPoint& way, std::string_view name, bool instant);
++    bool  startTravel(const WayPoint& at, const WayPoint& way, std::string_view name, bool instant,
++                      const TravelOptions& opt);
 +    // Прервать путь; why - сообщение игроку (UTF-8), nullptr - молча
 +    void  stopTravel(const char* why);
 +    auto  travelMode()  const -> TravelMode  { return travelOn; }
 +    auto  travelState() const -> TravelState { return travelSt; }
 +    auto  travelName()  const -> const std::string& { return travelLabel; }
++    // Путь бегом и сколько пройдено - камера в пути ставит по нему камеру у дороги; номер пути - новый путь
++    auto  travelPath()  const -> const std::vector<const WayPoint*>& { return travelRoute; }
++    size_t   travelPathIdx() const { return travelIdx; }
++    uint32_t travelSerial()  const { return travelNo; }
 +    // Сколько осталось по пути, см (бегом)
 +    float travelLeft() const;
 +    // Затемнение экрана при мгновенном перемещении: 0 - нет, 1 - чёрный экран
@@ -3059,7 +3193,7 @@ index fb8d625..6904be2 100644
    private:
      enum WeaponAction : uint8_t {
        WeaponClose,
-@@ -153,6 +211,61 @@ class PlayerControl final {
+@@ -153,6 +221,63 @@ class PlayerControl final {
      int            rotationAni    = 0;
      bool           g2Ctrl         = false;
  
@@ -3090,6 +3224,8 @@ index fb8d625..6904be2 100644
 +    static constexpr float   gatherRadius = 2000.f;
 +
 +    TravelMode     travelOn       = TravelMode::None;
++    TravelOptions  travelOpt;
++    uint32_t       travelNo       = 0;
 +    TravelState    travelSt       = TravelState::Go;
 +    const World*   travelWorld    = nullptr;
 +    const WayPoint* travelAt      = nullptr;
@@ -3121,7 +3257,7 @@ index fb8d625..6904be2 100644
      DialogMenu&    dlg;
      InventoryMenu& inv;
  
-@@ -177,6 +290,31 @@ class PlayerControl final {
+@@ -177,6 +302,31 @@ class PlayerControl final {
      void           setAnimRotate (Npc& pl, float rotation, int anim, bool force, uint64_t dt);
      void           processAutoRotate(Npc& pl, float& rot, uint64_t dt);
  
@@ -3153,6 +3289,362 @@ index fb8d625..6904be2 100644
  
      //////////////////////////////////
      // Helper functions for movement
+diff --git a/common/game/travelcamera.cpp b/common/game/travelcamera.cpp
+new file mode 100644
+index 0000000..5c9686f
+--- /dev/null
++++ b/common/game/travelcamera.cpp
+@@ -0,0 +1,271 @@
++#include "travelcamera.h"
++
++#include <Tempest/Application>
++
++#include <algorithm>
++#include <cmath>
++#include <iterator>
++
++#include "physics/dynamicworld.h"
++#include "world/objects/npc.h"
++#include "world/waypoint.h"
++#include "world/world.h"
++#include "camera.h"
++#include "gothic.h"
++
++using namespace Tempest;
++
++static const float Pi = 3.14159265f;
++
++static float angleMod(float a) {
++  a = std::fmod(a,360.f);
++  if(a<-180.f)
++    a += 360.f;
++  if(a>180.f)
++    a -= 360.f;
++  return a;
++  }
++
++// Направление взгляда по курсу (градусы, как Npc::rotation)
++static Vec3 dirOf(float yaw) {
++  const float a = yaw*Pi/180.f;
++  return Vec3(std::cos(a),0.f,std::sin(a));
++  }
++
++// Высокая камера не цепляется за кроны у героя, но и не уходит в гору: над землёй (крышей, кроной) в своей
++// точке - не ниже clearance
++static Vec3 aboveGround(Vec3 p, float clearance) {
++  auto w = Gothic::inst().world();
++  if(w==nullptr)
++    return p;
++  const auto top = w->physic()->landRay(Vec3(p.x, p.y+5000.f, p.z), 10000.f);
++  if(top.hasCol && top.v.y+clearance>p.y)
++    p.y = top.v.y+clearance;
++  return p;
++  }
++
++static float distXZ(const Vec3& a, const Vec3& b) {
++  const float dx = a.x-b.x, dz = a.z-b.z;
++  return std::sqrt(dx*dx+dz*dz);
++  }
++
++const char* TravelCamera::name(Mode m) {
++  switch(m) {
++    case M_Free:        return "Свободная";
++    case M_Far:         return "Издалека";
++    case M_Bird:        return "С высоты";
++    case M_Side:        return "Сбоку";
++    case M_FirstPerson: return "От первого лица";
++    case M_Cinema:      return "Кино";
++    case M_Count:       break;
++    }
++  return "";
++  }
++
++void TravelCamera::setMode(Mode m) {
++  cur      = (m<M_Count) ? m : M_Free;
++  yawOff   = 0;
++  pitchOff = 0;
++  shotLen  = 0; // «кино» - с нового плана
++  cut      = true;
++  }
++
++void TravelCamera::start(const Npc& pl) {
++  heading  = pl.rotation();
++  yawOff   = 0;
++  pitchOff = 0;
++  hasLast  = false;
++  shotLen  = 0;
++  cut      = true;
++  rng.seed(uint32_t(Application::tickCount()));
++  }
++
++void TravelCamera::resume() {
++  hasLast = false;
++  cut     = true;
++  }
++
++void TravelCamera::look(float dx, float dy) {
++  // Как обычная камера: палец вбок - поворот, вниз - выше и взгляд вниз
++  yawOff   = angleMod(yawOff-dx);
++  pitchOff = std::clamp(pitchOff+dy, -60.f, 75.f);
++  }
++
++Vec3 TravelCamera::orbit(const Vec3& at, float yaw, float pitch, float dist) const {
++  // Камера смотрит на at по курсу yaw, сверху вниз под углом pitch (меньше нуля - снизу вверх)
++  const float p = pitch*Pi/180.f;
++  return at - dirOf(yaw)*(dist*std::cos(p)) + Vec3(0.f, dist*std::sin(p), 0.f);
++  }
++
++void TravelCamera::tick(Camera& cam, const Npc& pl, const std::vector<const WayPoint*>& path, size_t idx, uint64_t dt) {
++  const float dtF = float(dt)/1000.f;
++  const Vec3  pos = pl.position();
++  // Курс - по движению героя и плавно: на поворотах дороги камера не дёргается, в бою (на месте) - как был
++  if(hasLast && dtF>0.f) {
++    Vec3 dv = pos-lastPos;
++    dv.y = 0;
++    if(dv.length()>60.f*dtF) {
++      const float a = std::atan2(dv.z,dv.x)*180.f/Pi;
++      heading = angleMod(heading + angleMod(a-heading)*std::min(1.f, 2.5f*dtF));
++      }
++    }
++  lastPos = pos;
++  hasLast = true;
++
++  const Vec3 chest   = pos+Vec3(0.f,130.f,0.f);
++  Vec3       from    = chest;
++  Vec3       at      = chest;
++  bool       collide = true;
++  bool       rigid   = false;
++  auto       pitch   = [this](float base, float lo, float hi) {
++    return std::clamp(base+pitchOff, lo, hi);
++    };
++
++  switch(cur) {
++    case M_Free:
++      from = orbit(chest, heading+yawOff, pitch(14.f,-20.f,85.f), 380.f);
++      break;
++    case M_Far:
++      from = orbit(chest, heading+yawOff, pitch(26.f,-10.f,85.f), 1100.f);
++      break;
++    case M_Bird:
++      // Над кронами: столкновения с деревьями опустили бы камеру в листву
++      at      = pos+Vec3(0.f,60.f,0.f);
++      from    = aboveGround(orbit(at, heading+yawOff, pitch(68.f,35.f,89.f), 2400.f), 400.f);
++      collide = false;
++      break;
++    case M_Side:
++      from = orbit(chest, heading+90.f+yawOff, pitch(6.f,-20.f,85.f), 560.f);
++      break;
++    case M_FirstPerson: {
++      // Глаза героя: чуть впереди головы, как первое лицо движка; смотреть по сторонам - пальцем
++      const float yaw = heading+yawOff;
++      const float p   = std::clamp(pitchOff,-60.f,60.f)*Pi/180.f;
++      const Vec3  dir = dirOf(yaw)*std::cos(p) - Vec3(0.f,std::sin(p),0.f);
++      from    = pl.cameraBone(true) + Vec3(0.f,8.f,0.f) + dirOf(yaw)*22.f;
++      at      = from+dir*1000.f;
++      collide = false;
++      rigid   = true;
++      break;
++      }
++    case M_Cinema: {
++      shotT += dtF;
++      bool next = (shotT>=shotLen);
++      if(shot==S_Track) {
++        // Камера у дороги: держится, пока герой не пробежит мимо и не удалится
++        const float d = distXZ(pos,trackPos);
++        shotNear = std::min(shotNear,d);
++        next = next || (shotNear<1500.f && d>shotNear+700.f) || d>5000.f;
++        }
++      if(next)
++        nextShot(pl,path,idx);
++      const float t = shotT;
++      switch(shot) {
++        case S_Chase: from = orbit(chest, heading+yawOff,                            8.f,  330.f); break;
++        case S_Front: from = orbit(chest, heading+180.f+25.f*std::sin(t*0.35f)+yawOff, 10.f, 470.f); break;
++        case S_SideL: from = orbit(chest, heading+90.f+yawOff,                       5.f,  540.f); break;
++        case S_SideR: from = orbit(chest, heading-90.f+yawOff,                       5.f,  540.f); break;
++        case S_Crane: from = orbit(chest, heading+30.f+t*7.f+yawOff,                 34.f, 950.f); break;
++        case S_Low:   from = orbit(chest, heading+150.f+yawOff,                      -10.f, 270.f); break;
++        case S_Bird:
++          at      = pos+Vec3(0.f,60.f,0.f);
++          from    = aboveGround(orbit(at, heading+t*6.f+yawOff, 66.f, 2100.f), 400.f);
++          collide = false;
++          break;
++        case S_Track:
++          from    = trackPos;
++          collide = false;
++          break;
++        case S_Count:
++          break;
++        }
++      break;
++      }
++    case M_Count:
++      break;
++    }
++
++  cam.setDirector(from, at, cut || rigid, collide);
++  cut = false;
++  }
++
++void TravelCamera::nextShot(const Npc& pl, const std::vector<const WayPoint*>& path, size_t idx) {
++  // Следующий план - по долям, не тот же, что сейчас; камера у дороги - если нашлось место, откуда видно путь
++  static const uint8_t weight[S_Count] = {2, 2, 1, 1, 2, 1, 1, 3};
++  uint32_t total = 0;
++  for(auto w:weight)
++    total += w;
++  Shot s  = S_Chase;
++  bool ok = false;
++  for(int attempt=0; attempt<8 && !ok; ++attempt) {
++    uint32_t r = uint32_t(rng()%total);
++    for(uint8_t i=0; i<S_Count; ++i) {
++      if(r<weight[i]) {
++        s = Shot(i);
++        break;
++        }
++      r -= weight[i];
++      }
++    if(s==shot && shotLen>0)
++      continue;
++    if(s==S_Track && !findTrackside(pl,path,idx,trackPos))
++      continue;
++    ok = true;
++    }
++  if(!ok)
++    s = (shot==S_Chase) ? S_Crane : S_Chase;
++  shot     = s;
++  shotT    = 0;
++  shotNear = 1e9f;
++  shotLen  = (s==S_Track) ? 14.f : 6.f+float(rng()%40)/10.f;
++  yawOff   = 0;
++  pitchOff = 0;
++  cut      = true;
++  }
++
++bool TravelCamera::findTrackside(const Npc& pl, const std::vector<const WayPoint*>& path, size_t idx, Vec3& out) {
++  auto w = Gothic::inst().world();
++  if(w==nullptr || idx>=path.size())
++    return false;
++  // Точка пути в 20 м впереди по дороге и направление дороги там
++  Vec3            prev = pl.position();
++  float           acc  = 0;
++  const WayPoint* wp   = nullptr;
++  Vec3            dir;
++  for(size_t i=idx; i<path.size(); ++i) {
++    const Vec3 p = path[i]->position();
++    Vec3       d = p-prev;
++    d.y = 0;
++    const float l = d.length();
++    acc += l;
++    if(acc>=2000.f && l>1.f) {
++      wp  = path[i];
++      dir = d/l;
++      break;
++      }
++    prev = p;
++    }
++  if(wp==nullptr)
++    return false;
++
++  // Сбоку от дороги на 5 м, на высоте глаз над землёй; дорогу оттуда должно быть видно
++  const Vec3  p     = wp->position();
++  const Vec3  side  = Vec3(-dir.z,0.f,dir.x);
++  const bool  first = (rng()&1u)!=0;
++  auto&       phys  = *w->physic();
++  for(int k=0; k<2; ++k) {
++    const float s = ((k==0)==first) ? 1.f : -1.f;
++    Vec3 c = p + side*(s*500.f) + dir*150.f;
++    const auto land = phys.landRay(c+Vec3(0.f,400.f,0.f), 1500.f);
++    if(!land.hasCol)
++      continue;
++    c.y = land.v.y+160.f;
++    if(std::abs(c.y-p.y)>500.f)
++      continue; // обрыв или скала
++    if(phys.ray(c, p+Vec3(0.f,120.f,0.f)).hasCol)
++      continue;
++    out = c;
++    return true;
++    }
++  return false;
++  }
+diff --git a/common/game/travelcamera.h b/common/game/travelcamera.h
+new file mode 100644
+index 0000000..0dfb1b8
+--- /dev/null
++++ b/common/game/travelcamera.h
+@@ -0,0 +1,73 @@
++#pragma once
++
++#include <Tempest/Vec>
++
++#include <cstdint>
++#include <random>
++#include <vector>
++
++class Camera;
++class Npc;
++class WayPoint;
++
++// Gothic II Mobile: камера в пути («Путь» бегом, docs/CONTROLS.md). Герой бежит сам - камера его не ведёт:
++// палец крутит её вокруг героя, а ракурс выбирается кнопкой: свободная, издалека, сверху, сбоку, от первого
++// лица и «кино» - планы сменяются сами, как повторы в гонках (погоня, спереди, сбоку, кран, сверху, низкий
++// план, камера у дороги, мимо которой герой пробегает). Откуда и куда смотреть - в Camera::setDirector.
++class TravelCamera final {
++  public:
++    enum Mode : uint8_t {
++      M_Free,
++      M_Far,
++      M_Bird,
++      M_Side,
++      M_FirstPerson,
++      M_Cinema,
++      M_Count
++      };
++
++    static const char* name(Mode m); // UTF-8
++
++    Mode mode() const { return cur; }
++    void setMode(Mode m);
++    // Новый путь: курс - куда смотрит герой, без поворотов пальцем
++    void start(const Npc& pl);
++    // Снова в кадре после разговора или сумки - склейка, без перелёта
++    void resume();
++    // Палец: поворот вокруг героя, градусы
++    void look(float dx, float dy);
++    // Каждый кадр. path/idx - путь бегом и сколько пройдено (камера у дороги ставится впереди по нему)
++    void tick(Camera& cam, const Npc& pl, const std::vector<const WayPoint*>& path, size_t idx, uint64_t dt);
++
++  private:
++    enum Shot : uint8_t {
++      S_Chase,
++      S_Front,
++      S_SideL,
++      S_SideR,
++      S_Crane,
++      S_Bird,
++      S_Low,
++      S_Track,
++      S_Count
++      };
++
++    Mode          cur      = M_Free;
++    float         heading  = 0;     // курс героя, градусы (как Npc::rotation), сглаженный
++    float         yawOff   = 0;     // поворот пальцем
++    float         pitchOff = 0;
++    Tempest::Vec3 lastPos;
++    bool          hasLast  = false;
++    bool          cut      = true;
++
++    Shot          shot     = S_Chase;
++    float         shotT    = 0;     // сколько идёт план, с
++    float         shotLen  = 0;
++    float         shotNear = 1e9f;  // камера у дороги: ближе всего герой подбегал, см
++    Tempest::Vec3 trackPos;
++    std::minstd_rand rng;
++
++    void          nextShot(const Npc& pl, const std::vector<const WayPoint*>& path, size_t idx);
++    bool          findTrackside(const Npc& pl, const std::vector<const WayPoint*>& path, size_t idx, Tempest::Vec3& out);
++    Tempest::Vec3 orbit(const Tempest::Vec3& at, float yaw, float pitch, float dist) const;
++  };
 diff --git a/common/game/travelpoints.cpp b/common/game/travelpoints.cpp
 new file mode 100644
 index 0000000..bda359e
@@ -3589,7 +4081,7 @@ index 912ea33..e80688b 100644
        bool           rtsmEnabled        = false;
        bool           swrEnabled         = false;
 diff --git a/common/mainwindow.cpp b/common/mainwindow.cpp
-index 52b66d3..37272c4 100644
+index 52b66d3..3f34061 100644
 --- a/common/mainwindow.cpp
 +++ b/common/mainwindow.cpp
 @@ -1,5 +1,7 @@
@@ -3735,7 +4227,22 @@ index 52b66d3..37272c4 100644
    dpScaled.x/=float(w());
    dpScaled.y/=float(h());
    if(camLookaroundInverse)
-@@ -381,6 +432,7 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -375,12 +426,22 @@ void MainWindow::tickMouse(uint64_t dt) {
+   // Log::d("mouse dMouse   = ", dMouse.x,   ", ", dMouse.y);
+   // Log::d("mouse dpScaled = ", dpScaled.x, ", ", dpScaled.y);
+ 
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: в пути палец крутит камеру пути, а не героя
++  if(camera->hasDirector()) {
++    travelCam.look(dpScaled.x, dpScaled.y);
++    dMouse = Point();
++    dTouch = Point();
++    return;
++    }
++#endif
+   camera->onRotateMouse(PointF(dpScaled.y,-dpScaled.x));
+   if(!inventory.isActive()) {
+     player.onRotateMouse(-dpScaled.x, -dpScaled.y);
      }
  
    dMouse = Point();
@@ -3743,7 +4250,7 @@ index 52b66d3..37272c4 100644
    }
  
  void MainWindow::onSettings() {
-@@ -398,6 +450,14 @@ void MainWindow::mouseWheelEvent(MouseEvent &event) {
+@@ -398,6 +459,14 @@ void MainWindow::mouseWheelEvent(MouseEvent &event) {
    }
  
  void MainWindow::keyDownEvent(KeyEvent &event) {
@@ -3758,7 +4265,7 @@ index 52b66d3..37272c4 100644
    if(video.isActive()){
      event.accept();
      video.keyDownEvent(event);
-@@ -495,6 +555,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
+@@ -495,6 +564,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
    }
  
  void MainWindow::keyUpEvent(KeyEvent &event) {
@@ -3774,7 +4281,7 @@ index 52b66d3..37272c4 100644
    if(uiKeyUp==&video){
      video.keyUpEvent(event);
      if(event.isAccepted())
-@@ -529,6 +598,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -529,6 +607,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
  
@@ -3786,7 +4293,7 @@ index 52b66d3..37272c4 100644
    std::string_view menuEv;
    if(act==KeyCodec::Escape)
      menuEv = Gothic::inst().menuMain();
-@@ -543,6 +617,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -543,6 +626,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
      if(auto pl = Gothic::inst().player())
        rootMenu.setPlayer(*pl);
      clearInput();
@@ -3794,7 +4301,7 @@ index 52b66d3..37272c4 100644
      }
    else if(act==KeyCodec::Inventory && !dialogs.isActive()) {
      if(inventory.isActive()) {
-@@ -553,10 +628,136 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -553,10 +637,136 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
          inventory.open(*pl);
        }
      clearInput();
@@ -3836,8 +4343,8 @@ index 52b66d3..37272c4 100644
 +
 +bool MainWindow::touchCanTakeAll() const {
 +  return inventory.canTakeAll();
-   }
- 
++  }
++
 +const char* MainWindow::touchQuickSave() {
 +  auto& g  = Gothic::inst();
 +  auto  pl = g.player();
@@ -3884,8 +4391,8 @@ index 52b66d3..37272c4 100644
 +  player.stopTravel(nullptr);
 +  if(Gothic::inst().checkLoading()==Gothic::LoadState::Idle && FileUtil::exists(u"save_slot_0.sav"))
 +    Gothic::inst().quickLoad();
-+  }
-+
+   }
+ 
 +bool MainWindow::touchIsLockPick() const {
 +  if(inventory.isOpen()==InventoryMenu::State::LockPicking)
 +    return true;
@@ -3932,7 +4439,7 @@ index 52b66d3..37272c4 100644
  void MainWindow::focusEvent(FocusEvent &event) {
    if(!event.in)
      return;
-@@ -882,8 +1083,16 @@ uint64_t MainWindow::tick() {
+@@ -882,8 +1092,16 @@ uint64_t MainWindow::tick() {
      Gothic::inst().finishLoading();
      if(st==Gothic::LoadState::FailedLoad)
        rootMenu.setMainMenu();
@@ -3949,7 +4456,38 @@ index 52b66d3..37272c4 100644
      return 0;
      }
    else if(st!=Gothic::LoadState::Idle) {
-@@ -1102,20 +1311,46 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
+@@ -949,6 +1167,30 @@ void MainWindow::tickCamera(uint64_t dt) {
+                              ws==WeaponState::W2H);
+   auto       pos          = pl!=nullptr ? pl->cameraBone(camera.isFirstPerson()) : Vec3();
+ 
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: «Путь» бегом - камеру ведёт TravelCamera: герой бежит сам, палец крутит только камеру.
++  // Разговор и сумка - обычная камера, потом снова камера пути
++  const bool travelView = pl!=nullptr && !pl->isDead() && player.travelMode()==PlayerControl::TravelMode::Run &&
++                          !dialogs.isActive() && !inventory.isActive() && !camera.isCutscene() && !camera.isFree();
++  if(travelView) {
++    if(travelCamNo!=player.travelSerial()) {
++      travelCamNo = player.travelSerial();
++      travelCam.start(*pl);
++      }
++    else if(!camera.hasDirector()) {
++      travelCam.resume();
++      }
++    travelCam.tick(camera, *pl, player.travelPath(), player.travelPathIdx(), dt);
++    if(dt==0)
++      return;
++    if(camera.isToggleEnabled())
++      camera.setMode(solveCameraMode());
++    camera.tick(dt);
++    return;
++    }
++  camera.clearDirector();
++#endif
++
+   if(!camera.isCutscene() && !camera.isFree()) {
+     const bool fs = SystemApi::isFullscreen(hwnd());
+     if(!fs && mouseP[Event::ButtonLeft]) {
+@@ -1102,20 +1344,46 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
    auto& thumb = lres.isEmpty() ? tex : lres;
    auto  pm    = device.readPixels(textureCast<const Texture2d&>(thumb));
  
@@ -3996,7 +4534,7 @@ index 52b66d3..37272c4 100644
  
    update();
    }
-@@ -1127,6 +1362,11 @@ void MainWindow::onVideo(std::string_view fname) {
+@@ -1127,6 +1395,11 @@ void MainWindow::onVideo(std::string_view fname) {
    }
  
  void MainWindow::onStartLoading() {
@@ -4008,7 +4546,7 @@ index 52b66d3..37272c4 100644
    player   .clearInput();
    inventory.onWorldChanged();
    dialogs  .onWorldChanged();
-@@ -1245,11 +1485,17 @@ void MainWindow::render(){
+@@ -1245,11 +1518,17 @@ void MainWindow::render(){
      tickCamera(dt);
  
      auto& sync = fence[cmdId];
@@ -4027,10 +4565,18 @@ index 52b66d3..37272c4 100644
  
      if(video.isActive()) {
 diff --git a/common/mainwindow.h b/common/mainwindow.h
-index 3fb2713..1817eab 100644
+index 3fb2713..fe61cda 100644
 --- a/common/mainwindow.h
 +++ b/common/mainwindow.h
-@@ -49,6 +49,44 @@ class MainWindow : public Tempest::Window {
+@@ -25,6 +25,7 @@
+ #include "world/world.h"
+ #include "world/focus.h"
+ #include "game/playercontrol.h"
++#include "game/travelcamera.h"
+ #include "graphics/renderer.h"
+ #include "ui/dialogmenu.h"
+ #include "ui/inventorymenu.h"
+@@ -49,6 +50,46 @@ class MainWindow : public Tempest::Window {
  
      float uiScale() const;
  
@@ -4053,6 +4599,8 @@ index 3fb2713..1817eab 100644
 +    // Быстрое сохранение есть: когда сделано (в игре и на самом деле) - для подтверждения загрузки
 +    bool      touchQuickSaveInfo(std::string& out) const;
 +    void      touchQuickLoad();
++    // Камера в пути («Путь» бегом): режим выбирает кнопка камеры
++    TravelCamera& touchTravelCamera() { return travelCam; }
 +    // Экраны со списками: что открыто и касание по самим спискам
 +    bool      touchIsDialog() const    { return dialogs.isActive(); }
 +    bool      touchIsDocument() const  { return document.isActive(); }
@@ -4075,7 +4623,7 @@ index 3fb2713..1817eab 100644
    private:
      void paintEvent     (Tempest::PaintEvent& event) override;
      void resizeEvent    (Tempest::SizeEvent & event) override;
-@@ -89,6 +127,7 @@ class MainWindow : public Tempest::Window {
+@@ -89,6 +130,7 @@ class MainWindow : public Tempest::Window {
      void setFullscreen(bool fs);
  
      void processMouse(Tempest::MouseEvent& event, bool enable);
@@ -4083,7 +4631,14 @@ index 3fb2713..1817eab 100644
      void tickMouse(uint64_t dt);
      void onSettings();
  
-@@ -157,6 +196,8 @@ class MainWindow : public Tempest::Window {
+@@ -152,11 +194,15 @@ class MainWindow : public Tempest::Window {
+     ConsoleWidget             console;
+ #if defined(__MOBILE_PLATFORM__)
+     TouchInput                mobileUi;
++    TravelCamera              travelCam;
++    uint32_t                  travelCamNo = 0;
+ #endif
+     RuntimeMode               runtimeMode = R_Normal;
  
      Tempest::Widget*          uiKeyUp=nullptr;
      Tempest::Point            dMouse;
@@ -4483,10 +5038,10 @@ index d4ddb41..e6cbee7 100644
      PageLocal                 pageLocal[2];
 diff --git a/common/ui/touchicons.cpp b/common/ui/touchicons.cpp
 new file mode 100644
-index 0000000..75c7573
+index 0000000..e6caf56
 --- /dev/null
 +++ b/common/ui/touchicons.cpp
-@@ -0,0 +1,730 @@
+@@ -0,0 +1,784 @@
 +#include "touchicons.h"
 +
 +#include <Tempest/Pixmap>
@@ -5003,6 +5558,60 @@ index 0000000..75c7573
 +      g.poly({{0.27f,0.50f},{0.73f,0.50f},{0.5f,0.94f}});
 +      g.cut().disc({0.5f,0.38f},0.11f).add();
 +      break;
++    case TouchIcons::I_Camera:
++      // кинокамера: две бобины, корпус, объектив
++      g.disc({0.31f,0.29f},0.13f);
++      g.disc({0.58f,0.27f},0.15f);
++      g.poly({{0.14f,0.44f},{0.70f,0.44f},{0.70f,0.80f},{0.14f,0.80f}});
++      g.poly({{0.70f,0.55f},{0.90f,0.44f},{0.90f,0.80f},{0.70f,0.69f}});
++      g.cut();
++      g.disc({0.31f,0.29f},0.045f);
++      g.disc({0.58f,0.27f},0.05f);
++      g.add();
++      break;
++    case TouchIcons::I_CamFar:
++      // горы вдали и солнце
++      g.poly({{0.06f,0.82f},{0.36f,0.36f},{0.53f,0.60f},{0.66f,0.44f},{0.94f,0.82f}});
++      g.disc({0.76f,0.22f},0.09f);
++      break;
++    case TouchIcons::I_CamBird:
++      // птицы в небе: крылья-дуги сходятся у тела
++      g.arc({0.31f,0.68f},0.20f,30,165,0.09f);
++      g.arc({0.69f,0.68f},0.20f,15,150,0.09f);
++      g.push(0,0.45f,{0.17f,-0.30f});
++      g.arc({0.31f,0.68f},0.20f,30,165,0.09f);
++      g.arc({0.69f,0.68f},0.20f,15,150,0.09f);
++      g.pop();
++      break;
++    case TouchIcons::I_CamSide:
++      // человек и камера сбоку от него
++      personShape(g,{0.34f,0.50f},0.8f);
++      g.cut().poly({{0,0.92f},{1,0.92f},{1,1.1f},{0,1.1f}}).add();
++      g.poly({{0.68f,0.42f},{0.90f,0.42f},{0.90f,0.62f},{0.68f,0.62f}});
++      g.poly({{0.68f,0.48f},{0.58f,0.40f},{0.58f,0.64f},{0.68f,0.56f}});
++      break;
++    case TouchIcons::I_Eye:
++      g.arc({0.5f,0.86f},0.47f,48,132,0.07f);
++      g.arc({0.5f,0.14f},0.47f,228,312,0.07f);
++      g.disc({0.5f,0.5f},0.13f);
++      g.cut().disc({0.54f,0.46f},0.04f).add();
++      break;
++    case TouchIcons::I_Film:
++      // хлопушка
++      g.poly({{0.16f,0.44f},{0.84f,0.44f},{0.84f,0.84f},{0.16f,0.84f}});
++      g.poly({{0.15f,0.26f},{0.79f,0.14f},{0.82f,0.28f},{0.18f,0.40f}});
++      g.cut();
++      g.seg({0.32f,0.36f},{0.40f,0.20f},0.05f);
++      g.seg({0.52f,0.32f},{0.60f,0.16f},0.05f);
++      g.seg({0.20f,0.56f},{0.80f,0.56f},0.03f);
++      g.add();
++      break;
++    case TouchIcons::I_BoxOn:
++    case TouchIcons::I_BoxOff:
++      g.line({{0.18f,0.18f},{0.82f,0.18f},{0.82f,0.82f},{0.18f,0.82f},{0.18f,0.18f}},0.08f);
++      if(i==TouchIcons::I_BoxOn)
++        g.line({{0.30f,0.50f},{0.45f,0.66f},{0.74f,0.32f}},0.10f);
++      break;
 +    case TouchIcons::I_Count:
 +      break;
 +    }
@@ -5219,10 +5828,10 @@ index 0000000..75c7573
 +  }
 diff --git a/common/ui/touchicons.h b/common/ui/touchicons.h
 new file mode 100644
-index 0000000..2f91440
+index 0000000..50fc001
 --- /dev/null
 +++ b/common/ui/touchicons.h
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,87 @@
 +#pragma once
 +
 +#include <Tempest/Texture2d>
@@ -5282,6 +5891,14 @@ index 0000000..2f91440
 +      I_Teleport,
 +      I_City,
 +      I_Pin,
++      I_Camera,
++      I_CamFar,
++      I_CamBird,
++      I_CamSide,
++      I_Eye,
++      I_Film,
++      I_BoxOn,
++      I_BoxOff,
 +      I_Count
 +      };
 +
@@ -5303,10 +5920,10 @@ index 0000000..2f91440
 +    const Tempest::Texture2d& cached(uint64_t key, const std::function<Tempest::Texture2d()>& make);
 +  };
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f1730..0e88ef3 100644
+index d9f1730..09ba812 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,1891 @@
+@@ -1,41 +1,1983 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
@@ -5318,6 +5935,7 @@ index d9f1730..0e88ef3 100644
 +#include <cstdio>
 +
  #include "game/playercontrol.h"
++#include "game/travelcamera.h"
 +#include "world/objects/npc.h"
 +#include "world/objects/item.h"
 +#include "world/objects/interactive.h"
@@ -5340,15 +5958,27 @@ index d9f1730..0e88ef3 100644
 +static const Color GoldDim    = Color(0.62f, 0.57f, 0.48f, 0.60f);
 +static const Color GlowColor  = Color(1.00f, 0.70f, 0.28f, 0.85f);
 +
++static TouchIcons::Icon cameraIcon(TravelCamera::Mode m) {
++  switch(m) {
++    case TravelCamera::M_Free:        return TouchIcons::I_Camera;
++    case TravelCamera::M_Far:         return TouchIcons::I_CamFar;
++    case TravelCamera::M_Bird:        return TouchIcons::I_CamBird;
++    case TravelCamera::M_Side:        return TouchIcons::I_CamSide;
++    case TravelCamera::M_FirstPerson: return TouchIcons::I_Eye;
++    case TravelCamera::M_Cinema:      return TouchIcons::I_Film;
++    case TravelCamera::M_Count:       break;
++    }
++  return TouchIcons::I_Camera;
++  }
++
 +TouchInput::TouchInput(MainWindow& owner, PlayerControl& ctrl) : owner(owner), ctrl(ctrl) {
 +  timer.timeout.bind(this,&TouchInput::onTimer);
 +  }
 +
 +float TouchInput::dp() const {
 +  return std::max(1.f, owner.uiScale());
-   }
- 
--void TouchInput::paintEvent(Tempest::PaintEvent& e) {
++  }
++
 +TouchInput::Ui TouchInput::currentUi() const {
 +  using M = MainWindow::TouchMode;
 +  const auto m = owner.touchMode();
@@ -5373,8 +6003,9 @@ index d9f1730..0e88ef3 100644
 +  if(owner.touchIsDialog())
 +    return Ui::Dialog;
 +  return Ui::Document;
-+  }
-+
+   }
+ 
+-void TouchInput::paintEvent(Tempest::PaintEvent& e) {
 +TouchInput::Button TouchInput::buttonOf(Ctl c) const {
 +  const float d = dp();
 +  const float W = float(w());
@@ -5423,6 +6054,8 @@ index d9f1730..0e88ef3 100644
 +    case C_Hero:    return top(4);
 +    case C_Save:    return top(5);
 +    case C_Menu:    return top(6);
++    // Над строкой «В пути» внизу посередине: справа обзор, слева джойстик - мимо кнопки не прервать путь
++    case C_Camera:  return round(W*0.5f, H - 16*d - 34*d - 10*d - 22*d, 22*d);
 +    case C_Back:    return pill(m, H - m - ph, pw*0.9f, ph);
 +    case C_Select:  return pill(W - m - pw, H - m - ph, pw, ph);
 +    // Над сеткой сундука, рядом с его названием: внизу справа - сетка сумки героя
@@ -5461,6 +6094,8 @@ index d9f1730..0e88ef3 100644
 +    case C_Travel:
 +    case C_Save:
 +      return ui==Ui::World;
++    case C_Camera:
++      return ui==Ui::World && ctrl.travelMode()==PlayerControl::TravelMode::Run;
 +    case C_Block:
 +      return ui==Ui::World && (ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H);
 +    case C_Potion:
@@ -5684,6 +6319,7 @@ index d9f1730..0e88ef3 100644
 +      case C_Hero:   drawRound(p,b,TouchIcons::I_Hero,  pressed,false,0.8f); break;
 +      case C_Menu:   drawRound(p,b,TouchIcons::I_Menu,  pressed,false,0.8f); break;
 +      case C_Save:   drawRound(p,b,TouchIcons::I_Save,  pressed,false,0.8f); break;
++      case C_Camera: drawRound(p,b,cameraIcon(owner.touchTravelCamera().mode()),pressed,wheel==Wheel::Camera,0.9f); break;
 +      case C_Travel: {
 +        const bool run = ctrl.travelMode()==PlayerControl::TravelMode::Run;
 +        drawRound(p,b,run ? TouchIcons::I_Stop : TouchIcons::I_Travel,pressed,run,0.8f);
@@ -5785,7 +6421,9 @@ index d9f1730..0e88ef3 100644
 +  cl.set(cl.r(), cl.g(), cl.b(), cl.a()*alpha);
 +  drawGlyph(p, ic, b.c, int(float(b.r)*1.12f), cl);
 +  }
-+
+ 
+-  p.setBrush(Color(1,1,1, 0.2f));
+-  p.drawRect(10, h()-10 - 100, 100, 100);
 +void TouchInput::drawPill(Painter& p, const Rect& r, TouchIcons::Icon ic, std::string_view label, bool pressed) {
 +  if(pressed)
 +    drawGlow(p, Rect(r.x-r.h/6, r.y-r.h/6, r.w+r.h/3, r.h+r.h/3), r.h, 0.35f);
@@ -5854,8 +6492,11 @@ index d9f1730..0e88ef3 100644
 +    const auto  c = Point(b.c.x+int(rad*std::cos(a)), b.c.y-int(rad*std::sin(a)));
 +    drawGlyph(p, TouchIcons::I_Dot, c, ds, GoldBright);
 +    }
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
+-  auto r = Rect(10, h()-10-100, 100, 100);
+-  if(!r.contains(e.pos())) {
 +void TouchInput::drawJoystick(Painter& p) {
 +  const float d  = dp();
 +  const int   R  = int(56*d);
@@ -5970,11 +6611,15 @@ index d9f1730..0e88ef3 100644
 +  }
 +
 +Point TouchInput::wheelCenter() const {
-+  // Левее кнопок под правым пальцем: колесо их не закрывает
++  // Левее кнопок под правым пальцем: колесо их не закрывает. Колесо камеры - выше, над её кнопкой внизу
++  if(wheel==Wheel::Camera)
++    return Point(w()/2, h()*40/100);
 +  return Point(w()*52/100, h()*47/100);
 +  }
 +
 +int TouchInput::wheelRadius() const {
++  if(wheel==Wheel::Camera)
++    return int(std::min(float(h())*0.30f, 130*dp()));
 +  return int(std::min(float(h())*0.37f, 150*dp()));
 +  }
 +
@@ -6017,9 +6662,7 @@ index d9f1730..0e88ef3 100644
 +  wheelSel   = -1;
 +  wheelOwner = finger;
 +  wheel      = wh;
- 
--  p.setBrush(Color(1,1,1, 0.2f));
--  p.drawRect(10, h()-10 - 100, 100, 100);
++
 +  if(wh==Wheel::Weapon) {
 +    const auto ws = pl->weaponState();
 +    auto&      in = pl->inventory();
@@ -6060,6 +6703,18 @@ index d9f1730..0e88ef3 100644
 +      off.icon   = TouchIcons::I_Hand;
 +      off.label  = toCp1251("Убрать");
 +      wheelItems.push_back(off);
++      }
++    }
++  else if(wh==Wheel::Camera) {
++    // Ракурсы камеры в пути
++    const auto cur = owner.touchTravelCamera().mode();
++    for(uint8_t i=0; i<TravelCamera::M_Count; ++i) {
++      WheelItem it;
++      it.action  = i;
++      it.icon    = cameraIcon(TravelCamera::Mode(i));
++      it.label   = toCp1251(TravelCamera::name(TravelCamera::Mode(i)));
++      it.current = (i==cur);
++      wheelItems.push_back(it);
 +      }
 +    }
 +  else if(wh==Wheel::Squad) {
@@ -6108,17 +6763,18 @@ index d9f1730..0e88ef3 100644
 +  wheelOwner = -1;
 +  wheelItems.clear();
 +  update();
-   }
- 
--void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
--  auto r = Rect(10, h()-10-100, 100, 100);
--  if(!r.contains(e.pos())) {
++  }
++
 +void TouchInput::applyWheel(int id) {
 +  if(id<0 || size_t(id)>=wheelItems.size() || !wheelItems[size_t(id)].enabled)
 +    return;
 +  const auto& it = wheelItems[size_t(id)];
 +  if(wheel==Wheel::Weapon) {
 +    ctrl.touchDrawWeapon(it.action);
++    }
++  else if(wheel==Wheel::Camera) {
++    owner.touchTravelCamera().setMode(TravelCamera::Mode(it.action));
++    Gothic::inst().onPrint(toCp1251("Камера: ") + it.label);
 +    }
 +  else if(wheel==Wheel::Squad) {
 +    auto w = Gothic::inst().world();
@@ -6156,7 +6812,7 @@ index d9f1730..0e88ef3 100644
 +  if(wheelSel>=0 && size_t(wheelSel)<wheelItems.size())
 +    title = wheelItems[size_t(wheelSel)].label;
 +  else
-+    title = toCp1251(wheel==Wheel::Weapon ? "Оружие" : "Отряд");
++    title = toCp1251(wheel==Wheel::Weapon ? "Оружие" : (wheel==Wheel::Camera ? "Камера" : "Отряд"));
 +  drawLabel(p, fit(title, int(float(R)*0.95f), 1.f), c, true, 1.f);
 +  }
 +
@@ -6277,9 +6933,10 @@ index d9f1730..0e88ef3 100644
 +      break;
 +      }
 +    case C_Weapon:
-+    case C_Squad: {
++    case C_Squad:
++    case C_Camera: {
 +      // Потянуть кнопку - открыть колесо и выбрать направлением пальца
-+      const auto kind = (f.ctl==C_Weapon ? Wheel::Weapon : Wheel::Squad);
++      const auto kind = (f.ctl==C_Weapon ? Wheel::Weapon : (f.ctl==C_Camera ? Wheel::Camera : Wheel::Squad));
 +      if(wheel==Wheel::None && f.moved)
 +        openWheel(kind, e.mouseID);
 +      if(wheel==kind && wheelOwner==e.mouseID)
@@ -6477,6 +7134,7 @@ index d9f1730..0e88ef3 100644
 +    case C_Menu:
 +    case C_Travel:
 +    case C_Save:
++    case C_Camera:
 +    case C_Count:
 +      break;
 +    }
@@ -6519,6 +7177,29 @@ index d9f1730..0e88ef3 100644
 +        // Коснуться - достать последнее оружие или убрать
 +        ctrl.onKeyPressed (KeyCodec::Weapon, Event::K_NoKey, KeyCodec::Mapping::Primary);
 +        ctrl.onKeyReleased(KeyCodec::Weapon, KeyCodec::Mapping::Primary);
++        }
++      break;
++      }
++    case C_Camera: {
++      // Коснуться - следующий ракурс; потянуть или подержать - колесо ракурсов
++      const int id = int(&f-fingers.data());
++      if(wheel==Wheel::Camera && wheelOwner==id) {
++        if(wheelSel>=0) {
++          applyWheel(wheelSel);
++          closeWheel();
++          }
++        else if(!f.moved) {
++          wheelOwner = -1;
++          }
++        else {
++          closeWheel();
++          }
++        }
++      else if(!f.held) {
++        auto&      tc   = owner.touchTravelCamera();
++        const auto next = TravelCamera::Mode((tc.mode()+1)%TravelCamera::M_Count);
++        tc.setMode(next);
++        Gothic::inst().onPrint(toCp1251("Камера: ") + toCp1251(TravelCamera::name(next)));
 +        }
 +      break;
 +      }
@@ -6592,6 +7273,7 @@ index d9f1730..0e88ef3 100644
 +      case C_Menu:
 +      case C_Travel:
 +      case C_Save:
++      case C_Camera:
 +      case C_Look:
 +      case C_List:
 +        break;
@@ -6614,13 +7296,21 @@ index d9f1730..0e88ef3 100644
 +    auto& f = fingers[i];
 +    if(f.ctl==C_None || f.held)
 +      continue;
-+    // Долгое нажатие: колесо оружия, зелье маны, быстрая загрузка
++    // Долгое нажатие: колесо оружия и камеры, зелье маны, быстрая загрузка
 +    if(f.ctl==C_Weapon && !f.moved) {
 +      busy = true;
 +      if(now-f.downAt>=300) {
 +        f.held = true;
 +        if(wheel==Wheel::None)
 +          openWheel(Wheel::Weapon, int(i));
++        }
++      }
++    if(f.ctl==C_Camera && !f.moved) {
++      busy = true;
++      if(now-f.downAt>=300) {
++        f.held = true;
++        if(wheel==Wheel::None)
++          openWheel(Wheel::Camera, int(i));
 +        }
 +      }
 +    if(f.ctl==C_Potion && !f.moved) {
@@ -6665,8 +7355,14 @@ index d9f1730..0e88ef3 100644
 +
 +bool TouchInput::isModal() const {
 +  return mapOpen || confirmOpen || ctrl.travelMode()==PlayerControl::TravelMode::Instant;
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
+-  auto dp = e.pos() - mpos;
+-  mpos = e.pos();
+-  if(std::abs(dp.x)>0) {
+-    const float scale = 4.f;
+-    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
 +void TouchInput::touchBack() {
 +  if(confirmOpen)
 +    closeConfirm();
@@ -6819,7 +7515,10 @@ index d9f1730..0e88ef3 100644
 +  const auto& sp = mapSpots[size_t(mapSel)].spot;
 +  lastTravel = sp.point;
 +  closeTravelMap();
-+  ctrl.startTravel(*sp.at,*sp.way,sp.point->name,instant);
++  PlayerControl::TravelOptions opt;
++  opt.fight = mapFight;
++  opt.loot  = mapLoot;
++  ctrl.startTravel(*sp.at,*sp.way,sp.point->name,instant,opt);
 +  }
 +
 +TouchInput::MapLayout TouchInput::mapLayout() const {
@@ -6857,8 +7556,13 @@ index d9f1730..0e88ef3 100644
 +  l.run   = Rect(l.panel.x+pad,             l.panel.y+l.panel.h-pad-bh, bw, bh);
 +  l.inst  = Rect(l.panel.x+pad+bw+int(8*d), l.panel.y+l.panel.h-pad-bh, bw, bh);
 +  l.infoY = l.run.y-int(10*d);
-+  l.rowH  = int(30*d);
-+  const int listBottom = l.infoY-int(24*d);
++  // Галочки для пути бегом - над строкой о пути
++  const int oh = int(30*d);
++  const int oy = l.infoY-int(24*d)-oh;
++  l.opt[0] = Rect(l.panel.x+pad,             oy, bw, oh);
++  l.opt[1] = Rect(l.panel.x+pad+bw+int(8*d), oy, bw, oh);
++  l.rowH  = int(28*d);
++  const int listBottom = oy-int(8*d);
 +  l.list  = Rect(l.panel.x+pad, y, l.panel.w-2*pad, std::max(l.rowH, listBottom-y));
 +  return l;
 +  }
@@ -6889,6 +7593,14 @@ index d9f1730..0e88ef3 100644
 +      setMapTab(mapTabs[i]);
 +      return;
 +      }
++  if(l.opt[0].contains(p)) {
++    mapFight = !mapFight;
++    return;
++    }
++  if(l.opt[1].contains(p)) {
++    mapLoot = !mapLoot;
++    return;
++    }
 +  if(Rect(l.run.x-slop/2,l.run.y-slop/2,l.run.w+slop,l.run.h+slop).contains(p)) {
 +    travelTo(false);
 +    return;
@@ -7101,6 +7813,9 @@ index d9f1730..0e88ef3 100644
 +    info = toCp1251("Бегом по дороге: ") + distText(mapRouteLen);
 +  drawText(p, fit(info, l.panel.w-2*pad, 0.8f), l.panel.x+pad, l.infoY-int(18*d), false, 0.8f);
 +
++  drawPill(p, l.opt[0], mapFight ? TouchIcons::I_BoxOn : TouchIcons::I_BoxOff, toCp1251("Сражаться"),    mapFight);
++  drawPill(p, l.opt[1], mapLoot  ? TouchIcons::I_BoxOn : TouchIcons::I_BoxOff, toCp1251("Собирать лут"), mapLoot);
++
 +  const bool canRun = mapSel>=0 && mapRouteLen>=0;
 +  drawPill(p, l.run,  TouchIcons::I_Run,      toCp1251("Бегом"),     false);
 +  drawPill(p, l.inst, TouchIcons::I_Teleport, toCp1251("Мгновенно"), false);
@@ -7182,14 +7897,8 @@ index d9f1730..0e88ef3 100644
 +  confirmOpen = false;
 +  Gothic::inst().popPause();
 +  update();
-   }
- 
--void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
--  auto dp = e.pos() - mpos;
--  mpos = e.pos();
--  if(std::abs(dp.x)>0) {
--    const float scale = 4.f;
--    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
++  }
++
 +void TouchInput::confirmTap(Point p) {
 +  if(confirmButton(true).contains(p)) {
 +    closeConfirm();
@@ -7216,10 +7925,10 @@ index d9f1730..0e88ef3 100644
 +  drawPill(p, confirmButton(false), TouchIcons::I_Back, toCp1251("Отмена"),    false);
    }
 diff --git a/common/ui/touchinput.h b/common/ui/touchinput.h
-index f46becc..95c6229 100644
+index f46becc..69f1ee1 100644
 --- a/common/ui/touchinput.h
 +++ b/common/ui/touchinput.h
-@@ -1,21 +1,242 @@
+@@ -1,21 +1,247 @@
  #pragma once
  
  #include <Tempest/Widget>
@@ -7289,6 +7998,7 @@ index f46becc..95c6229 100644
 +      C_Menu,
 +      C_Travel,
 +      C_Save,
++      C_Camera, // ракурс камеры в пути
 +      // экраны со списками и взлом
 +      C_Up,
 +      C_Down,
@@ -7329,6 +8039,7 @@ index f46becc..95c6229 100644
 +      size_t         tabs  = 0;
 +      Tempest::Rect  run;
 +      Tempest::Rect  inst;
++      Tempest::Rect  opt[2]; // галочки: «Сражаться», «Собирать лут»
 +      int            infoY = 0;
 +      };
 +    struct MapSpot {
@@ -7341,6 +8052,7 @@ index f46becc..95c6229 100644
 +      None,
 +      Weapon,
 +      Squad,
++      Camera,
 +      };
 +
 +    struct Finger {
@@ -7405,6 +8117,8 @@ index f46becc..95c6229 100644
 +    float                  mapRouteLen = -1; // см; меньше нуля - дороги нет
 +    std::string            mapStatus;        // почему нельзя (Windows-1251)
 +    const TravelPoints::Point* lastTravel = nullptr; // куда шли в прошлый раз - выбрано при открытии
++    bool                   mapFight   = true;  // бегом: драться с напавшими и зверями у дороги
++    bool                   mapLoot    = true;  // бегом: собирать добычу
 +    // Подтверждение быстрой загрузки
 +    bool                   confirmOpen = false;
 +    std::string            confirmInfo;      // Windows-1251
