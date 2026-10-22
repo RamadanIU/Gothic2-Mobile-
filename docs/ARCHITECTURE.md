@@ -32,12 +32,15 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
 | Рисованные значки и подложки кнопок (сглаживание по полю расстояний, без текстур в APK) | `common/ui/touchicons.*` |
 | Полоски здоровья/маны/дыхания слева вверху (не под пальцами) | `MainWindow::paintEvent`, `touchHudBottom` |
 | Цель касанием: фокус боя держится на выбранном NPC | `PlayerControl::setTouchTarget/applyTouchTarget` |
-| «Собрать»: обход бесхозных вещей и мёртвых в 8 м | `PlayerControl::tickGather/findGatherTarget` |
+| «Собрать»: обход бесхозных вещей, оружия убитых и мёртвых в 20 м; подход к телу на дистанцию удара | `PlayerControl::tickGather/findGatherTarget/gatherReach` |
 | Отряд: приказы, «не нападать» (`aivar[95]`), защита героя через `B_Attack` | `companions.cpp` (`squadOrder`, `tickSquad`), `GameScript::invokeAttack` |
 | Касание мимо слоя — не удар; Esc — системная «Назад» | `MainWindow::mouse*`, `Tempest androidapi.cpp` |
 | Удержание «Удара»: удар только в открытое окно комбо | `Pose::isComboWindow`, `PlayerControl::tickTouchAttack` |
 | Автобой: герой по боевому ИИ NPC (таблицы `Fight.dat`), выбор цели, зелья | `Npc::autoFight`, `Npc::fightTactic`, `PlayerControl::tickAutoFight` |
-| Напарники: реплики в диалоге, найм за золото, `AIV_PARTYMEMBER` + `ZS_Follow_Player` | `common/game/companions.cpp`, `GameScript::dialogChoices/exec` |
+| Напарники: реплики в диалоге, найм за золото (до 6), `AIV_PARTYMEMBER` + `ZS_Follow_Player` | `common/game/companions.cpp`, `GameScript::dialogChoices/exec` |
+| Напарник не погибает (без сознания), его не добить и не обобрать, сам не обирает; зелья перед `ZS_HealSelf` | `Npc::onNoHealth`, `Npc::canFinish`, `AI_StartState` → `GameScript::companionState` |
+| Обмен «Покажи, что у тебя есть»: торговля даром, без денег | `DlgChoice::freeTrade`, `InventoryMenu::trade(…, free)` |
+| Привал: случайные занятия ждущих и отряда рядом со стоящим героем, беседы | `GameScript::tickSquadIdle/idleBegin/idlePulse/idleTalk`, `Npc::isCompanionIdle` |
 | Графика из `g2m.ini`: FPS, разрешение, тени, отражения, лучи солнца | `Gothic::Gothic`, `Renderer::setupSettings` |
 | Дальность прорисовки и отсечение мелочи по угловому размеру | `shader/materials/visibility_pass.comp`, `DrawCommands::visibilityPass` |
 | Рендер ждёт видеокарту, а не крутит цикл | `MainWindow::render` |

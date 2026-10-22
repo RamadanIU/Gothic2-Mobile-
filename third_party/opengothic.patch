@@ -1,16 +1,18 @@
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
-index 0000000..eb7456a
+index 0000000..21d3fc3
 --- /dev/null
 +++ b/common/game/companions.cpp
-@@ -0,0 +1,389 @@
+@@ -0,0 +1,1041 @@
 +#include "gamescript.h"
 +
 +#include <Tempest/Log>
 +
 +#include <algorithm>
++#include <cstdio>
 +
 +#include "world/objects/npc.h"
++#include "world/objects/item.h"
 +#include "world/aiqueue.h"
 +#include "world/world.h"
 +#include "utils/cp1251.h"
@@ -22,11 +24,37 @@ index 0000000..eb7456a
 +// AIV_PARTYMEMBER и распорядок TA_Follow_Player на весь день, как напарники из скриптов игры:
 +// ZS_Follow_Player сам дерётся с врагами, а опыт за убитых им ZS_Dead отдаёт герою.
 +// Цена - 10 золотых за уровень, напарник называет её озвученной фразой ($GOLD_*).
++// Пока он напарник - не погибает (только теряет сознание), не обирает побеждённых, лечится своими
++// зельями, а на привале (ждёт или герой долго стоит) занят случайными делами.
 +
-+static const size_t MaxHired = 3;
++static const size_t MaxHired = 6;
 +// Приказ «не нападать» хранится в свободной ячейке aivar (скрипты игры используют 0..80 и 88):
 +// сохраняется и загружается вместе с NPC
 +static const size_t AivStance = 95;
++// Герой столько стоит на месте - отряд отдыхает рядом с ним
++static const uint64_t HeroIdleDelay = 25000;
++
++// Занятия на привале - анимации бездействия из распорядков игры (TA_Smoke_Joint, TA_Stand_Eating, ...)
++enum IdleAct : uint8_t {
++  IdleNone = 0,
++  IdleArms,     // руки на груди, чешется, потягивается
++  IdleGuard,    // руки за спиной, оглядывается
++  IdleLook,     // осматривается, чешет затылок
++  IdleSmoke,
++  IdleEat,
++  IdleApple,    // подкидывает яблоко
++  IdleDrink,
++  IdleLute,
++  IdleSword,    // упражняется с оружием
++  IdleInspect,  // рассматривает оружие
++  IdleMagic,    // упражняется в магии (послушники и маги)
++  IdleSit,      // сидит на земле или у костра
++  IdlePee,      // отходит в сторонку
++  IdlePray,
++  IdleDance,
++  IdleTalk,     // беседа двух напарников
++  IdleCount
++  };
 +
 +static bool isAmbient(const zenkit::INpc& h) {
 +  switch(h.type) {
@@ -38,6 +66,11 @@ index 0000000..eb7456a
 +    default:
 +      return false;
 +    }
++  }
++
++static bool isOneHanded(const Item& it) {
++  const auto fl = uint32_t(it.handle().flags);
++  return (fl & (ITM_SWD|ITM_AXE))!=0 && (fl & (ITM_2HD_SWD|ITM_2HD_AXE))==0;
 +  }
 +
 +int32_t GameScript::scriptConst(std::string_view name, int32_t def) {
@@ -53,7 +86,7 @@ index 0000000..eb7456a
 +bool GameScript::isHired(Npc& npc) {
 +  // Призванные монстры и сюжетные напарники - тоже AIV_PARTYMEMBER, но у них свои скрипты
 +  auto& h = npc.handle();
-+  return isAmbient(h) && h.guild<GIL_SEPERATOR_HUM && isPartyMember(npc);
++  return Gothic::inst().version().game==2 && isAmbient(h) && h.guild<GIL_SEPERATOR_HUM && isPartyMember(npc);
 +  }
 +
 +size_t GameScript::hiredCount() {
@@ -88,20 +121,29 @@ index 0000000..eb7456a
 +  if(!isAmbient(h) || h.guild>=GIL_SEPERATOR_HUM)
 +    return;
 +
-+  auto add = [&out](uint32_t id, const std::string& title) {
++  // Перед «Конец» (nr 999), в этом порядке
++  auto add = [&out](uint32_t id, const std::string& title, int32_t sort) {
 +    DlgChoice ch;
 +    ch.title    = title;
 +    ch.scriptFn = id;
-+    ch.sort     = 998; // перед «Конец» (nr 999)
++    ch.sort     = sort;
 +    out.push_back(std::move(ch));
 +    };
 +
 +  if(isHired(npc)) {
++    // Обмен как торговля, но даром: взять его вещи или отдать свои; деньги не переходят
++    DlgChoice ch;
++    ch.title     = toCp1251("Покажи, что у тебя есть.");
++    ch.scriptFn  = CompanionTrade;
++    ch.sort      = 995;
++    ch.isTrade   = true;
++    ch.freeTrade = true;
++    out.push_back(std::move(ch));
 +    if(npc.hasRoutineState(findSymbolIndex("ZS_FOLLOW_PLAYER")))
-+      add(CompanionWait,  toCp1251("Подожди меня здесь."));
++      add(CompanionWait,  toCp1251("Подожди меня здесь."), 996);
 +    else
-+      add(CompanionFollow,toCp1251("Пойдём дальше вместе."));
-+    add(CompanionDismiss, toCp1251("Дальше я сам. Спасибо за помощь!"));
++      add(CompanionFollow,toCp1251("Пойдём дальше вместе."), 996);
++    add(CompanionDismiss, toCp1251("Дальше я сам. Спасибо за помощь!"), 997);
 +    return;
 +    }
 +
@@ -117,7 +159,7 @@ index 0000000..eb7456a
 +    return;
 +
 +  const int32_t price = hirePrice(npc);
-+  add(CompanionHire, toCp1251("Пойдём со мной — поможешь в бою? (") + std::to_string(price) + toCp1251(" золотых)"));
++  add(CompanionHire, toCp1251("Пойдём со мной — поможешь в бою? (") + std::to_string(price) + toCp1251(" золотых)"), 998);
 +  }
 +
 +void GameScript::execCompanion(const DlgChoice& dlg, Npc& player, Npc& npc) {
@@ -139,6 +181,10 @@ index 0000000..eb7456a
 +    ++aiOutOrderId;
 +    };
 +
++  // Разговор прервал занятие на привале: после него - заново
++  npc.companionIdle.act  = IdleNone;
++  npc.companionIdle.peer = nullptr;
++
 +  switch(dlg.scriptFn) {
 +    case CompanionHire: {
 +      const size_t  gold  = findSymbolIndex("ITMI_GOLD");
@@ -158,6 +204,11 @@ index 0000000..eb7456a
 +      endTalk();
 +      break;
 +      }
++    case CompanionTrade:
++      // Окно обмена откроет диалог (DlgChoice::isTrade), когда он договорит
++      companionSay(npc,player,"$ABS_GOOD");
++      Tempest::Log::i("[g2m] companion: exchange with \"",npc.displayName(),"\"");
++      break;
 +    case CompanionWait: {
 +      const size_t zsStand = findSymbolIndex("ZS_STAND_ARMSCROSSED");
 +      auto         wp      = world().findWayPoint(npc.position());
@@ -175,6 +226,7 @@ index 0000000..eb7456a
 +    case CompanionDismiss:
 +      setParty(false);
 +      h.aivar[AivStance] = 0;
++      npc.companionIdle  = Npc::CompanionIdle();
 +      if(h.daily_routine>0)
 +        npc.excRoutine(size_t(h.daily_routine));
 +      companionSay(npc,player,"$ABS_GOOD");
@@ -184,6 +236,66 @@ index 0000000..eb7456a
 +    default:
 +      break;
 +    }
++  }
++
++void GameScript::supplyPotions(Npc& npc) {
++  // У напарника всегда есть зелья: перед лечением (ZS_HealSelf пьёт ItPo_Health_03..01, пока не вылечится)
++  // докладываем столько, сколько не хватает до полного здоровья. Запас появляется в момент нужды,
++  // поэтому вынести через обмен бесконечные зелья нельзя
++  const int32_t need = npc.attribute(ATR_HITPOINTSMAX)-npc.attribute(ATR_HITPOINTS);
++  if(need<=0)
++    return;
++  struct Potion { const char* item; const char* hp; int32_t def; };
++  static const Potion potions[] = {
++    {"ITPO_HEALTH_03", "HP_ELIXIER", 100},
++    {"ITPO_HEALTH_02", "HP_EXTRAKT", 70},
++    {"ITPO_HEALTH_01", "HP_ESSENZ",  50},
++    };
++  int32_t have = 0;
++  for(auto& p:potions) {
++    const size_t id = findSymbolIndex(p.item);
++    if(id!=size_t(-1))
++      have += int32_t(npc.itemCount(id))*std::max(1,scriptConst(p.hp,p.def));
++    }
++  if(have>=need)
++    return;
++  const size_t  id   = findSymbolIndex("ITPO_HEALTH_02");
++  const int32_t heal = std::max(1,scriptConst("HP_EXTRAKT",70));
++  if(id==size_t(-1))
++    return;
++  const int32_t n = (need-have+heal-1)/heal;
++  npc.addItem(id,size_t(n));
++  Tempest::Log::i("[g2m] companion: \"",npc.displayName(),"\" potions +",n);
++  }
++
++ScriptFn GameScript::companionState(Npc& npc, ScriptFn fn, Npc* other) {
++  if(!fn.isValid() || Gothic::inst().version().game!=2)
++    return fn;
++  const bool self   = isHired(npc);
++  const bool victim = other!=nullptr && other!=&npc && isHired(*other);
++  if(!self && !victim)
++    return fn;
++
++  if(fn.ptr==findSymbolIndex("ZS_RANSACKBODY")) {
++    // Победитель обирает побеждённого: забирает золото и подбирает его оружие (конец ZS_Attack).
++    // Напарник никого не обирает, и самого напарника, лежащего без сознания, не обирают
++    Tempest::Log::i("[g2m] companion: no ransack \"",npc.displayName(),"\" -> \"",
++                    other!=nullptr ? other->displayName() : "","\"");
++    const size_t zsHeal = findSymbolIndex("ZS_HEALSELF");
++    if(self && zsHeal!=size_t(-1) && npc.attribute(ATR_HITPOINTS)*2<npc.attribute(ATR_HITPOINTSMAX)) {
++      // Как в конце ZS_Attack, когда обыскивать некого: подлечиться
++      supplyPotions(npc);
++      return ScriptFn(zsHeal);
++      }
++    return ScriptFn();
++    }
++  if(!self)
++    return fn;
++  if(fn.ptr==findSymbolIndex("ZS_DEAD") && !npc.isDead())
++    return ScriptFn(); // ZS_Unconscious в воде сразу переводит в ZS_Dead: напарник не погибает
++  if(fn.ptr==findSymbolIndex("ZS_HEALSELF"))
++    supplyPotions(npc);
++  return fn;
 +  }
 +
 +bool GameScript::isPassive(Npc& npc) {
@@ -270,6 +382,34 @@ index 0000000..eb7456a
 +  return ret;
 +  }
 +
++bool GameScript::squadInFight(Npc& player) {
++  // Кто-то рядом дерётся с героем или с напарником - не до отдыха
++  bool fight = false;
++  world().detectNpc(player.position(), 2000.f, [&](Npc& o) {
++    if(fight || o.isDown() || !o.isAttack())
++      return;
++    auto tg = o.target();
++    if(tg!=nullptr && (tg==&player || isHired(*tg) || isHired(o)))
++      fight = true;
++    });
++  return fight;
++  }
++
++void GameScript::tickSquadHeal(Npc& npc, uint64_t now) {
++  // После боя напарник лечится сам (ZS_HealSelf), как NPC игры, - зелья у него найдутся всегда
++  auto& st = npc.companionIdle;
++  if(now<st.healAt || npc.attribute(ATR_HITPOINTS)*2>=npc.attribute(ATR_HITPOINTSMAX))
++    return;
++  const size_t zsHeal   = findSymbolIndex("ZS_HEALSELF");
++  const size_t zsFollow = findSymbolIndex("ZS_FOLLOW_PLAYER");
++  const size_t zsStand  = findSymbolIndex("ZS_STAND_ARMSCROSSED");
++  if(zsHeal==size_t(-1) || !(npc.isInState(zsFollow) || npc.isInState(zsStand)))
++    return; // в бою, в разговоре, без сознания - потом
++  st.healAt = now+20000;
++  npc.aiPush(AiQueue::aiStartState(zsHeal,1,nullptr,nullptr,""));
++  Tempest::Log::i("[g2m] squad: \"",npc.displayName(),"\" heals, hp=",npc.attribute(ATR_HITPOINTS),"/",npc.attribute(ATR_HITPOINTSMAX));
++  }
++
 +void GameScript::tickSquad() {
 +  if(Gothic::inst().version().game!=2)
 +    return;
@@ -282,11 +422,12 @@ index 0000000..eb7456a
 +    return;
 +  squadTickTime = now+400;
 +
++  squadMembers(squadTmp);
 +  const size_t zsFollow = findSymbolIndex("ZS_FOLLOW_PLAYER");
-+  for(uint32_t i=0; i<w.npcCount(); ++i) {
-+    auto npc = w.npcById(i);
-+    if(npc==nullptr || npc->isDown() || !isHired(*npc))
++  for(auto npc:squadTmp) {
++    if(npc->isDown())
 +      continue;
++    tickSquadHeal(*npc,now);
 +    if(isPassive(*npc)) {
 +      // Сам не начинает: ни врагов вокруг, ни чужих драк. Перцепции заново включает каждое
 +      // новое состояние распорядка - поэтому каждый раз
@@ -303,6 +444,7 @@ index 0000000..eb7456a
 +      invokeAttack(*npc,*enemy,ar);
 +      }
 +    }
++  tickSquadIdle(*pl,now);
 +  }
 +
 +void GameScript::squadOrder(SquadOrder ord, Npc* target) {
@@ -333,10 +475,11 @@ index 0000000..eb7456a
 +          break;
 +        auto wp = npc->currentTaPoint();
 +        npc->setRoutineAllDay(zsFollow, wp!=nullptr ? std::string_view(wp->name) : std::string_view(h.wp));
-+        // Бросить бой и идти к герою
++        // Бросить бой (и занятие на привале) и идти к герою
 +        npc->clearAiQueue();
 +        npc->setTarget(nullptr);
 +        npc->resumeAiRoutine();
++        idleStop(*npc);
 +        ++done;
 +        break;
 +        }
@@ -348,6 +491,7 @@ index 0000000..eb7456a
 +        if(!npc->isAttack()) {
 +          npc->clearAiQueue();
 +          npc->resumeAiRoutine();
++          idleStop(*npc);
 +          }
 +        ++done;
 +        break;
@@ -378,6 +522,7 @@ index 0000000..eb7456a
 +        if(!npc->isAttack()) {
 +          npc->clearAiQueue();
 +          npc->resumeAiRoutine();
++          idleStop(*npc);
 +          }
 +        ++done;
 +        break;
@@ -392,6 +537,513 @@ index 0000000..eb7456a
 +  static const char* names[] = {"follow", "wait", "attack", "passive", "defend"};
 +  Tempest::Log::i("[g2m] squad: order=",names[int(ord)]," members=",int(done),
 +                  target!=nullptr ? " target=" : "", target!=nullptr ? target->displayName() : "");
++  }
++
++// Привал: ждущие напарники и отряд рядом с долго стоящим героем заняты случайными делами - с долями
++// вероятности, без повторов подряд. Цикл распорядка на время занятия молчит (Npc::isCompanionIdle),
++// анимации и предметы - те же, что в распорядках игры. Любая перемена (бой, разговор, герой пошёл,
++// новый приказ) прерывает занятие: напарник встаёт, убирает предмет и оружие тем же движением, что
++// и скрипты (..._End).
++
++bool GameScript::idleAllowed(Npc& npc, Npc& player, bool heroIdle, bool& waiting) {
++  waiting = squadIsWaiting(npc);
++  if(npc.isDown() || npc.isAttack() || npc.isTalk() || npc.isSwim() || npc.isDive() || npc.isInWater())
++    return false;
++  if(npc.processPolicy()!=NpcProcessPolicy::AiNormal)
++    return false; // далеко от героя: его всё равно никто не видит
++  if(!npc.isInState(findSymbolIndex(waiting ? "ZS_STAND_ARMSCROSSED" : "ZS_FOLLOW_PLAYER")))
++    return false;
++  if(waiting)
++    return true;
++  return heroIdle && player.qDistTo(npc)<700.f*700.f;
++  }
++
++void GameScript::idlePose(Npc& npc) {
++  // Выйти из позы тем же движением, что и концы распорядков игры (ZS_Sit_Campfire_End и т. д.)
++  if(npc.isInAnim("S_SIT"))
++    npc.aiPush(AiQueue::aiPlayAnimBs("T_SIT_2_STAND",BS_STAND));
++  else if(npc.isInAnim("S_PRAY"))
++    npc.aiPush(AiQueue::aiPlayAnim("T_PRAY_2_STAND"));
++  else if(npc.isInAnim("S_PEE"))
++    npc.aiPush(AiQueue::aiPlayAnim("T_PEE_2_STAND"));
++  else if(npc.isInAnim("S_LGUARD"))
++    npc.aiPush(AiQueue::aiPlayAnim("T_LGUARD_2_STAND"));
++  else if(npc.isInAnim("S_HGUARD"))
++    npc.aiPush(AiQueue::aiPlayAnim("T_HGUARD_2_STAND"));
++  }
++
++void GameScript::idleExit(Npc& npc) {
++  auto& st = npc.companionIdle;
++  if(st.act==IdleEat && st.item!=0)
++    npc.aiPush(AiQueue::aiPlayAnimBs("T_POTION_RANDOM_2",BS_ITEMINTERACT)); // вытереть рот
++  idlePose(npc);
++  if(st.item!=0)
++    npc.aiPush(AiQueue::aiUseItemToState(int32_t(st.item),-1));
++  if(npc.weaponState()!=WeaponState::NoWeapon)
++    npc.aiPush(AiQueue::aiRemoveWeapon());
++  st.item = 0;
++  }
++
++void GameScript::idleStop(Npc& npc) {
++  // Новый приказ: распорядок уже перезапущен (resumeAiRoutine очищает очередь), выход из позы - перед ним
++  auto& st = npc.companionIdle;
++  if(st.act==IdleNone)
++    return;
++  idleExit(npc);
++  st.last = st.act;
++  st.act  = IdleNone;
++  st.peer = nullptr;
++  st.away = false;
++  st.next = 0;
++  }
++
++void GameScript::idleEnd(Npc& npc, bool graceful, uint64_t now) {
++  auto& st   = npc.companionIdle;
++  Npc*  peer = (st.act==IdleTalk ? st.peer : nullptr);
++  if(graceful) {
++    npc.clearAiQueue();
++    idleExit(npc);
++    if(st.waiting) {
++      // Вернуться на место ожидания; ZS_Stand_ArmsCrossed снова скрестит руки
++      if(st.away) {
++        if(auto wp = npc.currentTaPoint()) {
++          npc.aiPush(AiQueue::aiGoToPoint(*wp));
++          npc.aiPush(AiQueue::aiAlignToWp());
++          }
++        }
++      const int32_t aivPos = scriptConst("AIV_TAPOSITION",19);
++      if(aivPos>=0 && uint32_t(aivPos)<zenkit::INpc::aivar_count)
++        npc.handle().aivar[size_t(aivPos)] = scriptConst("NOTINPOS",1);
++      }
++    }
++  st.last   = st.act;
++  st.act    = IdleNone;
++  st.peer   = nullptr;
++  st.lead   = false;
++  st.away   = false;
++  st.item   = 0;
++  st.next   = now+2500+rand(5000);
++  st.propAt = now+3000;
++
++  // Собеседник заканчивает вместе с ним
++  if(peer!=nullptr) {
++    for(auto o:squadTmp) {
++      if(o!=peer || o->companionIdle.act!=IdleTalk || o->companionIdle.peer!=&npc)
++        continue;
++      idleEnd(*o,o->isInState(ScriptFn(o->companionIdle.state)),now);
++      break;
++      }
++    }
++  }
++
++size_t GameScript::idleProp(Npc& npc, std::string_view name) {
++  // Предмет для занятия (косяк, еда, лютня): если своего нет - создаётся и потом убирается
++  const size_t id = findSymbolIndex(name);
++  if(id==size_t(-1))
++    return 0;
++  if(npc.itemCount(id)==0) {
++    npc.addItem(id,1);
++    npc.companionIdle.prop = id;
++    }
++  return id;
++  }
++
++void GameScript::idleDropProp(Npc& npc) {
++  auto& st = npc.companionIdle;
++  if(st.prop==0)
++    return;
++  if(npc.itemCount(st.prop)>0)
++    npc.delItem(st.prop,1);
++  st.prop = 0;
++  }
++
++const WayPoint* GameScript::idleAside(Npc& npc, Npc& player, bool waiting) {
++  // В сторонку: точка пути в 4-10 м от напарника, не ближе 5 м к герою; на отдыхе рядом с героем -
++  // не дальше 9 м от него, чтобы не отстать
++  const auto pos  = npc.position();
++  const auto ppos = player.position();
++  return world().findWayPoint(pos,[&](const WayPoint& wp) {
++    const auto  p = wp.position();
++    const float d = (p-pos).quadLength();
++    if(d<400.f*400.f || d>1000.f*1000.f || std::abs(p.y-pos.y)>200.f)
++      return false;
++    const float dp = (p-ppos).quadLength();
++    if(dp<500.f*500.f || (!waiting && dp>900.f*900.f))
++      return false;
++    return npc.canRayHitPoint(p+Tempest::Vec3(0.f,50.f,0.f));
++    });
++  }
++
++std::string GameScript::smalltalkSvm(Npc& npc) {
++  // Как B_Say_Smalltalk: общие реплики 01-24, у святош свои 28-30, у наёмников и бандитов - 25-27
++  const int32_t g = int32_t(npc.guild());
++  uint32_t      n = 1+rand(24);
++  if(rand(6)==0) {
++    if(g==scriptConst("GIL_NOV",5) || g==scriptConst("GIL_PAL",1) || g==scriptConst("GIL_KDF",4))
++      n = 28+rand(3);
++    else if(g==scriptConst("GIL_BDT",9) || g==scriptConst("GIL_SLD",7) || g==scriptConst("GIL_DJG",6) ||
++            g==scriptConst("GIL_PIR",13))
++      n = 25+rand(3);
++    }
++  char buf[24] = {};
++  std::snprintf(buf,sizeof(buf),"$SMALLTALK%02u",n);
++  return buf;
++  }
++
++void GameScript::idleBegin(Npc& npc, Npc& player, bool waiting, bool heroIdle, uint64_t now) {
++  auto& st = npc.companionIdle;
++  idleDropProp(npc);
++
++  // Собеседник: другой свободный напарник рядом и в том же положении (оба ждут или оба отдыхают)
++  Npc* peer = nullptr;
++  for(auto o:squadTmp) {
++    bool ow = false;
++    if(o==&npc || o->companionIdle.act!=IdleNone || !idleAllowed(*o,player,heroIdle,ow) || ow!=waiting)
++      continue;
++    if(npc.qDistTo(*o)>800.f*800.f || !o->isAiQueueEmpty() || o->isAiBusy())
++      continue;
++    peer = o;
++    break;
++    }
++
++  const int32_t gil   = int32_t(npc.guild());
++  const bool    mage  = gil==scriptConst("GIL_NOV",5) || gil==scriptConst("GIL_KDF",4) || gil==scriptConst("GIL_KDW",14);
++  const bool    pious = mage || gil==scriptConst("GIL_PAL",1);
++  Item*         melee = npc.currentMeleeWeapon();
++
++  // Доли вероятности
++  struct Choice { uint8_t act; uint32_t w; };
++  Choice   list[IdleCount] = {};
++  size_t   cnt = 0;
++  uint32_t sum = 0;
++  auto add = [&](uint8_t act, uint32_t w) {
++    if(w==0 || act==st.last)
++      return;
++    list[cnt++] = {act,w};
++    sum += w;
++    };
++  add(IdleArms,    7);
++  add(IdleGuard,   5);
++  add(IdleLook,    4);
++  add(IdleSmoke,   7);
++  add(IdleEat,     7);
++  add(IdleApple,   5);
++  add(IdleDrink,   6);
++  add(IdleLute,    3);
++  add(IdleSword,   melee!=nullptr && isOneHanded(*melee) ? 6u : 0u);
++  add(IdleInspect, melee!=nullptr ? 4u : 0u);
++  add(IdleMagic,   mage ? 6u : 0u);
++  add(IdleSit,     8);
++  add(IdlePee,     4);
++  add(IdlePray,    pious ? 5u : 1u);
++  add(IdleDance,   1);
++  add(IdleTalk,    peer!=nullptr ? 16u : 0u);
++  if(sum==0)
++    return;
++  uint32_t r   = rand(sum);
++  uint8_t  act = list[0].act;
++  for(size_t i=0; i<cnt; ++i) {
++    if(r<list[i].w) {
++      act = list[i].act;
++      break;
++      }
++    r -= list[i].w;
++    }
++
++  auto during = [this](uint64_t from, uint64_t to) {
++    return from+rand(uint32_t(to-from));
++    };
++
++  const size_t zsState = findSymbolIndex(waiting ? "ZS_STAND_ARMSCROSSED" : "ZS_FOLLOW_PLAYER");
++  st.act     = act;
++  st.state   = zsState;
++  st.waiting = waiting;
++  st.item    = 0;
++  st.away    = false;
++  st.lead    = false;
++  st.peer    = nullptr;
++  st.until   = now+during(15000,30000);
++
++  npc.clearAiQueue();
++  idlePose(npc);
++  switch(act) {
++    case IdleArms:
++      npc.aiPush(AiQueue::aiPlayAnim("T_STAND_2_LGUARD"));
++      break;
++    case IdleGuard:
++      npc.aiPush(AiQueue::aiPlayAnim("T_STAND_2_HGUARD"));
++      break;
++    case IdleLook:
++      npc.aiPush(AiQueue::aiPlayAnim("T_SEARCH"));
++      npc.aiPush(AiQueue::aiWait(1500));
++      npc.aiPush(AiQueue::aiPlayAnim("R_SCRATCHHEAD"));
++      st.until = now+during(7000,10000);
++      break;
++    case IdleSmoke:
++      st.item  = idleProp(npc,"ITMI_JOINT");
++      st.until = now+during(20000,40000);
++      break;
++    case IdleEat: {
++      static const char* food[] = {"ITFO_APPLE", "ITFO_CHEESE", "ITFO_BACON", "ITFO_BREAD", "ITFOMUTTON"};
++      st.item = idleProp(npc,food[rand(uint32_t(std::size(food)))]);
++      break;
++      }
++    case IdleApple:
++      st.item = idleProp(npc,"ITFO_APPLE");
++      break;
++    case IdleDrink:
++      st.item = idleProp(npc,rand(2)==0 ? "ITFO_BOOZE" : "ITFO_WINE");
++      break;
++    case IdleLute:
++      st.item  = idleProp(npc,"ITMI_LUTE");
++      st.until = now+during(20000,40000);
++      break;
++    case IdleSword:
++    case IdleInspect:
++      npc.aiPush(AiQueue::aiReadyMeleeWeapon());
++      if(act==IdleInspect) {
++        // Подержать оружие перед глазами; если такой анимации нет - просто постоит с ним
++        npc.aiPush(AiQueue::aiPlayAnim(isOneHanded(*melee) ? "T_1HSINSPECT" : "T_2HSINSPECT"));
++        npc.aiPush(AiQueue::aiWait(2500));
++        st.until = now+during(8000,11000);
++        }
++      break;
++    case IdleMagic:
++      break;
++    case IdleSit: {
++      // Ждущий садится у костра, если он рядом; иначе - на землю там, где стоит
++      const WayPoint* fp = waiting ? world().findFreePoint(npc,"CAMPFIRE") : nullptr;
++      if(fp!=nullptr && npc.qDistTo(fp)<1200.f*1200.f) {
++        npc.aiPush(AiQueue::aiSetWalkMode(WalkBit::WM_Walk));
++        npc.aiPush(AiQueue::aiGoToPoint(*fp));
++        npc.aiPush(AiQueue::aiAlignToFp());
++        st.away = true;
++        }
++      npc.aiPush(AiQueue::aiPlayAnimBs("T_STAND_2_SIT",BS_SIT));
++      st.until = now+during(25000,50000);
++      break;
++      }
++    case IdlePee: {
++      if(auto wp = idleAside(npc,player,waiting)) {
++        npc.aiPush(AiQueue::aiSetWalkMode(WalkBit::WM_Walk));
++        npc.aiPush(AiQueue::aiGoToPoint(*wp));
++        st.away = true;
++        }
++      npc.aiPush(AiQueue::aiTurnAway(&player));
++      npc.aiPush(AiQueue::aiPlayAnim("T_STAND_2_PEE"));
++      st.until = now+(st.away ? during(18000,24000) : during(9000,13000));
++      break;
++      }
++    case IdlePray:
++      npc.aiPush(AiQueue::aiPlayAnimBs("T_STAND_2_PRAY",BS_SIT));
++      break;
++    case IdleDance:
++      st.until = now+during(10000,18000);
++      break;
++    case IdleTalk: {
++      auto& ps   = peer->companionIdle;
++      st.peer    = peer;
++      st.lead    = true;
++      st.turn    = (rand(2)==0);
++      st.lines   = uint8_t(4+rand(5));
++      st.lineAt  = 0;
++      st.until   = now+70000;
++      ps.act     = IdleTalk;
++      ps.state   = zsState;
++      ps.waiting = waiting;
++      ps.item    = 0;
++      ps.away    = false;
++      ps.lead    = false;
++      ps.peer    = &npc;
++      ps.until   = st.until;
++      peer->clearAiQueue();
++      idlePose(*peer);
++      peer->aiPush(AiQueue::aiTurnToNpc(&npc));
++      npc.aiPush(AiQueue::aiTurnToNpc(peer));
++      break;
++      }
++    default:
++      break;
++    }
++  if(st.item!=0)
++    npc.aiPush(AiQueue::aiUseItemToState(int32_t(st.item),act==IdleLute ? 1 : 0));
++  if(act==IdleApple)
++    npc.aiPush(AiQueue::aiPlayAnimBs("T_FOOD_RANDOM_2",BS_ITEMINTERACT));
++
++  static const char* names[] = {"none", "arms", "guard", "look", "smoke", "eat", "apple", "drink", "lute",
++                                "sword", "inspect", "magic", "sit", "pee", "pray", "dance", "talk"};
++  Tempest::Log::i("[g2m] squad: \"",npc.displayName(),"\" idle=",names[act],
++                  peer!=nullptr && act==IdleTalk ? " with " : "", peer!=nullptr && act==IdleTalk ? peer->displayName() : "");
++  }
++
++void GameScript::idlePulse(Npc& npc) {
++  // Очередное движение занятия, когда прошлое доиграно (как циклы распорядков: раз в несколько секунд)
++  auto& st   = npc.companionIdle;
++  auto  wait = [&](uint32_t from, uint32_t to) {
++    npc.aiPush(AiQueue::aiWait(uint64_t(from+rand(to-from))));
++    };
++  switch(st.act) {
++    case IdleArms: {
++      static const char* ani[] = {"T_LGUARD_SCRATCH", "T_LGUARD_STRETCH", "T_LGUARD_CHANGELEG"};
++      if(rand(2)==0)
++        npc.aiPush(AiQueue::aiPlayAnim(ani[rand(3)]));
++      wait(4000,8000);
++      break;
++      }
++    case IdleGuard:
++      if(rand(3)==0)
++        npc.aiPush(AiQueue::aiPlayAnim("T_HGUARD_LOOKAROUND"));
++      wait(4000,8000);
++      break;
++    case IdleSmoke:
++      npc.aiPush(AiQueue::aiPlayAnimBs("T_JOINT_RANDOM_1",BS_ITEMINTERACT));
++      wait(4000,8000);
++      break;
++    case IdleEat: {
++      // Откусить - своей анимацией для каждого вида еды (как ZS_Stand_Eating)
++      const char* ani = "T_FOODHUGE_RANDOM_1";
++      if(auto s = findSymbol(st.item)) {
++        if(s->name()=="ITFO_APPLE")
++          ani = "T_FOOD_RANDOM_1";
++        else if(s->name()=="ITFOMUTTON")
++          ani = "T_MEAT_RANDOM_1";
++        }
++      npc.aiPush(AiQueue::aiPlayAnimBs(ani,BS_ITEMINTERACT));
++      wait(4000,7000);
++      break;
++      }
++    case IdleApple:
++      npc.aiPush(AiQueue::aiPlayAnimBs(rand(10)<7 ? "T_FOOD_RANDOM_2" : "T_FOOD_RANDOM_1",BS_ITEMINTERACT));
++      wait(1500,4000);
++      break;
++    case IdleDrink: {
++      // Как ZS_Stand_Drinking: глотнуть; иногда посмотреть на бутылку или вытереть рот
++      const uint32_t r = rand(10);
++      if(r==0)
++        npc.aiPush(AiQueue::aiPlayAnimBs("T_POTION_RANDOM_3",BS_ITEMINTERACT));
++      npc.aiPush(AiQueue::aiPlayAnimBs("T_POTION_RANDOM_1",BS_ITEMINTERACT));
++      if(r==1)
++        npc.aiPush(AiQueue::aiPlayAnimBs("T_POTION_RANDOM_2",BS_ITEMINTERACT));
++      wait(5000,8000);
++      break;
++      }
++    case IdleSword:
++      npc.aiPush(AiQueue::aiPlayAnim("T_1HSFREE"));
++      wait(500,2500);
++      break;
++    case IdleMagic: {
++      static const char* ani[] = {"T_PRACTICEMAGIC", "T_PRACTICEMAGIC2", "T_PRACTICEMAGIC3", "T_PRACTICEMAGIC4", "R_SCRATCHHEAD"};
++      npc.aiPush(AiQueue::aiPlayAnim(ani[rand(uint32_t(std::size(ani)))]));
++      wait(4000,7000);
++      break;
++      }
++    case IdlePray:
++      npc.aiPush(AiQueue::aiPlayAnimBs("T_PRAY_RANDOM",BS_SIT));
++      wait(5000,9000);
++      break;
++    case IdleDance: {
++      static const char* ani[] = {"T_DANCE_01", "T_DANCE_02", "T_DANCE_03", "T_DANCE_04", "T_DANCE_05",
++                                  "T_DANCE_06", "T_DANCE_07", "T_DANCE_08", "T_DANCE_09"};
++      npc.aiPush(AiQueue::aiPlayAnim(ani[rand(uint32_t(std::size(ani)))]));
++      wait(200,800);
++      break;
++      }
++    default:
++      // Сидит, писает, играет на лютне, осматривается: поза держится сама
++      break;
++    }
++  }
++
++void GameScript::idleTalk(Npc& npc, uint64_t now) {
++  auto& st   = npc.companionIdle;
++  Npc*  peer = nullptr;
++  for(auto o:squadTmp)
++    if(o==st.peer)
++      peer = o;
++  if(peer==nullptr || peer->companionIdle.act!=IdleTalk || peer->companionIdle.peer!=&npc) {
++    idleEnd(npc,true,now);
++    return;
++    }
++  if(!st.lead)
++    return; // беседу ведёт собеседник
++  if(now>=st.until || st.lines==0) {
++    idleEnd(npc,true,now);
++    return;
++    }
++  // По очереди, как ZS_Smalltalk: реплика - пауза - ответ
++  if(npc.haveOutput() || peer->haveOutput() || !npc.isAiQueueEmpty() || !peer->isAiQueueEmpty() ||
++     npc.isAiBusy() || peer->isAiBusy()) {
++    st.lineAt = 0;
++    return;
++    }
++  if(st.lineAt==0) {
++    st.lineAt = now+300+rand(1200);
++    return;
++    }
++  if(now<st.lineAt)
++    return;
++  st.lineAt = 0;
++  Npc& who  = st.turn ? npc   : *peer;
++  Npc& to   = st.turn ? *peer : npc;
++  st.turn   = !st.turn;
++  --st.lines;
++  who.aiPush(AiQueue::aiTurnToNpc(&to));
++  companionSay(who,to,smalltalkSvm(who));
++  if(rand(5)==0)
++    to.aiPush(AiQueue::aiPlayAnim("T_YES"));
++  }
++
++void GameScript::tickSquadIdle(Npc& player, uint64_t now) {
++  // Герой стоит на месте, не дерётся и оружие убрано - через HeroIdleDelay отряд отдыхает рядом
++  const auto pos = player.position();
++  if((pos-squadHeroPos).quadLength()>150.f*150.f || player.weaponState()!=WeaponState::NoWeapon ||
++     player.isDown() || squadInFight(player)) {
++    squadHeroPos   = pos;
++    squadHeroStill = now;
++    }
++  const bool heroIdle = (now>=squadHeroStill+HeroIdleDelay);
++
++  for(auto npc:squadTmp) {
++    auto& st      = npc->companionIdle;
++    bool  waiting = false;
++    const bool ok = idleAllowed(*npc,player,heroIdle,waiting);
++    if(st.act!=IdleNone) {
++      const bool same = npc->isInState(ScriptFn(st.state));
++      if(!ok || !same || st.waiting!=waiting) {
++        // Бой, разговор, новый приказ - состояние уже другое, оно всё убрало само. Герой пошёл -
++        // встать и догонять
++        idleEnd(*npc,same && !npc->isDown(),now);
++        continue;
++        }
++      if(st.act==IdleTalk) {
++        idleTalk(*npc,now);
++        continue;
++        }
++      if(now>=st.until) {
++        idleEnd(*npc,true,now);
++        continue;
++        }
++      if(npc->isAiQueueEmpty() && !npc->isAiBusy())
++        idlePulse(*npc);
++      continue;
++      }
++
++    // Созданный для занятия предмет (косяк, еда, лютня) убрать, когда руки уже свободны
++    if(now>=st.propAt && npc->isAiQueueEmpty() && !npc->isAiBusy())
++      idleDropProp(*npc);
++    if(!ok) {
++      st.next = 0;
++      continue;
++      }
++    if(st.next==0) {
++      // Первое занятие - вразнобой, а не всем отрядом сразу
++      st.next = now+1500+rand(6000);
++      continue;
++      }
++    if(now<st.next || !npc->isAiQueueEmpty() || npc->isAiBusy())
++      continue;
++    idleBegin(*npc,player,waiting,heroIdle,now);
++    }
 +  }
 diff --git a/common/game/fightalgo.cpp b/common/game/fightalgo.cpp
 index b1d951f..8d5f5cd 100644
@@ -464,10 +1116,27 @@ index 4b32af2..ba0f409 100644
  
  uint32_t GameScript::rand(uint32_t max) {
 diff --git a/common/game/gamescript.h b/common/game/gamescript.h
-index 2cccb63..18efec6 100644
+index 2cccb63..9302be6 100644
 --- a/common/game/gamescript.h
 +++ b/common/game/gamescript.h
-@@ -121,6 +121,27 @@ class GameScript final {
+@@ -25,6 +25,7 @@ class Npc;
+ class Item;
+ class VisualFx;
+ class ParticleFx;
++class WayPoint;
+ class Serialize;
+ class Gothic;
+ 
+@@ -52,6 +53,8 @@ class GameScript final {
+       int32_t          sort     = 0;
+       uint32_t         scriptFn = 0;
+       bool             isTrade  = false;
++      // Gothic II Mobile: обмен с напарником - торговля без денег (companions.cpp)
++      bool             freeTrade = false;
+       zenkit::IInfo*   handle   = nullptr;
+       };
+ 
+@@ -121,6 +124,31 @@ class GameScript final {
      auto updateDialog (const GameScript::DlgChoice &dlg, Npc &player, Npc &npc) -> std::vector<GameScript::DlgChoice>;
      void exec(const DlgChoice &dlg, Npc &player, Npc &npc);
  
@@ -491,11 +1160,15 @@ index 2cccb63..18efec6 100644
 +    // В бою с ним напарники помогают: не дуэль, не арена, не свой
 +    bool   squadCanFight(Npc& enemy);
 +    void   invokeAttack(Npc& npc, Npc& target, int32_t reason);
++    // Нанятый напарник: не погибает, только теряет сознание; его не добить и не обобрать
++    bool   isHired     (Npc& npc);
++    // AI_StartState напарника: без обыска побеждённых, без «смерти» скриптом, перед лечением - зелья
++    ScriptFn companionState(Npc& npc, ScriptFn fn, Npc* other);
 +
      void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
      void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
      void  printCannotBuyError         (Npc &npc);
-@@ -445,6 +466,24 @@ class GameScript final {
+@@ -445,6 +473,41 @@ class GameScript final {
      void exitsession         ();
  
      void sort(std::vector<DlgChoice>& dlg);
@@ -505,10 +1178,10 @@ index 2cccb63..18efec6 100644
 +      CompanionWait    = 0xFFFFFF02u,
 +      CompanionFollow  = 0xFFFFFF03u,
 +      CompanionDismiss = 0xFFFFFF04u,
++      CompanionTrade   = 0xFFFFFF05u,
 +      };
 +    int32_t scriptConst  (std::string_view name, int32_t def);
 +    bool    isPartyMember(Npc& npc);
-+    bool    isHired      (Npc& npc);
 +    size_t  hiredCount   ();
 +    int32_t hirePrice    (Npc& npc) const;
 +    void    companionSay (Npc& npc, Npc& player, std::string_view svm);
@@ -516,20 +1189,40 @@ index 2cccb63..18efec6 100644
 +    void    setStance    (Npc& npc, bool passive);
 +    int32_t attackReason (Npc& npc, Npc& enemy);
 +    Npc*    squadEnemy   (Npc& npc, Npc& player, bool following);
++    bool    squadInFight (Npc& player);
++    void    supplyPotions(Npc& npc);
++    void    tickSquadHeal(Npc& npc, uint64_t now);
++    // Привал: случайные занятия ждущих напарников и отряда рядом с долго стоящим героем
++    void    tickSquadIdle(Npc& player, uint64_t now);
++    bool    idleAllowed  (Npc& npc, Npc& player, bool heroIdle, bool& waiting);
++    void    idleBegin    (Npc& npc, Npc& player, bool waiting, bool heroIdle, uint64_t now);
++    void    idlePulse    (Npc& npc);
++    void    idleTalk     (Npc& npc, uint64_t now);
++    void    idleEnd      (Npc& npc, bool graceful, uint64_t now);
++    void    idleStop     (Npc& npc);
++    void    idlePose     (Npc& npc);
++    void    idleExit     (Npc& npc);
++    size_t  idleProp     (Npc& npc, std::string_view name);
++    void    idleDropProp (Npc& npc);
++    auto    idleAside    (Npc& npc, Npc& player, bool waiting) -> const WayPoint*;
++    std::string smalltalkSvm(Npc& npc);
 +
      void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
      bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
  
-@@ -486,6 +525,7 @@ class GameScript final {
+@@ -486,6 +549,10 @@ class GameScript final {
      size_t                                                      gilCount=0;
      std::vector<int32_t>                                        gilAttitudes;
      int                                                         aiOutOrderId=0;
 +    uint64_t                                                    squadTickTime=0;
++    std::vector<Npc*>                                           squadTmp;
++    Tempest::Vec3                                               squadHeroPos;
++    uint64_t                                                    squadHeroStill=0;
  
      PerDist                                                     perceptionRanges;
  
 diff --git a/common/game/playercontrol.cpp b/common/game/playercontrol.cpp
-index aa16509..d6066b6 100644
+index aa16509..5611a62 100644
 --- a/common/game/playercontrol.cpp
 +++ b/common/game/playercontrol.cpp
 @@ -1,13 +1,20 @@
@@ -583,7 +1276,7 @@ index aa16509..d6066b6 100644
    setTarget(currentFocus.npc);
  
    if(!ctrl[Action::ActionGeneric])
-@@ -444,6 +460,532 @@ void PlayerControl::clearInput() {
+@@ -444,6 +460,571 @@ void PlayerControl::clearInput() {
    std::memset(ctrl, 0,sizeof(ctrl));
    std::memset(actrl,0,sizeof(actrl));
    std::memset(wctrl,0,sizeof(wctrl));
@@ -816,22 +1509,54 @@ index aa16509..d6066b6 100644
 +  return found;
 +  }
 +
++// Квадрат расстояния по горизонтали: центр героя выше лежащего тела и предмета на земле
++static float qDistXZ(const Tempest::Vec3& a, const Tempest::Vec3& b) {
++  const float dx = a.x-b.x, dz = a.z-b.z;
++  return dx*dx+dz*dz;
++  }
++
++bool PlayerControl::isGatherable(Npc& pl, Item& it) const {
++  auto& h = it.handle();
++  if(h.owner_guild!=0 || it.isTorchBurn())
++    return false;
++  if(h.owner<=0 || uint32_t(h.owner)==pl.handle().symbol_index())
++    return true;
++  // Выпавшее оружие помечено владением того, кто его уронил. Хозяина нет в живых (убитый враг) -
++  // это не кража, собрать можно; хозяин жив, хоть и без сознания, - чужое
++  auto w = Gothic::inst().world();
++  for(size_t i=0; ; ++i) {
++    auto o = w->findNpcByInstance(size_t(h.owner),i);
++    if(o==nullptr)
++      return true;
++    if(!o->isDead())
++      return false;
++    }
++  }
++
++float PlayerControl::gatherReach(Npc& pl, Npc& body) const {
++  // AI_GoToNpc останавливает героя на дистанции удара кулаком (FightAlgo::prefferedAttackDistance): у тела
++  // человека - 1,7 м, крысы - 2,8 м. Сбор ждал подхода на 1,6 м и стоял до таймаута, тело пропускалось
++  auto& gv = Gothic::inst().world()->script().guildVal();
++  const int32_t base = gv.fight_range_base[body.guild()] + gv.fight_range_base[pl.guild()] + gv.fight_range_fist[pl.guild()];
++  return std::max(160.f, float(base)+60.f);
++  }
++
 +bool PlayerControl::findGatherTarget(Npc& pl, Item*& item, Npc*& body) const {
 +  auto w = Gothic::inst().world();
 +  item = nullptr;
 +  body = nullptr;
-+  static const float radius = 800.f;
 +  float best = 0;
 +  auto  skip = [this](const void* p) {
 +    return std::find(gatherSkip.begin(),gatherSkip.end(),p)!=gatherSkip.end();
 +    };
 +  const auto pos = pl.position();
++  // Перепад высоты - с запасом на склон, но не этаж выше
++  auto  high = [&pos](const Tempest::Vec3& p, float base) {
++    return std::abs(p.y-pos.y) > base + 0.3f*std::sqrt(qDistXZ(p,pos));
++    };
 +  // Только бесхозное: чужое (владелец или гильдия) берётся вручную, осознанно - это кража
-+  w->detectItem(pos, radius, [&](Item& it) {
-+    auto& h = it.handle();
-+    if(h.owner!=0 || h.owner_guild!=0 || it.isTorchBurn() || skip(&it))
-+      return;
-+    if(std::abs(it.position().y-pos.y)>160.f || !pl.canSeeItem(it,true))
++  w->detectItem(pos, gatherRadius, [&](Item& it) {
++    if(skip(&it) || high(it.position(),160.f) || !isGatherable(pl,it) || !pl.canSeeItem(it,true))
 +      return;
 +    const float qd = pl.qDistTo(it);
 +    if((item==nullptr && body==nullptr) || qd<best) {
@@ -841,12 +1566,12 @@ index aa16509..d6066b6 100644
 +      }
 +    });
 +  // Мёртвые (не оглушённые): то, что даёт обыск
-+  w->detectNpc(pos, radius, [&](Npc& n) {
++  w->detectNpc(pos, gatherRadius, [&](Npc& n) {
 +    if(&n==&pl || !n.isDead() || skip(&n))
 +      return;
 +    if(!n.inventory().iterator(Inventory::T_Ransack).isValid())
 +      return;
-+    if(std::abs(n.position().y-pos.y)>200.f || !pl.canSeeNpc(n,true))
++    if(high(n.position(),200.f) || !pl.canSeeNpc(n,true))
 +      return;
 +    const float qd = pl.qDistTo(n);
 +    if((item==nullptr && body==nullptr) || qd<best) {
@@ -945,7 +1670,9 @@ index aa16509..d6066b6 100644
 +      stopGather(true);
 +      return;
 +      }
-+    gatherDeadline = now+7000;
++    // До 20 м: время на дорогу - по расстоянию
++    const auto tg = gatherItem!=nullptr ? gatherItem->position() : gatherBody->position();
++    gatherDeadline = now+5000+uint64_t(std::sqrt(qDistXZ(tg,pl.position()))*5.f);
 +    if(gatherItem!=nullptr)
 +      pl.aiPush(AiQueue::aiGotoItem(*gatherItem)); else
 +      pl.aiPush(AiQueue::aiGoToNpc(gatherBody));
@@ -961,14 +1688,19 @@ index aa16509..d6066b6 100644
 +    return;
 +    }
 +
-+  const float reach = gatherItem!=nullptr ? 110.f : 160.f;
-+  const float qd    = gatherItem!=nullptr ? pl.qDistTo(*gatherItem) : pl.qDistTo(*gatherBody);
-+  if(qd>reach*reach)
++  // По горизонтали: тело лежит, предмет на земле - центр героя выше, расстояние в 3D не сходилось.
++  // К телу AI_GoToNpc подводит только на дистанцию удара - этого хватает для обыска
++  const float reach = gatherItem!=nullptr ? 90.f : gatherReach(pl,*gatherBody);
++  const float qd    = qDistXZ(pl.position(), gatherItem!=nullptr ? gatherItem->position() : gatherBody->position());
++  const bool  stop  = gatherBody!=nullptr && pl.isAiQueueEmpty() && qd<=(reach+120.f)*(reach+120.f);
++  if(qd>reach*reach && !stop)
 +    return; // ещё идёт
 +  if(!pl.isAiQueueEmpty())
 +    pl.clearAiQueue(); // дошёл
 +  if(pl.isAiBusy())
 +    return;
++  if(pl.bodyStateMasked()==BS_RUN || pl.bodyStateMasked()==BS_WALK)
++    pl.setAnim(Npc::Anim::Idle); // подобрать можно только стоя (Npc::takeItem)
 +
 +  if(gatherItem!=nullptr) {
 +    // Подбор - как вручную: анимация, проверка кражи скриптами
@@ -1116,7 +1848,7 @@ index aa16509..d6066b6 100644
    }
  
  void PlayerControl::marvinF8(uint64_t dt) {
-@@ -579,6 +1121,9 @@ bool PlayerControl::tickMove(uint64_t dt) {
+@@ -579,6 +1160,9 @@ bool PlayerControl::tickMove(uint64_t dt) {
    if(pl==nullptr)
      return true;
  
@@ -1126,7 +1858,7 @@ index aa16509..d6066b6 100644
    implMove(dt);
  
    float runAngle = pl->runAngle();
-@@ -675,6 +1220,12 @@ void PlayerControl::implMove(uint64_t dt) {
+@@ -675,6 +1259,12 @@ void PlayerControl::implMove(uint64_t dt) {
        }
      }
  
@@ -1140,7 +1872,7 @@ index aa16509..d6066b6 100644
      runAngleDest = 0;
      return;
 diff --git a/common/game/playercontrol.h b/common/game/playercontrol.h
-index fb8d625..fe8439e 100644
+index fb8d625..a1fe5fe 100644
 --- a/common/game/playercontrol.h
 +++ b/common/game/playercontrol.h
 @@ -5,6 +5,7 @@
@@ -1173,7 +1905,7 @@ index fb8d625..fe8439e 100644
 +    // Цель, выбранная касанием по NPC: на неё ведут бой и её атакует отряд
 +    void  setTouchTarget(Npc* npc);
 +    Npc*  touchTarget();
-+    // «Собрать»: герой обходит и подбирает бесхозные вещи и добро с мёртвых в радиусе 8 м
++    // «Собрать»: герой обходит и подбирает бесхозные вещи и добро с мёртвых в радиусе 20 м
 +    bool  canGather() const { return gatherAvail; }
 +    bool  isGathering() const { return gatherOn; }
 +    void  startGather();
@@ -1182,7 +1914,7 @@ index fb8d625..fe8439e 100644
    private:
      enum WeaponAction : uint8_t {
        WeaponClose,
-@@ -153,6 +178,26 @@ class PlayerControl final {
+@@ -153,6 +178,27 @@ class PlayerControl final {
      int            rotationAni    = 0;
      bool           g2Ctrl         = false;
  
@@ -1205,11 +1937,12 @@ index fb8d625..fe8439e 100644
 +    Item*          gatherItem     = nullptr;
 +    Npc*           gatherBody     = nullptr;
 +    std::vector<const void*> gatherSkip;
++    static constexpr float   gatherRadius = 2000.f;
 +
      DialogMenu&    dlg;
      InventoryMenu& inv;
  
-@@ -177,6 +222,16 @@ class PlayerControl final {
+@@ -177,6 +223,18 @@ class PlayerControl final {
      void           setAnimRotate (Npc& pl, float rotation, int anim, bool force, uint64_t dt);
      void           processAutoRotate(Npc& pl, float& rot, uint64_t dt);
  
@@ -1220,6 +1953,8 @@ index fb8d625..fe8439e 100644
 +    Npc*           findAutoFightTarget(Npc& pl) const;
 +    bool           isAttacked(Npc& pl) const;
 +    bool           findGatherTarget(Npc& pl, Item*& item, Npc*& body) const;
++    bool           isGatherable(Npc& pl, Item& it) const;
++    float          gatherReach(Npc& pl, Npc& body) const;
 +    void           tickGather(Npc& pl);
 +    bool           drinkPotion(const char* const* names, size_t count);
 +
@@ -1715,10 +2450,27 @@ index 3fb2713..b78ac15 100644
      uint64_t                  lastTick=0;
  
 diff --git a/common/ui/dialogmenu.cpp b/common/ui/dialogmenu.cpp
-index 5a7db4d..ffa0878 100644
+index 5a7db4d..817dea1 100644
 --- a/common/ui/dialogmenu.cpp
 +++ b/common/ui/dialogmenu.cpp
-@@ -527,6 +527,48 @@ void DialogMenu::paintChoice(PaintEvent &e) {
+@@ -391,7 +391,7 @@ bool DialogMenu::haveToShowSubtitles(bool isPl) const {
+ 
+ void DialogMenu::startTrade() {
+   if(pl!=nullptr && other!=nullptr)
+-    trade.trade(*pl,*other);
++    trade.trade(*pl,*other,dlgFreeTrade);
+   dlgTrade=false;
+   }
+ 
+@@ -411,6 +411,7 @@ void DialogMenu::onEntry(const GameScript::DlgChoice &e) {
+     selected = e;
+     depth    = 1;
+     dlgTrade = e.isTrade;
++    dlgFreeTrade = e.freeTrade;
+     except.push_back(e.scriptFn);
+     Gothic::inst().dialogExec(e,*pl,*other);
+ 
+@@ -527,6 +528,48 @@ void DialogMenu::paintChoice(PaintEvent &e) {
      }
    }
  
@@ -1768,7 +2520,7 @@ index 5a7db4d..ffa0878 100644
    return choice.size()!=0 && current.time==0 && !haveToWaitOutput() && trade.isOpen()==InventoryMenu::State::Closed;
    }
 diff --git a/common/ui/dialogmenu.h b/common/ui/dialogmenu.h
-index f08a36e..045379a 100644
+index f08a36e..a6ed82b 100644
 --- a/common/ui/dialogmenu.h
 +++ b/common/ui/dialogmenu.h
 @@ -34,6 +34,12 @@ class DialogMenu : public Tempest::Widget {
@@ -1784,6 +2536,14 @@ index f08a36e..045379a 100644
      void print      (std::string_view msg);
      void printScreen(std::string_view msg, int x, int y, int time, const GthFont &font);
      void drawMsg    (Tempest::Painter& p, int offsetY);
+@@ -136,6 +142,7 @@ class DialogMenu : public Tempest::Widget {
+     Tempest::SoundEffect                currentSnd;
+     bool                                curentIsPl=false;
+     bool                                dlgTrade=false;
++    bool                                dlgFreeTrade=false;
+     int32_t                             mobsiState=-1;
+ 
+     std::vector<PScreen>                pscreen;
 diff --git a/common/ui/gamemenu.cpp b/common/ui/gamemenu.cpp
 index 17a2ec6..cf8c4d4 100644
 --- a/common/ui/gamemenu.cpp
@@ -1813,10 +2573,60 @@ index 17a2ec6..cf8c4d4 100644
      accepted = true;
      }
 diff --git a/common/ui/inventorymenu.cpp b/common/ui/inventorymenu.cpp
-index b532ab8..9b6b3e9 100644
+index b532ab8..5f2f4c3 100644
 --- a/common/ui/inventorymenu.cpp
 +++ b/common/ui/inventorymenu.cpp
-@@ -163,6 +163,133 @@ bool InventoryMenu::ransack(Npc &pl, Npc &tr) {
+@@ -7,6 +7,7 @@
+ #include "world/objects/npc.h"
+ #include "world/objects/interactive.h"
+ #include "world/objects/item.h"
++#include "world/aiqueue.h"
+ #include "world/world.h"
+ #include "utils/gthfont.h"
+ #include "utils/keycodec.h"
+@@ -101,6 +102,13 @@ void InventoryMenu::close() {
+       Gothic::inst().emitGlobalSound("TRADE_CLOSE"); else
+       Gothic::inst().emitGlobalSound("INV_CLOSE");
+     }
++  if(state==State::Trade && freeTrade && trader!=nullptr && !trader->isDown()) {
++    // Gothic II Mobile: напарник берёт в руки лучшее из того, что ему дали
++    trader->aiPush(AiQueue::aiEquipBestArmor());
++    trader->aiPush(AiQueue::aiEquipBestMeleeWeapon());
++    trader->aiPush(AiQueue::aiEquipBestRangedWeapon());
++    }
++  freeTrade = false;
+   renderer.reset(true);
+   takeTimer.stop();
+   state  = State::Closed;
+@@ -116,6 +124,7 @@ void InventoryMenu::open(Npc &pl) {
+     pl.closeWeapon(false);
+     }
+   state  = State::Equip;
++  freeTrade = false;
+   player = &pl;
+   trader = nullptr;
+   chest  = nullptr;
+@@ -129,9 +138,10 @@ void InventoryMenu::open(Npc &pl) {
+   //Gothic::inst().emitGlobalSound("INV_CHANGE");
+   }
+ 
+-void InventoryMenu::trade(Npc &pl, Npc &tr) {
++void InventoryMenu::trade(Npc &pl, Npc &tr, bool free) {
+   if(pl.isDown())
+     return;
++  freeTrade = free;
+   state  = State::Trade;
+   player = &pl;
+   trader = &tr;
+@@ -151,6 +161,7 @@ bool InventoryMenu::ransack(Npc &pl, Npc &tr) {
+   if(!it.isValid())
+     return false;
+   state  = State::Ransack;
++  freeTrade = false;
+   player = &pl;
+   trader = &tr;
+   chest  = nullptr;
+@@ -163,6 +174,140 @@ bool InventoryMenu::ransack(Npc &pl, Npc &tr) {
    return true;
    }
  
@@ -1906,7 +2716,14 @@ index b532ab8..9b6b3e9 100644
 +    case State::Equip:   return TouchAction::Use;
 +    case State::Chest:   return own ? TouchAction::Put  : TouchAction::Take;
 +    case State::Ransack: return own ? TouchAction::None : TouchAction::Take;
-+    case State::Trade:   return own ? TouchAction::Sell : TouchAction::Buy;
++    case State::Trade:
++      if(freeTrade) {
++        // Обмен с напарником: деньги не отдаются (его деньги в окне не показаны)
++        if(own && pg.get(sel.sel)->isGold())
++          return TouchAction::None;
++        return own ? TouchAction::Give : TouchAction::Take;
++        }
++      return own ? TouchAction::Sell : TouchAction::Buy;
 +    case State::Closed:
 +    case State::LockPicking:
 +      break;
@@ -1918,7 +2735,7 @@ index b532ab8..9b6b3e9 100644
 +  const auto act = touchActionKind();
 +  if(act==TouchAction::None)
 +    return;
-+  if(act==TouchAction::Take || act==TouchAction::Put) {
++  if(act==TouchAction::Take || act==TouchAction::Put || act==TouchAction::Give) {
 +    lootMode = LootMode::Stack;
 +    onTakeStuff();
 +    lootMode = LootMode::Normal;
@@ -1950,13 +2767,49 @@ index b532ab8..9b6b3e9 100644
  void InventoryMenu::open(Npc &pl, Interactive &ch) {
    if(pl.isDown())
      return;
+@@ -179,6 +324,7 @@ void InventoryMenu::open(Npc &pl, Interactive &ch) {
+   player = &pl;
+   trader = nullptr;
+   chest  = &ch;
++  freeTrade = false;
+   page   = 0;
+   pagePl .reset(new InvPage(pl.inventory()));
+   pageOth.reset(new InvPage(ch.inventory()));
+@@ -516,6 +662,14 @@ void InventoryMenu::onTakeStuff() {
+       player->addItem (it->clsId(),*chest,itemCount);
+       }
+     }
++  else if(state==State::Trade && freeTrade) {
++    // Gothic II Mobile: обмен с напарником - даром; деньги не переходят ни в одну сторону
++    if(!it->isGold()) {
++      if(page.is(&player->inventory()))
++        trader->addItem(it->clsId(),*player,itemCount); else
++        player->addItem(it->clsId(),*trader,itemCount);
++      }
++    }
+   else if(state==State::Trade) {
+     if(page.is(&player->inventory())) {
+       player->sellItem(it->clsId(),*trader,itemCount);
+@@ -736,7 +890,7 @@ void InventoryMenu::drawInfo(Painter &p) {
+     if(txt.empty())
+       continue;
+ 
+-    if(i+1==Item::MAX_UI_ROWS && state==State::Trade && player!=nullptr && pg.is(&player->inventory())){
++    if(i+1==Item::MAX_UI_ROWS && state==State::Trade && !freeTrade && player!=nullptr && pg.is(&player->inventory())){
+       val = r.sellCost();
+       }
+ 
 diff --git a/common/ui/inventorymenu.h b/common/ui/inventorymenu.h
-index d4ddb41..3babfe3 100644
+index d4ddb41..e6cbee7 100644
 --- a/common/ui/inventorymenu.h
 +++ b/common/ui/inventorymenu.h
-@@ -44,6 +44,20 @@ class InventoryMenu : public Tempest::Widget {
+@@ -42,8 +42,23 @@ class InventoryMenu : public Tempest::Widget {
+ 
+     void  close();
      void  open(Npc& pl);
-     void  trade(Npc& pl,Npc& tr);
+-    void  trade(Npc& pl,Npc& tr);
++    // Gothic II Mobile: free - обмен с напарником: даром, деньги не переходят
++    void  trade(Npc& pl,Npc& tr,bool free=false);
      bool  ransack(Npc& pl,Npc& tr);
 +    // Gothic II Mobile: «Взять всё» из сундука или с тела
 +    bool  canTakeAll() const;
@@ -1969,12 +2822,20 @@ index d4ddb41..3babfe3 100644
 +    bool  touchIsGrid(Tempest::Point p) const;
 +    int   touchSlotHeight() const { return slotSize().h; }
 +    // Кнопка действия: у сундука и тела - взять всю стопку, в торговле - одну штуку, в сумке - применить
-+    enum class TouchAction : uint8_t { None, Use, Take, Put, Buy, Sell };
++    enum class TouchAction : uint8_t { None, Use, Take, Put, Buy, Sell, Give };
 +    TouchAction touchActionKind();
 +    void  touchAction();
      void  open(Npc& pl,Interactive& chest);
      State isOpen() const;
      bool  isActive() const;
+@@ -86,6 +101,7 @@ class InventoryMenu : public Tempest::Widget {
+     Npc*                      player     =nullptr;
+     Npc*                      trader     =nullptr;
+     Interactive*              chest      =nullptr;
++    bool                      freeTrade  =false;
+ 
+     std::unique_ptr<Page>     pageOth, pagePl;
+     PageLocal                 pageLocal[2];
 diff --git a/common/ui/touchicons.cpp b/common/ui/touchicons.cpp
 new file mode 100644
 index 0000000..b57e987
@@ -2726,10 +3587,10 @@ index 0000000..5eb3773
 +    const Tempest::Texture2d& cached(uint64_t key, const std::function<Tempest::Texture2d()>& make);
 +  };
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f1730..bfb52ff 100644
+index d9f1730..c097b51 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,1230 @@
+@@ -1,41 +1,1242 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
@@ -3085,6 +3946,7 @@ index d9f1730..bfb52ff 100644
 +            case InventoryMenu::TouchAction::Put:  txt = "Положить";  break;
 +            case InventoryMenu::TouchAction::Buy:  txt = "Купить";    break;
 +            case InventoryMenu::TouchAction::Sell: txt = "Продать";   break;
++            case InventoryMenu::TouchAction::Give: txt = "Отдать";    break;
 +            case InventoryMenu::TouchAction::None: break;
 +            }
 +          }
@@ -3317,20 +4179,32 @@ index d9f1730..bfb52ff 100644
 +    return;
 +  // Под полосками героя: имя, здоровье, приказ
 +  const float d    = dp();
-+  const int   x    = 10; // как полоски игры
-+  int         y    = owner.touchHudBottom() + int(8*d);
-+  const int   rowH = int(22*d);
++  const int   x0   = 10; // как полоски игры
++  const int   y0   = owner.touchHudBottom() + int(8*d);
 +  const int   gs   = int(13*d);
 +  const int   barW = int(70*d);
 +  const int   barH = std::max(2, int(3*d));
++  auto&       fnt  = Resources::font(Resources::FontType::Normal, Gothic::interfaceScale(this)*0.8f);
++  // До шести напарников: строки ужимаются до высоты текста, а если и так не влезают над «Красться» -
++  // второй столбец
++  const auto  sneak = buttonOf(C_Sneak);
++  const int   yMax  = sneak.c.y - sneak.r - int(6*d);
++  const int   n     = int(squad.size());
++  int         rowH  = int(22*d);
++  if(y0+rowH*n>yMax)
++    rowH = std::max(fnt.textSize("A").h+barH+int(4*d), (yMax-y0)/std::max(n,1));
++  const int   perCol = std::max(1, (yMax-y0)/std::max(rowH,1));
++  const int   colW   = gs+int(5*d)+barW+int(30*d)+int(8*d);
 +  auto& sc = w->script();
-+  for(auto npc:squad) {
++  for(int i=0; i<n; ++i) {
++    Npc* npc = squad[size_t(i)];
++    const int x = x0 + (i/perCol)*colW;
++    const int y = y0 + (i%perCol)*rowH;
 +    TouchIcons::Icon ic = sc.squadIsWaiting(*npc) ? TouchIcons::I_Wait : TouchIcons::I_Follow;
 +    if(sc.isPassive(*npc) && !sc.squadIsWaiting(*npc))
 +      ic = TouchIcons::I_Passive;
 +    drawGlyph(p, ic, Point(x+gs/2, y+gs/2), gs, GoldIdle);
 +
-+    auto&      fnt  = Resources::font(Resources::FontType::Normal, Gothic::interfaceScale(this)*0.8f);
 +    const auto name = fit(std::string(npc->displayName()), barW+int(30*d), 0.8f);
 +    const auto ts   = fnt.textSize(name);
 +    fnt.drawText(p, x+gs+int(5*d), y+ts.h-int(2*d), name);
@@ -3341,7 +4215,6 @@ index d9f1730..bfb52ff 100644
 +    p.drawRect(x+gs+int(5*d), by, barW, barH);
 +    p.setBrush(Color(0.78f,0.16f,0.10f,0.9f));
 +    p.drawRect(x+gs+int(5*d), by, int(float(barW)*std::clamp(hp,0.f,1.f)), barH);
-+    y += rowH;
 +    }
 +  }
 +
@@ -4258,10 +5131,26 @@ index 1624d79..461c1e1 100644
    if(path.empty())
      return u"";
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..c5c96ef 100644
+index e015398..ee13037 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
-@@ -1555,7 +1555,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
+@@ -593,6 +593,15 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
+   }
+ 
+ void Npc::onNoHealth(bool death, HitSound sndMask) {
++  if(death && owner.script().isHired(*this)) {
++    // Gothic II Mobile: нанятый напарник не погибает - теряет сознание, потом встаёт, пьёт зелья и
++    // идёт дальше (ZS_Unconscious -> ZS_HealSelf). В воде без сознания утонул бы - там просто держится
++    if(isSwim() || isDive()) {
++      hnpc->attribute[ATR_HITPOINTS] = std::max(hnpc->attribute[ATR_HITPOINTS],1);
++      return;
++      }
++    death = false;
++    }
+   invent.switchActiveWeapon(*this,Item::NSLOT);
+   visual.dropWeapon(*this);
+   visual.dropShield(*this);
+@@ -1555,7 +1564,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
    }
  
  bool Npc::implAttack(uint64_t dt) {
@@ -4270,7 +5159,7 @@ index e015398..c5c96ef 100644
      return false;
  
    if(currentTarget->isDown()){
-@@ -1580,8 +1580,11 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1580,8 +1589,11 @@ bool Npc::implAttack(uint64_t dt) {
      return true;
      }
  
@@ -4284,10 +5173,53 @@ index e015398..c5c96ef 100644
  
    if(bs==BS_LIE) {
      setAnim(Npc::Anim::Idle);
-@@ -4158,6 +4161,34 @@ bool Npc::isPrehit() const {
+@@ -1882,6 +1894,9 @@ bool Npc::implAttack(uint64_t dt) {
+ bool Npc::implAiTick(uint64_t dt) {
+   // Note AI-action queue takes priority, test case: Vatras pray at night
+   if(aiQueue.size()==0) {
++    // Gothic II Mobile: занятием напарника на привале управляет отряд - цикл распорядка ждёт
++    if(isCompanionIdle())
++      return false;
+     tickRoutine();
+     if(aiQueue.size()>0)
+       nextAiAction(aiQueue,dt);
+@@ -2529,6 +2544,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+         }
+       break;
+     case AI_StartState:
++      // Gothic II Mobile: напарник не обирает побеждённых и не обирается сам, перед лечением у него
++      // всегда есть зелья (companions.cpp)
++      act.func = owner.script().companionState(*this,act.func,act.target);
++      if(!act.func.isValid())
++        break;
+       // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
+       // In such cases it's important to preserve aiState.eTime.
+       if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
+@@ -3793,6 +3813,10 @@ bool Npc::canFinish(Npc& oth) {
+   if(!oth.isUnconscious())
+     return false;
+ 
++  // Gothic II Mobile: нанятого напарника добить нельзя - он только без сознания
++  if(owner.script().isHired(oth))
++    return false;
++
+   if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
+     return false;
+   return true;
+@@ -4158,6 +4182,44 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
++bool Npc::isCompanionIdle() const {
++  // Только в том состоянии, в котором занятие начато, и не дольше его конца + 10 с - распорядок не застрянет
++  return companionIdle.act!=0 && aiState.funcIni.ptr==companionIdle.state &&
++         owner.tickCount()<companionIdle.until+10000;
++  }
++
++bool Npc::isInAnim(std::string_view name) const {
++  return visual.pose().isInAnim(name);
++  }
++
 +bool Npc::isComboWindow() const {
 +  return visual.pose().isComboWindow(owner.tickCount());
 +  }
@@ -4319,7 +5251,7 @@ index e015398..c5c96ef 100644
  bool Npc::isImmortal() const {
    return hnpc->flags & zenkit::NpcFlag::IMMORTAL;
    }
-@@ -4356,6 +4387,20 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4418,20 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -4341,10 +5273,10 @@ index e015398..c5c96ef 100644
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..af43e6f 100644
+index 7309936..13f9198 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
-@@ -289,6 +289,14 @@ class Npc final {
+@@ -289,6 +289,36 @@ class Npc final {
  
      bool      isAttackAnim() const;
      bool      isPrehit() const;
@@ -4356,10 +5288,32 @@ index 7309936..af43e6f 100644
 +    bool      hasRoutineState(size_t state) const;
 +    bool      isAutoFight() const { return autoFight; }
 +    int32_t   fightTactic() const;
++    // Gothic II Mobile: занятие напарника на привале (companions.cpp); не сохраняется
++    struct CompanionIdle final {
++      uint8_t  act     = 0;
++      uint8_t  last    = 0;
++      uint8_t  lines   = 0;          // беседа: сколько ещё реплик
++      bool     lead    = false;      // беседу ведёт этот
++      bool     turn    = false;      // беседа: сейчас говорит ведущий
++      bool     waiting = false;      // начато в ожидании, а не на отдыхе рядом с героем
++      bool     away    = false;      // отошёл от места ожидания
++      size_t   state   = size_t(-1); // состояние распорядка, в котором начато
++      size_t   item    = 0;          // предмет в руке
++      size_t   prop    = 0;          // созданный для занятия предмет - убрать после
++      uint64_t until   = 0;
++      uint64_t next    = 0;
++      uint64_t lineAt  = 0;
++      uint64_t propAt  = 0;
++      uint64_t healAt  = 0;
++      Npc*     peer    = nullptr;    // собеседник: только сравнение с живыми членами отряда
++      };
++    CompanionIdle companionIdle;
++    bool      isCompanionIdle() const;
++    bool      isInAnim(std::string_view name) const;
      bool      isImmortal() const;
  
      void      setPerceptionTime   (uint64_t time);
-@@ -629,6 +637,7 @@ class Npc final {
+@@ -629,6 +659,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;

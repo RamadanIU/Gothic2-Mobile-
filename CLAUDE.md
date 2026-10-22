@@ -27,7 +27,8 @@ Android-приложение «Gothic II»: запускает **лицензи�
 
 Работает на телефоне пользователя (Adreno 740): запуск из папки игрока, русский текст, без мерцания.
 Пользователь подтвердил бой и автобой; новое управление (docs/CONTROLS.md), отряд, «Собрать», напарники и
-новая графика ждут проверки.
+новая графика ждут проверки. 2026-10-22: отряд до 6, напарники без смерти и обыска, зелья, обмен, привал;
+«Собрать» — 20 м и без остановок у тел (docs/PROGRESS.md, последний раздел).
 
 - **Приложение** (`app/`, Java, пакет `gothic2.mobile.og`): `LauncherActivity` — разрешение «Файлы», поиск
   папки игры (`GameFolder`), выбор вручную через SAF, «Играть», раздел «Графика» (`GraphicsSettings` →
@@ -43,8 +44,11 @@ Android-приложение «Gothic II»: запускает **лицензи�
     (`aivar[95]`), напарники вступаются за героя через `B_Attack`; «Собрать» (`PlayerControl::tickGather`);
   - удержание «Удара» = удар только в окно комбо (`Pose::isComboWindow`, `PlayerControl::tickTouchAttack`);
   - автобой по боевому ИИ игры (`Npc::autoFight`, `fightTactic`, `PlayerControl::tickAutoFight`), зелья;
-  - напарники (`common/game/companions.cpp`): найм безымянных NPC в диалоге за 10 золотых/уровень,
-    `AIV_PARTYMEMBER` + `ZS_Follow_Player`, опыт за их убийства даёт сама игра (`ZS_Dead`);
+  - напарники (`common/game/companions.cpp`): найм безымянных NPC в диалоге за 10 золотых/уровень (до 6),
+    `AIV_PARTYMEMBER` + `ZS_Follow_Player`, опыт за их убийства даёт сама игра (`ZS_Dead`); не погибают
+    (`Npc::onNoHealth` → без сознания, `canFinish`), не обирают и не обираются, зелья перед `ZS_HealSelf`
+    (`AI_StartState` → `GameScript::companionState`); обмен даром (`DlgChoice::freeTrade`); привал —
+    случайные занятия и беседы (`tickSquadIdle`, цикл распорядка молчит — `Npc::isCompanionIdle`);
   - графика из `g2m.ini` (`Gothic::Gothic`): FPS, внутреннее разрешение, тени (выкл/512–2048), отражения,
     лучи солнца, дальность прорисовки и отсечение мелочи (`visibility_pass.comp`); рендер ждёт видеокарту;
   - «Взять всё» (`InventoryMenu::takeAll`), путь к игре из `gothic_path.txt` (`InstallDetect`), имя сохранения
