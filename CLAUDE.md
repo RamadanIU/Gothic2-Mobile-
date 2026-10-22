@@ -51,7 +51,8 @@ Android-приложение «Gothic II»: запускает **лицензи�
     `companionForgive`); выпавшее оружие ничьё (`ITM_DROPPED`); обмен даром (`DlgChoice::freeTrade`); привал —
     случайные занятия и беседы (`tickSquadIdle`, цикл распорядка молчит — `Npc::isCompanionIdle`);
     враги отряда — и те, кого ударил герой (`squadNoteHit`); в пути — строй, след героя, путь по точкам,
-    телепорт отставших (`tickSquadFollow`, `Npc::goToPos`);
+    телепорт отставших (`tickSquadFollow`, `Npc::goToPos`); «Ждать» — лагерь на месте (`squadCamp`, метка
+    `G2M_CAMP`, `Npc::isCompanionCamp`);
   - графика из `g2m.ini` (`Gothic::Gothic`): FPS, внутреннее разрешение, тени (выкл/512–2048), отражения,
     лучи солнца, дальность прорисовки и отсечение мелочи (`visibility_pass.comp`); рендер ждёт видеокарту;
   - «Взять всё» (`InventoryMenu::takeAll`), путь к игре из `gothic_path.txt` (`InstallDetect`), имя сохранения
