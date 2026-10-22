@@ -48,6 +48,12 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
 | Дальность прорисовки и отсечение мелочи по угловому размеру | `shader/materials/visibility_pass.comp`, `DrawCommands::visibilityPass` |
 | Рендер ждёт видеокарту, а не крутит цикл | `MainWindow::render` |
 | «Взять всё» | `InventoryMenu::takeAll` |
+| Быстрое сохранение: кнопка, запреты (бой, прыжок, разговор), итог записи, быстрая загрузка с подтверждением | `MainWindow::touchQuickSave/touchQuickSaveInfo/touchQuickLoad`, `MainWindow::tick` (`savePending`), `TouchInput::openConfirm` |
+| Сохранение во временный файл и замена одним шагом; очередь ИИ героя (путь, сбор) не сохраняется | `MainWindow::saveGame`, `PlayerControl::onSaveGame` |
+| «Путь»: места (метки разработчиков, точки рун и распорядков), карты и их координаты как у карт-предметов | `common/game/travelpoints.*` |
+| «Путь»: карта с местами, путь бегом точками, список, пауза игры; затемнение; строка «В пути»; «Назад» телефона | `TouchInput::openTravelMap/drawTravelMap/mapTap`, `MainWindow::keyDownEvent/keyUpEvent` |
+| «Путь» бегом: ход по сети путей, бой автобоем, сбор добычи, разговоры и стража, лечение, застревание | `PlayerControl::tickTravelRun/travelGo/travelEnemy/travelUnstuck`, `WayPath::points` |
+| «Путь» мгновенно: перенос героя, отряд рядом в строю | `PlayerControl::tickTravelFade`, `GameScript::squadArrive` |
 | Папка игры из `gothic_path.txt`; имя сохранения по умолчанию — дата | `InstallDetect`, `GameMenu::SavNameDialog` |
 | Путь к заголовкам Vulkan параметром CMake | `Tempest Engine/CMakeLists.txt` (`TEMPEST_VULKAN_SDK`) |
 

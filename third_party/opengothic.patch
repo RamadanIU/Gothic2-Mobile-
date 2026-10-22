@@ -1,9 +1,9 @@
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
-index 0000000..8680449
+index 0000000..3fcd5aa
 --- /dev/null
 +++ b/common/game/companions.cpp
-@@ -0,0 +1,1445 @@
+@@ -0,0 +1,1489 @@
 +#include "gamescript.h"
 +
 +#include <Tempest/Log>
@@ -11,11 +11,13 @@ index 0000000..8680449
 +#include <algorithm>
 +#include <cmath>
 +#include <cstdio>
++#include <iterator>
 +
 +#include "world/objects/npc.h"
 +#include "world/objects/item.h"
 +#include "world/aiqueue.h"
 +#include "world/world.h"
++#include "physics/dynamicworld.h"
 +#include "utils/cp1251.h"
 +#include "utils/string_frm.h"
 +#include "gothic.h"
@@ -605,6 +607,48 @@ index 0000000..8680449
 +  fs.teleAt   = now+5000;
 +  fs.driving  = false;
 +  Tempest::Log::i("[g2m] squad: \"",npc.displayName(),"\" teleported (",why,")");
++  }
++
++void GameScript::squadArrive() {
++  auto* pl = world().player();
++  if(pl==nullptr)
++    return;
++  squadMembers(squadTmp);
++  // След героя остался там, откуда он ушёл
++  squadTrail.clear();
++  squadHeroAt = 0;
++  const uint64_t now      = tickCount();
++  const size_t   zsFollow = findSymbolIndex("ZS_FOLLOW_PLAYER");
++  const auto     hp       = pl->position();
++  const float    a        = pl->rotationRad();
++  squadDir = Tempest::Vec3(std::cos(a),0.f,std::sin(a));
++  const Tempest::Vec3 back  = -squadDir;
++  const Tempest::Vec3 right = Tempest::Vec3(-squadDir.z,0.f,squadDir.x);
++  size_t k = 0;
++  for(auto npc:squadTmp) {
++    if(!npc->hasRoutineState(zsFollow) || npc->isDown())
++      continue;
++    const size_t slot = std::min<size_t>(k++, std::size(SlotBack)-1);
++    // Место в строю за спиной героя - если там земля и его видно от героя; иначе - точка пути рядом
++    const Tempest::Vec3 goal = hp + back*SlotBack[slot] + right*SlotSide[slot];
++    const auto ray = world().physic()->landRay(goal+Tempest::Vec3(0.f,150.f,0.f));
++    if(!ray.hasCol || std::abs(ray.v.y-hp.y)>150.f || !pl->canRayHitPoint(ray.v+Tempest::Vec3(0.f,60.f,0.f),true,1000.f)) {
++      npc->companionFollow.teleAt = 0;
++      squadTeleport(*npc,*pl,slot,now,"travel");
++      continue;
++      }
++    auto& fs = npc->companionFollow;
++    npc->clearAiQueue();
++    npc->setPosition(ray.v);
++    npc->setDirection(hp-ray.v);
++    npc->updateTransform();
++    fs.lastPos  = ray.v;
++    fs.movedAt  = now;
++    fs.hiddenAt = 0;
++    fs.teleAt   = now+5000;
++    fs.driving  = false;
++    Tempest::Log::i("[g2m] squad: \"",npc->displayName(),"\" arrived with hero");
++    }
 +  }
 +
 +void GameScript::tickSquadFollow(Npc& player, uint64_t now) {
@@ -1544,7 +1588,7 @@ index 4b32af2..468e769 100644
  
  uint32_t GameScript::rand(uint32_t max) {
 diff --git a/common/game/gamescript.h b/common/game/gamescript.h
-index 2cccb63..827f613 100644
+index 2cccb63..8400351 100644
 --- a/common/game/gamescript.h
 +++ b/common/game/gamescript.h
 @@ -25,6 +25,7 @@ class Npc;
@@ -1564,7 +1608,7 @@ index 2cccb63..827f613 100644
        zenkit::IInfo*   handle   = nullptr;
        };
  
-@@ -121,6 +124,35 @@ class GameScript final {
+@@ -121,6 +124,37 @@ class GameScript final {
      auto updateDialog (const GameScript::DlgChoice &dlg, Npc &player, Npc &npc) -> std::vector<GameScript::DlgChoice>;
      void exec(const DlgChoice &dlg, Npc &player, Npc &npc);
  
@@ -1589,6 +1633,8 @@ index 2cccb63..827f613 100644
 +    void   invokeNpcFn (std::string_view name, Npc& npc, Npc& other);
 +    // Удар в бою: кого ударил герой и кто ударил своего - враги отряда на 30 с (Npc::takeDamage)
 +    void   squadNoteHit(Npc& attacker, Npc& victim);
++    // Герой перенёсся («Путь», мгновенно): кто идёт следом - рядом с ним в строю; ждущие - в лагере
++    void   squadArrive ();
 +    // Нанятый напарник: не погибает, только теряет сознание; его не добить и не обобрать
 +    bool   isHired     (Npc& npc);
 +    // AI_StartState напарника: без обыска побеждённых, без «смерти» скриптом, перед лечением - зелья,
@@ -1600,7 +1646,7 @@ index 2cccb63..827f613 100644
      void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
      void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
      void  printCannotBuyError         (Npc &npc);
-@@ -445,6 +477,57 @@ class GameScript final {
+@@ -445,6 +479,57 @@ class GameScript final {
      void exitsession         ();
  
      void sort(std::vector<DlgChoice>& dlg);
@@ -1658,7 +1704,7 @@ index 2cccb63..827f613 100644
      void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
      bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
  
-@@ -486,6 +569,16 @@ class GameScript final {
+@@ -486,6 +571,16 @@ class GameScript final {
      size_t                                                      gilCount=0;
      std::vector<int32_t>                                        gilAttitudes;
      int                                                         aiOutOrderId=0;
@@ -1676,10 +1722,10 @@ index 2cccb63..827f613 100644
      PerDist                                                     perceptionRanges;
  
 diff --git a/common/game/playercontrol.cpp b/common/game/playercontrol.cpp
-index aa16509..b88b0b5 100644
+index aa16509..925efe7 100644
 --- a/common/game/playercontrol.cpp
 +++ b/common/game/playercontrol.cpp
-@@ -1,13 +1,21 @@
+@@ -1,13 +1,22 @@
  #include "playercontrol.h"
  
 +#include <Tempest/Log>
@@ -1698,10 +1744,11 @@ index aa16509..b88b0b5 100644
  #include "ui/dialogmenu.h"
  #include "ui/inventorymenu.h"
 +#include "utils/cp1251.h"
++#include "camera.h"
  #include "gothic.h"
  
  PlayerControl::PlayerControl(DialogMenu& dlg, InventoryMenu &inv)
-@@ -26,6 +34,10 @@ void PlayerControl::setupSettings() {
+@@ -26,6 +35,10 @@ void PlayerControl::setupSettings() {
      } else {
      g2Ctrl = false;
      }
@@ -1712,7 +1759,7 @@ index aa16509..b88b0b5 100644
    }
  
  void PlayerControl::setTarget(Npc *other) {
-@@ -33,6 +45,8 @@ void PlayerControl::setTarget(Npc *other) {
+@@ -33,6 +46,8 @@ void PlayerControl::setTarget(Npc *other) {
    auto pl = w ? w->player() : nullptr;
    if(pl==nullptr || pl->isFinishingMove())
      return;
@@ -1721,7 +1768,7 @@ index aa16509..b88b0b5 100644
    const auto ws    = pl->weaponState();
    const bool melle = (ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H);
    if(other==nullptr) {
-@@ -271,6 +285,9 @@ void PlayerControl::drawVobRay(DbgPainter& p) const {
+@@ -271,6 +286,9 @@ void PlayerControl::drawVobRay(DbgPainter& p) const {
  
  void PlayerControl::tickFocus() {
    currentFocus = findFocus(&currentFocus);
@@ -1731,7 +1778,7 @@ index aa16509..b88b0b5 100644
    setTarget(currentFocus.npc);
  
    if(!ctrl[Action::ActionGeneric])
-@@ -444,6 +461,639 @@ void PlayerControl::clearInput() {
+@@ -444,6 +462,1173 @@ void PlayerControl::clearInput() {
    std::memset(ctrl, 0,sizeof(ctrl));
    std::memset(actrl,0,sizeof(actrl));
    std::memset(wctrl,0,sizeof(wctrl));
@@ -2042,13 +2089,15 @@ index aa16509..b88b0b5 100644
 +  gatherMoveAt  = Gothic::inst().world()->tickCount();
 +  }
 +
-+bool PlayerControl::findGatherTarget(Npc& pl, Item*& item, Npc*& body) const {
++bool PlayerControl::findGatherTarget(Npc& pl, Item*& item, Npc*& body, float radius) const {
 +  auto w = Gothic::inst().world();
 +  item = nullptr;
 +  body = nullptr;
 +  float best = 0;
++  // Пропуск: что уже не удалось взять в этом сборе, а в пути - и в прошлых
 +  auto  skip = [this](const void* p) {
-+    return std::find(gatherSkip.begin(),gatherSkip.end(),p)!=gatherSkip.end();
++    return std::find(gatherSkip.begin(),gatherSkip.end(),p)!=gatherSkip.end() ||
++           std::find(travelSkip.begin(),travelSkip.end(),p)!=travelSkip.end();
 +    };
 +  const auto pos = pl.position();
 +  // Перепад высоты - с запасом на склон, но не этаж выше
@@ -2057,7 +2106,7 @@ index aa16509..b88b0b5 100644
 +    };
 +  // Только бесхозное: чужое (владелец или гильдия) берётся вручную, осознанно - это кража.
 +  // Не только то, что видно из глаз: за деревом, кустом, углом - если туда можно дойти
-+  w->detectItem(pos, gatherRadius, [&](Item& it) {
++  w->detectItem(pos, radius, [&](Item& it) {
 +    if(skip(&it) || high(it.position(),160.f) || !isGatherable(pl,it))
 +      return;
 +    const float qd = pl.qDistTo(it);
@@ -2070,7 +2119,7 @@ index aa16509..b88b0b5 100644
 +    best = qd;
 +    });
 +  // Мёртвые (не оглушённые): то, что даёт обыск
-+  w->detectNpc(pos, gatherRadius, [&](Npc& n) {
++  w->detectNpc(pos, radius, [&](Npc& n) {
 +    if(&n==&pl || !n.isDead() || skip(&n))
 +      return;
 +    if(!n.inventory().iterator(Inventory::T_Ransack).isValid())
@@ -2115,6 +2164,11 @@ index aa16509..b88b0b5 100644
 +  if(pl!=nullptr && !pl->isAiQueueEmpty())
 +    pl->clearAiQueue();
 +  Tempest::Log::i("[g2m] gather: stop, taken=", int(gatherTaken));
++  // В пути: что не удалось взять, больше не манит с дороги
++  if(travelOn==TravelMode::Run)
++    travelSkip.insert(travelSkip.end(),gatherSkip.begin(),gatherSkip.end());
++  gatherRange = gatherRadius;
++  gatherQuiet = false;
 +  if(!report && gatherTaken==0)
 +    return;
 +  if(gatherTaken>0)
@@ -2133,7 +2187,7 @@ index aa16509..b88b0b5 100644
 +      Item* it = nullptr;
 +      Npc*  bd = nullptr;
 +      gatherAvail = !pl.isDown() && !pl.isSwim() && !pl.isDive() && pl.interactive()==nullptr &&
-+                    !dlg.isActive() && findGatherTarget(pl,it,bd) && !isAttacked(pl);
++                    !dlg.isActive() && findGatherTarget(pl,it,bd,gatherRadius) && !isAttacked(pl);
 +      }
 +    return;
 +    }
@@ -2172,8 +2226,8 @@ index aa16509..b88b0b5 100644
 +        pl.clearAiQueue();
 +      return;
 +      }
-+    if(!findGatherTarget(pl,gatherItem,gatherBody)) {
-+      stopGather(true);
++    if(!findGatherTarget(pl,gatherItem,gatherBody,gatherRange)) {
++      stopGather(!gatherQuiet);
 +      return;
 +      }
 +    // До 20 м: время на дорогу - по расстоянию, в обход - с запасом
@@ -2245,6 +2299,525 @@ index aa16509..b88b0b5 100644
 +  gatherBody     = nullptr;
 +  gatherDeadline = now+3000;
 +  pl.aiPush(AiQueue::aiPlayAnim("T_PLUNDER"));
++  }
++
++// Gothic II Mobile: «Путь» - быстрое перемещение к точке на карте (docs/CONTROLS.md, «Путь»)
++static const uint64_t TravelFadeOut  = 450;
++static const uint64_t TravelFadeHold = 450;
++static const uint64_t TravelFadeIn   = 650;
++
++const char* PlayerControl::travelBlocked(bool instant) const {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  if(pl==nullptr || pl->isDead())
++    return "Сейчас нельзя";
++  if(pl->isDown())
++    return "Сначала нужно прийти в себя";
++  if(pl->isSwim() || pl->isDive())
++    return "Сначала выберись из воды";
++  if(pl->isInAir() || pl->isFalling() || pl->isJump())
++    return "Сейчас нельзя";
++  if(pl->interactive()!=nullptr)
++    return "Сначала встань";
++  if(dlg.isActive())
++    return "Сначала закончи разговор";
++  if(instant && isAttacked(*pl))
++    return "На тебя нападают - мгновенно не уйти";
++  return nullptr;
++  }
++
++bool PlayerControl::startTravel(const WayPoint& at, const WayPoint& way, std::string_view name, bool instant) {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  if(pl==nullptr)
++    return false;
++  if(auto why = travelBlocked(instant)) {
++    Gothic::inst().onPrint(toCp1251(why));
++    return false;
++    }
++  stopTravel(nullptr);
++  stopGather(false);
++  const uint64_t now = w->tickCount();
++  travelOn       = instant ? TravelMode::Instant : TravelMode::Run;
++  travelWorld    = w;
++  travelAt       = &at;
++  travelWay      = &way;
++  travelLabel    = std::string(name);
++  travelRoute.clear();
++  travelIdx      = 0;
++  travelPushed   = false;
++  travelFinal    = false;
++  travelPushAt   = 0;
++  travelStuck    = 0;
++  travelFoe      = nullptr;
++  travelTalk     = nullptr;
++  travelTalks    = 0;
++  travelHealAt   = 0;
++  travelWide     = false;
++  travelIgnore.clear();
++  travelSkip.clear();
++  travelMovePos  = pl->position();
++  travelStuckPos = pl->position();
++  travelMoveAt   = now;
++  travelLootAt   = now+1500;
++  travelSetState(instant ? TravelState::Fade : TravelState::Go, now);
++  if(!instant) {
++    // В пути - бегом: шаг и подкрадывание - для прогулки, не для дороги
++    pl->setWalkMode(WalkBit::WM_Run);
++    }
++  Tempest::Log::i("[g2m] travel: ", instant ? "instant" : "run", " to \"", travelLabel, "\" (", at.name, ")");
++  return true;
++  }
++
++void PlayerControl::stopTravel(const char* why) {
++  if(travelOn==TravelMode::None)
++    return;
++  const bool run = (travelOn==TravelMode::Run);
++  travelOn = TravelMode::None;
++  if(run) {
++    if(gatherOn)
++      stopGather(false);
++    auto w  = Gothic::inst().world();
++    auto pl = w ? w->player() : nullptr;
++    if(pl!=nullptr && w==travelWorld && !pl->isAiQueueEmpty())
++      pl->clearAiQueue();
++    }
++  travelRoute.clear();
++  travelSkip.clear();
++  travelIgnore.clear();
++  travelFoe  = nullptr;
++  travelTalk = nullptr;
++  Tempest::Log::i("[g2m] travel: stop", why!=nullptr ? " - " : "", why!=nullptr ? why : "");
++  if(why!=nullptr)
++    Gothic::inst().onPrint(toCp1251(why));
++  }
++
++void PlayerControl::travelSetState(TravelState st, uint64_t now) {
++  travelSt      = st;
++  travelStateAt = now;
++  }
++
++float PlayerControl::travelLeft() const {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  if(travelOn!=TravelMode::Run || pl==nullptr || w!=travelWorld)
++    return 0;
++  Tempest::Vec3 prev = pl->position();
++  float         sum  = 0;
++  for(size_t i=travelIdx; i<travelRoute.size(); ++i) {
++    const auto p = travelRoute[i]->position();
++    sum += std::sqrt(qDistXZ(prev,p));
++    prev = p;
++    }
++  return sum + std::sqrt(qDistXZ(prev,travelAt->position()));
++  }
++
++float PlayerControl::travelFade() const {
++  auto w = Gothic::inst().world();
++  if(travelOn!=TravelMode::Instant || w==nullptr)
++    return 0.f;
++  const uint64_t t = w->tickCount()-travelStateAt;
++  if(!travelFinal)
++    return std::clamp(float(t)/float(TravelFadeOut), 0.f, 1.f);
++  if(t<TravelFadeHold)
++    return 1.f;
++  return std::clamp(1.f-float(t-TravelFadeHold)/float(TravelFadeIn), 0.f, 1.f);
++  }
++
++void PlayerControl::onSaveGame() {
++  // Ход героя по очереди ИИ (путь, сбор) сохранился бы с ним: после загрузки, без нашего хода, герой шёл бы
++  // сам и не слушался джойстика. Путь продолжится заново, когда сохранение кончится
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  if(pl==nullptr)
++    return;
++  if(gatherOn)
++    stopGather(false);
++  if(travelOn==TravelMode::Run) {
++    if(!pl->isAiQueueEmpty())
++      pl->clearAiQueue();
++    travelPushed = false;
++    }
++  }
++
++bool PlayerControl::isHeroAttacked() const {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  return pl!=nullptr && isAttacked(*pl);
++  }
++
++bool PlayerControl::travelIgnored(const Npc& npc, uint64_t now) const {
++  for(auto& i:travelIgnore)
++    if(i.first==&npc && i.second>now)
++      return true;
++  return false;
++  }
++
++Npc* PlayerControl::travelEnemy(Npc& pl, bool& guard) const {
++  // Враг в пути: нападает на героя или напарника (до 15 м), враждебный зверь или орк рядом (9 м, видно).
++  // Нападает не враг по гильдии (стража, горожанин) - с ним не драться: путь прерывается (guard)
++  auto w = Gothic::inst().world();
++  const uint64_t now  = w->tickCount();
++  auto&          sc   = w->script();
++  Npc*           ret  = nullptr;
++  Npc*           cur  = nullptr;
++  float          best = 0;
++  guard = false;
++  w->detectNpc(pl.position(), 1500, [&](Npc& o) {
++    if(&o==&pl || o.isDown() || o.isDead() || sc.isHired(o) || travelIgnored(o,now))
++      return;
++    const float qd  = pl.qDistTo(o);
++    Npc*        tg  = o.target();
++    if(o.isAttack() && tg==&pl) {
++      if(o.isHuman() && !o.isEnemy(pl)) {
++        guard = true;
++        return;
++        }
++      }
++    else if(o.isAttack() && tg!=nullptr && !tg->isDown() && sc.isHired(*tg)) {
++      if(o.isHuman() && !o.isEnemy(pl))
++        return; // напарник дерётся с мирным - не наше дело в пути
++      }
++    else if(o.isHuman() || !o.isEnemy(pl) || qd>900.f*900.f ||
++            std::abs(o.position().y-pl.position().y)>400.f || !pl.canSeeNpc(o,true)) {
++      return;
++      }
++    if(&o==pl.target())
++      cur = &o;
++    if(ret==nullptr || qd<best) {
++      ret  = &o;
++      best = qd;
++      }
++    });
++  // Не перескакивать между врагами без причины
++  return cur!=nullptr ? cur : ret;
++  }
++
++void PlayerControl::tickTravel(Npc& pl) {
++  if(travelOn==TravelMode::None)
++    return;
++  auto w = Gothic::inst().world();
++  if(w!=travelWorld || pl.isDead()) {
++    stopTravel(nullptr);
++    return;
++    }
++  const uint64_t now = w->tickCount();
++  if(travelOn==TravelMode::Instant)
++    tickTravelFade(pl,now); else
++    tickTravelRun(pl,now);
++  }
++
++void PlayerControl::tickTravelFade(Npc& pl, uint64_t now) {
++  const uint64_t t = now-travelStateAt;
++  if(!travelFinal) {
++    if(t<TravelFadeOut)
++      return;
++    // Экран чёрный: перенос героя, отряд - рядом
++    pl.clearAiQueue();
++    pl.setPosition(travelAt->position());
++    const auto dir = travelAt->direction();
++    if(dir.x*dir.x+dir.z*dir.z>0.01f)
++      pl.setDirection(dir);
++    pl.updateTransform();
++    if(auto c = Gothic::inst().camera())
++      c->reset(&pl);
++    travelWorld->script().squadArrive();
++    travelFinal   = true;
++    travelPushed  = false;
++    travelStateAt = now;
++    Tempest::Log::i("[g2m] travel: arrived (instant) \"", travelLabel, "\"");
++    return;
++    }
++  if(t>=TravelFadeHold && !travelPushed) {
++    travelPushed = true;
++    Gothic::inst().onPrint(toCp1251("Ты на месте: " + travelLabel));
++    }
++  if(t>=TravelFadeHold+TravelFadeIn)
++    stopTravel(nullptr);
++  }
++
++void PlayerControl::tickTravelRun(Npc& pl, uint64_t now) {
++  auto w = Gothic::inst().world();
++  // Игрок взялся за управление (кнопки и джойстик прерывают путь сами, здесь - клавиатура и геймпад)
++  if(movement.forwardBackward.any() || movement.strafeRightLeft.any() || movement.turnRightLeft.any()) {
++    stopTravel("Путь прерван");
++    return;
++    }
++  if(pl.isDown()) {
++    stopTravel("Путь прерван");
++    return;
++    }
++  if(inv.isActive())
++    return; // сумка, сундук, торговля: путь ждёт
++
++  // Разговор: кто-то заговорил по дороге. Стража не пропускает - путь прерван; иначе - дальше
++  if(dlg.isActive()) {
++    if(travelSt!=TravelState::Talk) {
++      if(gatherOn)
++        stopGather(false);
++      // Остановиться: разговор начинается и с бегущим героем. Очередь ИИ - не трогать, в ней реплики героя
++      pl.clearGoTo();
++      travelTalk   = dlg.touchPartner();
++      travelPushed = false;
++      travelSetState(TravelState::Talk,now);
++      }
++    return;
++    }
++  if(travelSt==TravelState::Talk) {
++    Focus f;
++    f.npc = travelTalk;
++    Npc* who = travelTalk!=nullptr ? w->validateFocus(f).npc : nullptr;
++    travelTalk = nullptr;
++    // Страж прохода (ворота города, верхний квартал, перевал, замок): пропустил он или нет, дальше игрок решает сам
++    const size_t zsGuard = w->script().findSymbolIndex("ZS_GUARD_PASSAGE");
++    if(who!=nullptr && zsGuard!=size_t(-1) && (who->isInState(zsGuard) || who->hasRoutineState(zsGuard))) {
++      stopTravel("Разговор со стражей - путь прерван");
++      return;
++      }
++    if(travelTalkAt!=0 && now<travelTalkAt+60000 && qDistXZ(pl.position(),travelTalkPos)<1500.f*1500.f)
++      ++travelTalks; else
++      travelTalks = 1;
++    travelTalkAt  = now;
++    travelTalkPos = pl.position();
++    if(travelTalks>=3) {
++      stopTravel("Тебя всё время останавливают - путь прерван");
++      return;
++      }
++    travelSetState(TravelState::Go,now);
++    travelPushAt = now+800; // постоять мгновение после разговора
++    travelMoveAt = now+800;
++    return;
++    }
++
++  // Враг: бой ведёт автобой (tickAutoFight). Не одолеть за 45 с (на скале, над водой) - дальше своей дорогой
++  bool guard = false;
++  Npc* foe   = (pl.isSwim() || pl.isDive()) ? nullptr : travelEnemy(pl,guard);
++  if(guard) {
++    stopTravel("На тебя напали - путь прерван");
++    return;
++    }
++  if(foe!=nullptr) {
++    travelCalmAt = now;
++    if(travelSt!=TravelState::Fight) {
++      if(gatherOn)
++        stopGather(false);
++      if(!pl.isAiQueueEmpty())
++        pl.clearAiQueue();
++      travelPushed = false;
++      travelSetState(TravelState::Fight,now);
++      Tempest::Log::i("[g2m] travel: fight \"", foe->displayName(), "\"");
++      }
++    if(foe!=travelFoe) {
++      travelFoe   = foe;
++      travelFoeAt = now;
++      }
++    else if(now>travelFoeAt+45000) {
++      travelIgnore.emplace_back(foe,now+60000);
++      travelFoe = nullptr;
++      Tempest::Log::i("[g2m] travel: give up \"", foe->displayName(), "\"");
++      }
++    return;
++    }
++  if(travelSt==TravelState::Fight) {
++    // Врагов нет 1,2 с: обобрать побеждённых (в 20 м), подлечиться, дальше
++    if(now<travelCalmAt+1200 || pl.isAttackAnim())
++      return;
++    travelFoe    = nullptr;
++    travelSetState(TravelState::Go,now);
++    travelLootAt = now;
++    travelWide   = true;
++    }
++
++  if(travelSt==TravelState::Loot) {
++    if(gatherOn)
++      return; // идёт сбор (tickGather)
++    travelSetState(TravelState::Go,now);
++    travelLootAt = now+2500;
++    travelPushed = false;
++    return;
++    }
++  if(gatherOn) {
++    // «Собрать» нажали в пути - сначала сбор
++    travelSetState(TravelState::Loot,now);
++    travelPushed = false;
++    return;
++    }
++
++  // Оружие в руках (после боя) - убрать: с ним бег медленнее, а добычу не поднять
++  if(pl.weaponState()!=WeaponState::NoWeapon) {
++    if(!pl.isAiQueueEmpty())
++      pl.clearAiQueue();
++    wctrl[WeaponClose] = true;
++    travelPushed = false;
++    travelMoveAt = now;
++    return;
++    }
++
++  // Подлечиться, пока стоит (до начала пути): меньше 40 % - зелье, сначала слабые; зелий нет, а здоровья
++  // меньше четверти - дальше не идти
++  const int hp    = pl.attribute(ATR_HITPOINTS);
++  const int hpMax = std::max(1, pl.attribute(ATR_HITPOINTSMAX));
++  if(!travelPushed && hp*10<hpMax*4 && now>=travelHealAt) {
++    travelHealAt = now+2500;
++    if(drinkHealPotion()) {
++      travelPushAt = now+1500;
++      travelMoveAt = now+1500;
++      return;
++      }
++    if(hp*4<hpMax) {
++      stopTravel("Мало здоровья и нет зелий - путь прерван");
++      return;
++      }
++    }
++
++  // Добыча у дороги: по пути - в 12 м, после боя - в 20 м (тела побеждённых)
++  if(now>=travelLootAt && !pl.isSwim() && !pl.isDive()) {
++    travelLootAt = now+800;
++    const float r = travelWide ? gatherRadius : 1200.f;
++    travelWide = false;
++    Item* it = nullptr;
++    Npc*  bd = nullptr;
++    if(findGatherTarget(pl,it,bd,r)) {
++      if(!pl.isAiQueueEmpty())
++        pl.clearAiQueue();
++      travelPushed = false;
++      startGather();
++      gatherRange = r;
++      gatherQuiet = true;
++      travelSetState(TravelState::Loot,now);
++      Tempest::Log::i("[g2m] travel: loot");
++      return;
++      }
++    }
++
++  travelGo(pl,now);
++  }
++
++void PlayerControl::travelGo(Npc& pl, uint64_t now) {
++  auto       w    = Gothic::inst().world();
++  const auto pos  = pl.position();
++  const auto goal = travelAt->position();
++  if(qDistXZ(pos,goal)<300.f*300.f && std::abs(goal.y-pos.y)<400.f) {
++    const std::string name = travelLabel;
++    stopTravel(nullptr);
++    Gothic::inst().onPrint(toCp1251("Ты на месте: " + name));
++    return;
++    }
++  if(now<travelPushAt)
++    return;
++  travelProgress(pl);
++  if(travelUnstuck(pl,now))
++    return;
++
++  if(!travelPushed || pl.isAiQueueEmpty()) {
++    // Путь от того места, где герой сейчас: в начале, после боя, сбора, разговора или когда ход кончился
++    if(!travelPushed) {
++      travelMovePos = pos;
++      travelMoveAt  = now;
++      }
++    travelPushAt = now+1500;
++    if(!pl.isAiQueueEmpty())
++      pl.clearAiQueue();
++    if(travelAt!=travelWay && (travelFinal || qDistXZ(pos,travelWay->position())<400.f*400.f)) {
++      // От сети путей - к самому месту (метка разработчиков, свободная точка)
++      travelFinal = true;
++      pl.goToPos(goal);
++      }
++    else {
++      travelRoute = w->wayTo(pl,*travelWay).points();
++      travelIdx   = 0;
++      if(!travelRoute.empty()) {
++        pl.aiPush(AiQueue::aiGoToPoint(*travelWay));
++        }
++      else if(pl.canRayHitPoint(travelWay->position()+Tempest::Vec3(0.f,60.f,0.f),true,6000.f)) {
++        pl.goToPos(travelWay->position());
++        }
++      else {
++        stopTravel("Туда нет дороги");
++        return;
++        }
++      }
++    travelPushed = true;
++    }
++  }
++
++void PlayerControl::travelProgress(Npc& pl) {
++  const auto   pos = pl.position();
++  const size_t end = std::min(travelRoute.size(), travelIdx+8);
++  for(size_t i=travelIdx; i<end; ++i)
++    if(qDistXZ(pos,travelRoute[i]->position())<400.f*400.f)
++      travelIdx = i+1;
++  }
++
++bool PlayerControl::travelUnstuck(Npc& pl, uint64_t now) {
++  // Застрял (4 с почти на месте): путь заново -> через следующую точку пути -> перенос на шаг к ней, если её
++  // видно (не сквозь стену и не за запертые ворота) -> стоп
++  const auto pos = pl.position();
++  if(!travelPushed || pl.isInAir() || pl.isFalling() || pl.isSwim() || pl.isDive()) {
++    travelMovePos = pos;
++    travelMoveAt  = now;
++    return false;
++    }
++  if(qDistXZ(pos,travelMovePos)>150.f*150.f) {
++    travelMovePos = pos;
++    travelMoveAt  = now;
++    if(qDistXZ(pos,travelStuckPos)>800.f*800.f) {
++      travelStuck    = 0;
++      travelStuckPos = pos;
++      }
++    return false;
++    }
++  if(now<travelMoveAt+4000)
++    return false;
++  travelMoveAt = now;
++  ++travelStuck;
++  Tempest::Log::i("[g2m] travel: stuck ", int(travelStuck));
++
++  if(travelFinal && qDistXZ(pos,travelAt->position())<2000.f*2000.f) {
++    // У самого места: метка не на земле или за оградой - пришёл
++    const std::string name = travelLabel;
++    stopTravel(nullptr);
++    Gothic::inst().onPrint(toCp1251("Ты на месте: " + name));
++    return true;
++    }
++
++  const WayPoint* next  = travelIdx<travelRoute.size()   ? travelRoute[travelIdx]   : nullptr;
++  const WayPoint* next2 = travelIdx+1<travelRoute.size() ? travelRoute[travelIdx+1] : next;
++  switch(travelStuck) {
++    case 1:
++      travelPushed = false;
++      travelPushAt = now;
++      break;
++    case 2:
++      // Через точку пути за следующей: дальше путь заново, когда герой до неё дойдёт
++      if(next2!=nullptr && next2!=travelWay) {
++        pl.clearAiQueue();
++        pl.aiPush(AiQueue::aiGoToPoint(*next2));
++        travelPushed = true;
++        travelPushAt = now+1500;
++        } else {
++        travelPushed = false;
++        travelPushAt = now;
++        }
++      break;
++    case 3: {
++      const auto np = next!=nullptr ? next->position() : Tempest::Vec3();
++      if(next!=nullptr && qDistXZ(pos,np)<1200.f*1200.f && std::abs(np.y-pos.y)<300.f &&
++         pl.canRayHitPoint(np+Tempest::Vec3(0.f,100.f,0.f),true,1500.f)) {
++        pl.clearAiQueue();
++        pl.setPosition(np);
++        pl.updateTransform();
++        Tempest::Log::i("[g2m] travel: hop to ", next->name);
++        }
++      travelPushed = false;
++      travelPushAt = now;
++      break;
++      }
++    default:
++      stopTravel("Дальше не пройти - путь прерван");
++      return true;
++    }
++  return true;
 +  }
 +
 +void PlayerControl::applyTouchMove() {
@@ -2329,17 +2902,25 @@ index aa16509..b88b0b5 100644
 +  // Палец на джойстике или кнопке боя - герой слушается игрока; отпустил - автобой продолжает
 +  const bool manual = touchAttack || touchBlock || touchFwdAct!=Action::Idle || touchSideAct!=Action::Idle ||
 +                      movement.forwardBackward.any() || movement.strafeRightLeft.any() || movement.turnRightLeft.any();
++  // В пути («Путь» бегом) герой дерётся сам, даже если автобой выключен: с напавшими и зверями у дороги
++  const bool travel = (travelOn==TravelMode::Run && travelSt==TravelState::Fight);
 +  Npc* tg = nullptr;
-+  if(autoFight && !manual && !dlg.isActive() && !pl.isSwim() && !pl.isDive())
-+    tg = findAutoFightTarget(pl);
++  if((autoFight || travel) && !manual && !dlg.isActive() && !pl.isSwim() && !pl.isDive()) {
++    bool guard = false;
++    tg = travel ? travelEnemy(pl,guard) : findAutoFightTarget(pl);
++    }
 +
 +  const auto ws    = pl.weaponState();
 +  const bool melee = (ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H);
 +  if(tg!=nullptr && ws==WeaponState::NoWeapon) {
-+    // Оружие достаём, только если на героя уже напали: убранный меч - тоже решение игрока
-+    if(tg->target()==&pl && tg->isAttack())
++    // Оружие достаём, только если на героя уже напали: убранный меч - тоже решение игрока. В пути - сразу
++    if(travel || (tg->target()==&pl && tg->isAttack()))
 +      wctrl[WeaponMele] = true;
 +    tg = nullptr;
++    }
++  else if(tg!=nullptr && travel && !melee) {
++    // В пути с луком или руной в руках - на ближний бой: автобой ведёт только его
++    wctrl[WeaponMele] = true;
 +    }
 +
 +  if(tg==nullptr || !melee) {
@@ -2371,17 +2952,18 @@ index aa16509..b88b0b5 100644
    }
  
  void PlayerControl::marvinF8(uint64_t dt) {
-@@ -579,6 +1229,9 @@ bool PlayerControl::tickMove(uint64_t dt) {
+@@ -579,6 +1764,10 @@ bool PlayerControl::tickMove(uint64_t dt) {
    if(pl==nullptr)
      return true;
  
 +#if defined(__MOBILE_PLATFORM__)
++  tickTravel(*pl);
 +  tickGather(*pl);
 +#endif
    implMove(dt);
  
    float runAngle = pl->runAngle();
-@@ -675,6 +1328,12 @@ void PlayerControl::implMove(uint64_t dt) {
+@@ -675,6 +1864,12 @@ void PlayerControl::implMove(uint64_t dt) {
        }
      }
  
@@ -2395,18 +2977,20 @@ index aa16509..b88b0b5 100644
      runAngleDest = 0;
      return;
 diff --git a/common/game/playercontrol.h b/common/game/playercontrol.h
-index fb8d625..ae5f8b3 100644
+index fb8d625..6904be2 100644
 --- a/common/game/playercontrol.h
 +++ b/common/game/playercontrol.h
-@@ -5,6 +5,7 @@
+@@ -5,6 +5,9 @@
  #include "constants.h"
  
  #include <array>
++#include <string>
++#include <string_view>
 +#include <vector>
  
  class DialogMenu;
  class InventoryMenu;
-@@ -15,6 +16,7 @@ class Npc;
+@@ -15,6 +18,7 @@ class Npc;
  class Item;
  class Camera;
  class Gothic;
@@ -2414,7 +2998,7 @@ index fb8d625..ae5f8b3 100644
  
  class PlayerControl final {
    public:
-@@ -48,6 +50,30 @@ class PlayerControl final {
+@@ -48,6 +52,60 @@ class PlayerControl final {
      bool  tickMove(uint64_t dt);
      bool  tickCameraMove(uint64_t dt);
  
@@ -2441,11 +3025,41 @@ index fb8d625..ae5f8b3 100644
 +    bool  isGathering() const { return gatherOn; }
 +    void  startGather();
 +    void  stopGather(bool report);
++    // «Путь»: к точке бегом по сети путей (по дороге - бой с напавшими и сбор добычи) или мгновенно
++    // (затемнение и перенос). at - место прибытия, way - точка сети путей у него
++    enum class TravelMode : uint8_t {
++      None,
++      Run,
++      Instant,
++      };
++    enum class TravelState : uint8_t {
++      Go,
++      Fight,
++      Loot,
++      Talk,
++      Fade,
++      };
++    // Почему сейчас нельзя отправиться в путь; nullptr - можно
++    const char* travelBlocked(bool instant) const;
++    bool  startTravel(const WayPoint& at, const WayPoint& way, std::string_view name, bool instant);
++    // Прервать путь; why - сообщение игроку (UTF-8), nullptr - молча
++    void  stopTravel(const char* why);
++    auto  travelMode()  const -> TravelMode  { return travelOn; }
++    auto  travelState() const -> TravelState { return travelSt; }
++    auto  travelName()  const -> const std::string& { return travelLabel; }
++    // Сколько осталось по пути, см (бегом)
++    float travelLeft() const;
++    // Затемнение экрана при мгновенном перемещении: 0 - нет, 1 - чёрный экран
++    float travelFade() const;
++    // Перед сохранением: ход героя по очереди ИИ (путь, сбор) не должен попасть в сохранение
++    void  onSaveGame();
++    // На героя нападают (быстрое сохранение в бою запрещено)
++    bool  isHeroAttacked() const;
 +
    private:
      enum WeaponAction : uint8_t {
        WeaponClose,
-@@ -153,6 +179,30 @@ class PlayerControl final {
+@@ -153,6 +211,61 @@ class PlayerControl final {
      int            rotationAni    = 0;
      bool           g2Ctrl         = false;
  
@@ -2471,12 +3085,43 @@ index fb8d625..ae5f8b3 100644
 +    bool           gatherRouted   = false;
 +    Tempest::Vec3  gatherMovePos;
 +    uint64_t       gatherMoveAt   = 0;
++    float          gatherRange    = 2000.f; // радиус сбора: 20 м, по пути - ближе
++    bool           gatherQuiet    = false;  // сбор по пути: без «Нечего собрать»
 +    static constexpr float   gatherRadius = 2000.f;
++
++    TravelMode     travelOn       = TravelMode::None;
++    TravelState    travelSt       = TravelState::Go;
++    const World*   travelWorld    = nullptr;
++    const WayPoint* travelAt      = nullptr;
++    const WayPoint* travelWay     = nullptr;
++    std::string    travelLabel;
++    std::vector<const WayPoint*> travelRoute;
++    size_t         travelIdx      = 0;
++    bool           travelPushed   = false;  // путь отдан ходу героя
++    bool           travelFinal    = false;  // последний шаг: от сети путей к месту прибытия
++    uint64_t       travelStateAt  = 0;
++    uint64_t       travelPushAt   = 0;
++    uint64_t       travelMoveAt   = 0;
++    Tempest::Vec3  travelMovePos;
++    Tempest::Vec3  travelStuckPos;
++    uint8_t        travelStuck    = 0;
++    uint64_t       travelLootAt   = 0;
++    uint64_t       travelCalmAt   = 0;      // последний раз рядом был враг
++    const Npc*     travelFoe      = nullptr;
++    uint64_t       travelFoeAt    = 0;      // с какого момента бой с этим врагом
++    std::vector<std::pair<const Npc*,uint64_t>> travelIgnore; // кого бросили (не достать) и до какого времени
++    std::vector<const void*> travelSkip;    // что сбор не смог взять - больше не сворачивать
++    Npc*           travelTalk     = nullptr;
++    Tempest::Vec3  travelTalkPos;
++    uint64_t       travelTalkAt   = 0;
++    uint8_t        travelTalks    = 0;
++    uint64_t       travelHealAt   = 0;
++    bool           travelWide     = false;  // после боя - собрать шире (тела побеждённых)
 +
      DialogMenu&    dlg;
      InventoryMenu& inv;
  
-@@ -177,6 +227,22 @@ class PlayerControl final {
+@@ -177,6 +290,31 @@ class PlayerControl final {
      void           setAnimRotate (Npc& pl, float rotation, int anim, bool force, uint64_t dt);
      void           processAutoRotate(Npc& pl, float& rot, uint64_t dt);
  
@@ -2486,7 +3131,6 @@ index fb8d625..ae5f8b3 100644
 +    bool           tickAutoFight(Npc& pl);
 +    Npc*           findAutoFightTarget(Npc& pl) const;
 +    bool           isAttacked(Npc& pl) const;
-+    bool           findGatherTarget(Npc& pl, Item*& item, Npc*& body) const;
 +    bool           isGatherable(Npc& pl, Item& it) const;
 +    bool           gatherSees(Npc& pl, const Tempest::Vec3& at) const;
 +    bool           gatherReachable(Npc& pl, const Tempest::Vec3& at) const;
@@ -2494,16 +3138,258 @@ index fb8d625..ae5f8b3 100644
 +    void           gatherGo(Npc& pl, bool route);
 +    float          gatherReach(Npc& pl, Npc& body) const;
 +    void           tickGather(Npc& pl);
++    bool           findGatherTarget(Npc& pl, Item*& item, Npc*& body, float radius) const;
++    void           tickTravel(Npc& pl);
++    void           tickTravelRun(Npc& pl, uint64_t now);
++    void           tickTravelFade(Npc& pl, uint64_t now);
++    void           travelGo(Npc& pl, uint64_t now);
++    void           travelSetState(TravelState st, uint64_t now);
++    void           travelProgress(Npc& pl);
++    bool           travelUnstuck(Npc& pl, uint64_t now);
++    Npc*           travelEnemy(Npc& pl, bool& guard) const;
++    bool           travelIgnored(const Npc& npc, uint64_t now) const;
 +    bool           drinkPotion(const char* const* names, size_t count);
 +
  
      //////////////////////////////////
      // Helper functions for movement
+diff --git a/common/game/travelpoints.cpp b/common/game/travelpoints.cpp
+new file mode 100644
+index 0000000..bda359e
+--- /dev/null
++++ b/common/game/travelpoints.cpp
+@@ -0,0 +1,158 @@
++#include "travelpoints.h"
++
++#include <Tempest/Log>
++
++#include <cctype>
++#include <iterator>
++
++#include "world/waypoint.h"
++#include "world/world.h"
++
++using namespace Tempest;
++
++// Gothic II Mobile: карты - те же текстуры и координаты, что у карт-предметов в скриптах игры
++// (ItWr_Map_NewWorld, ItWr_Map_NewWorld_City, ItWr_Map_OldWorld, ItWr_Map_AddonWorld)
++static const TravelPoints::MapInfo maps[TravelPoints::M_Count] = {
++  {"newworld.zen",   "Map_NewWorld.tga",      -28000, 50500, 95500, -42500, "Хоринис"},
++  {"newworld.zen",   "Map_NewWorld_City.tga",  -6900, 11800, 21600,  -9400, "Город Хоринис"},
++  {"oldworld.zen",   "Map_OldWorld.tga",      -78500, 47500, 54000, -53000, "Долина Рудников"},
++  {"addonworld.zen", "Map_AddonWorld.tga",    -47783, 36300, 43949, -32300, "Яркендар"},
++  };
++
++using P = TravelPoints;
++
++// Порядок не важен: точки ищутся по имени при каждом открытии карты
++static const TravelPoints::Point points[] = {
++  // Хоринис: главные места
++  {P::M_Island, true,  "Таверна «Мёртвая гарпия»", {"TAVERNE", "NW_TAVERNE_04", "NW_TELEPORTSTATION_TAVERNE"}},
++  {P::M_Island, true,  "Ферма Онара",              {"BIGFARM", "NW_BIGFARM_ALLEE_07"}},
++  {P::M_Island, true,  "Ферма Лобарта",            {"FARM1", "NW_FARM1_OUT_05", "NW_FARM1_LOBART"}},
++  {P::M_Island, true,  "Монастырь",                {"KLOSTER"}},
++  {P::M_Island, true,  "Башня Ксардаса",           {"XARDAS", "NW_XARDAS_START"}},
++  {P::M_Island, true,  "Маяк Джека",               {"LIGHTHOUSE"}},
++  {P::M_Island, true,  "Раскопки магов Воды",      {"PORTAL", "NW_TROLLAREA_PORTAL_03"}},
++  // перевал: дорога от фермы Бенгара (ворота перевала открывает сюжет)
++  {P::M_Island, true,  "Дорога к перевалу",        {"NW_FARM3_PATH_LEVELCHANGE_02"}},
++  // Хоринис: второстепенные места и перекрёстки
++  {P::M_Island, false, "Ферма Секоба",             {"FARM4", "NW_FARM4_SEKOB"}},
++  {P::M_Island, false, "Ферма Бенгара",            {"FARM3", "NW_FARM3_BENGAR"}},
++  {P::M_Island, false, "Ферма Акила",              {"FARM2", "NW_FARM2_PATH_02"}},
++  {P::M_Island, false, "Стоянка Лестера",          {"LESTER"}},
++  {P::M_Island, false, "Перекрёсток у полей Онара", {"BIGCROSS"}},
++  {P::M_Island, false, "Мельница Онара",           {"BIGMILL"}},
++  {P::M_Island, false, "Застава ополчения",        {"NW_CITY_TO_FOREST_01"}},
++  {P::M_Island, false, "Каменный круг",            {"STONES"}},
++  {P::M_Island, false, "Солнечный круг",           {"RITUAL", "NW_TROLLAREA_RITUAL_04"}},
++  {P::M_Island, false, "Склеп",                    {"CRYPT"}},
++  {P::M_Island, false, "Пещера Сагитты",           {"SAGITTA"}},
++  {P::M_Island, false, "Северный лес",             {"FOREST"}},
++  {P::M_Island, false, "Пещера испытания",         {"MAGECAVE"}},
++  {P::M_Island, false, "Логово Декстера",          {"CASTLEMINE"}},
++  {P::M_Island, false, "Чёрный тролль",            {"TROLL"}},
++
++  // Город Хоринис
++  {P::M_City,   true,  "Рыночная площадь",         {"MARKT", "NW_CITY_MERCHANT_PATH_30"}},
++  {P::M_City,   true,  "Порт",                     {"HAFEN", "NW_CITY_HABOUR_02_B"}},
++  {P::M_City,   true,  "Южные ворота",             {"CITY1"}},
++  {P::M_City,   true,  "Восточные ворота",         {"CITY2"}},
++  {P::M_City,   false, "Казармы",                  {"KASERNE", "NW_CITY_HABOUR_KASERN_MAIN_ENTRY"}},
++  {P::M_City,   false, "Храм Аданоса",             {"NW_CITY_MERCHANT_TEMPLE_FRONT"}},
++  {P::M_City,   false, "Кузница Гарада",           {"NW_CITY_SMITH_ANVIL"}},
++  {P::M_City,   false, "Кабак Корагона",           {"NW_CITY_TAVERN_IN_03"}},
++  {P::M_City,   false, "Портовый кабак",           {"NW_CITY_HABOUR_TAVERN01_SMALLTALK_01"}},
++  {P::M_City,   false, "Бедный квартал",           {"NW_CITY_HABOUR_POOR_AREA_PATH_01"}},
++  {P::M_City,   false, "Склад в порту",            {"NW_CITY_PATH_HABOUR_16_01"}},
++
++  // Долина Рудников
++  {P::M_Valley, true,  "Замок",                    {"OC_MAGE_CENTER", "OC_CENTER_05"}},
++  {P::M_Valley, true,  "Перевал",                  {"SPAWN_MOLERAT02_SPAWN01", "START"}},
++  {P::M_Valley, true,  "Шахта Фаджета",            {"NEWMINE", "OW_NEWMINE_09"}},
++  {P::M_Valley, true,  "Шахта Маркоса",            {"OW_SAWHUT_MOLERAT_SPAWN01", "OW_MINE2_STRF"}},
++  {P::M_Valley, true,  "Лагерь охотников на драконов", {"OW_DJG_STARTCAMP_01"}},
++  {P::M_Valley, true,  "Болото",                   {"SWAMPDRAGON", "OW_SWAMPDRAGON_01"}},
++  {P::M_Valley, true,  "Каменная крепость",        {"ROCKDRAGON", "OW_ROCKDRAGON_09"}},
++  {P::M_Valley, true,  "Ледяной край",             {"ICEDRAGON", "OW_ICEDRAGON_01"}},
++  {P::M_Valley, true,  "Вулкан",                   {"FIREDRAGON"}},
++  {P::M_Valley, false, "Шахта Сильвестро",         {"OW_MINE3_LEICHE_01"}},
++  {P::M_Valley, false, "Пещера охотников",         {"VORPOSTEN", "OW_DJG_VORPOSTEN_01"}},
++  {P::M_Valley, false, "Лагерь у болота",          {"OW_DJG_SWAMPCAMP_01"}},
++  {P::M_Valley, false, "Лагерь у скал",            {"OW_DJG_ROCKCAMP_01"}},
++  {P::M_Valley, false, "Лагерь Сильвио",           {"OW_DJG_ICECAMP_01", "OW_ICEREGION_ENTRANCE"}},
++  {P::M_Valley, false, "Хижина Кавалорна",         {"CAVALORN", "OW_CAVALORN_01"}},
++  {P::M_Valley, false, "Каменный круг",            {"OW_DJG_WATCH_STONEHENGE_01"}},
++  {P::M_Valley, false, "Частокол орков",           {"OW_ORCBARRIER_12"}},
++  {P::M_Valley, false, "Башня демонов",            {"DT", "DT_MAINGATE"}},
++
++  // Яркендар
++  {P::M_Jharkendar, true,  "Лагерь магов Воды",    {"ADW_ENTRANCE", "ADW_PORTALTEMPEL_TELEPORTSTATION"}},
++  {P::M_Jharkendar, true,  "Лагерь пиратов",       {"ADW_PIRATECAMP_BEACH_19", "ADW_PIRATECAMP_BEACH_10"}},
++  {P::M_Jharkendar, true,  "Лагерь бандитов",      {"ADW_PATH_TO_BL_02"}},
++  {P::M_Jharkendar, true,  "Храм Аданоса",         {"ADW_ADANOSTEMPEL_TELEPORTSTATION", "ADW_ADANOSTEMPEL_ENTRANCE_13"}},
++  {P::M_Jharkendar, false, "Телепорт у пиратов",   {"ADW_PIRATES_TELEPORTSTATION"}},
++  {P::M_Jharkendar, false, "Юго-восточный телепорт", {"ADW_SOUTHEAST_TELEPORTSTATION"}},
++  {P::M_Jharkendar, false, "Юго-западный телепорт", {"ADW_SOUTHWEST_TELEPORTSTATION"}},
++  {P::M_Jharkendar, false, "Каньон",               {"ADW_CANYON_TELEPORT_PATH_06"}},
++  {P::M_Jharkendar, false, "Болото",               {"ADW_SWAMP_SIT_BENCH_01"}},
++  {P::M_Jharkendar, false, "Хижина отшельника",    {"ADW_VALLEY_PATH_031_HUT", "ADW_VALLEY_BENCH"}},
++  };
++
++static bool sameWorld(std::string_view a, std::string_view b) {
++  if(a.size()!=b.size())
++    return false;
++  for(size_t i=0; i<a.size(); ++i)
++    if(std::tolower(uint8_t(a[i]))!=std::tolower(uint8_t(b[i])))
++      return false;
++  return true;
++  }
++
++const TravelPoints::MapInfo& TravelPoints::info(Map m) {
++  return maps[m<M_Count ? m : M_Island];
++  }
++
++std::vector<TravelPoints::Map> TravelPoints::mapsOf(std::string_view world) {
++  std::vector<Map> ret;
++  for(uint8_t i=0; i<M_Count; ++i)
++    if(sameWorld(maps[i].world,world))
++      ret.push_back(Map(i));
++  return ret;
++  }
++
++Vec2 TravelPoints::toMap(Map m, const Vec3& pos) {
++  auto& mi = info(m);
++  return Vec2((pos.x-float(mi.left))/float(mi.right-mi.left),
++              (pos.z-float(mi.top)) /float(mi.bottom-mi.top));
++  }
++
++void TravelPoints::resolve(World& w, std::vector<Spot>& out) {
++  out.clear();
++  for(auto& pt:points) {
++    if(!sameWorld(info(pt.map).world,w.name()))
++      continue;
++    const WayPoint* at = nullptr;
++    for(auto name:pt.wp) {
++      if(name==nullptr)
++        break;
++      if((at = w.findPoint(name,false))!=nullptr)
++        break;
++      }
++    if(at==nullptr) {
++      Log::i("[g2m] travel: no point for \"",pt.name,"\" (",pt.wp[0],")");
++      continue;
++      }
++    // Бегом ведёт сеть путей: метка разработчиков или свободная точка в ней не состоит - к ближайшей точке сети
++    const WayPoint* way = at;
++    if(!at->isConnected() || at->isFreePoint()) {
++      const auto p = at->position();
++      way = w.findWayPoint(p,[&p](const WayPoint& wp) {
++        return wp.isConnected() && wp.qDistTo(p)<2000.f*2000.f;
++        });
++      if(way==nullptr)
++        way = w.findWayPoint(p,[](const WayPoint& wp) { return wp.isConnected(); });
++      }
++    Spot s;
++    s.point = &pt;
++    s.at    = at;
++    s.way   = way;
++    out.push_back(s);
++    }
++  }
+diff --git a/common/game/travelpoints.h b/common/game/travelpoints.h
+new file mode 100644
+index 0000000..915c632
+--- /dev/null
++++ b/common/game/travelpoints.h
+@@ -0,0 +1,54 @@
++#pragma once
++
++#include <Tempest/Point>
++#include <Tempest/Vec>
++
++#include <cstdint>
++#include <string_view>
++#include <vector>
++
++class World;
++class WayPoint;
++
++// Gothic II Mobile: точки быстрого перемещения («Путь», docs/CONTROLS.md). Имена точек мира - метки
++// разработчиков, которые знает телепорт Marvin («перед монастырём», «южные ворота»), точки рун телепорта и
++// распорядков NPC из скриптов игры. Берётся первое имя, которое нашлось в мире; ненайденные точки не
++// показываются. Места - на дорогах и у входов: не за воротами, которые открывает сюжет.
++class TravelPoints final {
++  public:
++    enum Map : uint8_t {
++      M_Island,     // Хоринис: остров
++      M_City,       // Хоринис: город
++      M_Valley,     // Долина Рудников
++      M_Jharkendar, // Яркендар
++      M_Count
++      };
++
++    struct MapInfo {
++      const char* world;   // файл мира (как World::name, без учёта регистра)
++      const char* texture; // карта игры
++      int32_t     left, top, right, bottom; // как Doc_SetLevelCoords этой карты в скриптах
++      const char* title;   // UTF-8
++      };
++
++    struct Point {
++      Map         map;
++      bool        major;   // главное место - подписано на карте всегда
++      const char* name;    // UTF-8
++      const char* wp[3];
++      };
++
++    struct Spot {
++      const Point*    point = nullptr;
++      const WayPoint* at    = nullptr; // место прибытия
++      const WayPoint* way   = nullptr; // точка сети путей у места - цель пути бегом
++      };
++
++    static const MapInfo&   info(Map m);
++    // Карты текущего мира (у Хориниса - остров и город); пусто - мир без точек
++    static std::vector<Map> mapsOf(std::string_view world);
++    // Положение на карте: 0..1 по ширине и высоте
++    static Tempest::Vec2    toMap(Map m, const Tempest::Vec3& pos);
++    // Все точки текущего мира, найденные в нём
++    static void             resolve(World& w, std::vector<Spot>& out);
++  };
 diff --git a/common/gothic.cpp b/common/gothic.cpp
-index 56c5d58..14729d0 100644
+index 56c5d58..cc5a0b2 100644
 --- a/common/gothic.cpp
 +++ b/common/gothic.cpp
-@@ -149,6 +149,24 @@ Gothic::Gothic(GameModDescriptor desc) {
+@@ -18,6 +18,7 @@
+ 
+ #include "world/objects/npc.h"
+ 
++#include "utils/cp1251.h"
+ #include "utils/fileutil.h"
+ #include "utils/fileext.h"
+ #include "utils/inifile.h"
+@@ -149,6 +150,24 @@ Gothic::Gothic(GameModDescriptor desc) {
      iniFile->set("INTERNAL", "vidResIndex", 0); // full-res
      }
    {
@@ -2528,6 +3414,19 @@ index 56c5d58..14729d0 100644
    defaults.reset(new IniFile());
    defaults->set("GAME", "enableMouse",         1);
    defaults->set("GAME", "mouseSensitivity",    0.5f);
+@@ -644,7 +663,12 @@ void Gothic::updateAnimation(uint64_t dt) {
+   }
+ 
+ void Gothic::quickSave() {
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: имя ячейки - по-русски (шрифты игры - Windows-1251)
++  save("save_slot_0.sav",toCp1251("Быстрое сохранение"));
++#else
+   save("save_slot_0.sav","Quick save");
++#endif
+   }
+ 
+ void Gothic::quickLoad() {
 diff --git a/common/gothic.h b/common/gothic.h
 index 2654cc4..d991c5e 100644
 --- a/common/gothic.h
@@ -2690,10 +3589,26 @@ index 912ea33..e80688b 100644
        bool           rtsmEnabled        = false;
        bool           swrEnabled         = false;
 diff --git a/common/mainwindow.cpp b/common/mainwindow.cpp
-index 52b66d3..529d0d9 100644
+index 52b66d3..37272c4 100644
 --- a/common/mainwindow.cpp
 +++ b/common/mainwindow.cpp
-@@ -18,6 +18,7 @@
+@@ -1,5 +1,7 @@
+ #include "mainwindow.h"
+ 
++#include <cstdio>
++
+ #include <Tempest/Except>
+ #include <Tempest/Painter>
+ 
+@@ -8,6 +10,7 @@
+ #include <Tempest/Layout>
+ #include <Tempest/Application>
+ #include <Tempest/Log>
++#include <Tempest/TextCodec>
+ 
+ #include "ui/dialogmenu.h"
+ #include "ui/menuroot.h"
+@@ -18,10 +21,14 @@
  #include "utils/string_frm.h"
  #include "world/triggers/abstracttrigger.h"
  #include "world/objects/npc.h"
@@ -2701,7 +3616,14 @@ index 52b66d3..529d0d9 100644
  #include "game/serialize.h"
  #include "game/globaleffects.h"
  #include "utils/gthfont.h"
-@@ -34,7 +35,7 @@ MainWindow::MainWindow(Device& device)
+ #include "utils/dbgpainter.h"
++#include "utils/cp1251.h"
++#include "utils/fileutil.h"
++#include "game/savegameheader.h"
+ 
+ #include "commandline.h"
+ #include "gothic.h"
+@@ -34,7 +41,7 @@ MainWindow::MainWindow(Device& device)
      dialogs(inventory),document(keycodec),
      console(*this),
  #if defined(__MOBILE_PLATFORM__)
@@ -2710,7 +3632,7 @@ index 52b66d3..529d0d9 100644
  #endif
      player(dialogs,inventory) {
    Gothic::inst().onSettingsChanged.bind(this,&MainWindow::onSettings);
-@@ -224,6 +225,32 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -224,6 +231,32 @@ void MainWindow::paintEvent(PaintEvent& event) {
            bool showManaBar   = (opt.showManaBar==2) || (opt.showManaBar==1 && (pl->weaponState()==WeaponState::Mage || inventory.isActive()));
            bool showSwimBar   = (opt.showSwimBar==2) || (opt.showSwimBar==1 && pl->isDive());
  
@@ -2743,7 +3665,7 @@ index 52b66d3..529d0d9 100644
            if(showHealthBar)
              drawBar(p,barHp, 10, h()-10, hp, AlignLeft | AlignBottom);
            if(showManaBar)
-@@ -236,6 +263,7 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -236,6 +269,7 @@ void MainWindow::paintEvent(PaintEvent& event) {
                drawBar(p,barMisc,w()/2,h()-10, (v-t)/(v), AlignHCenter | AlignBottom);
                }
              }
@@ -2751,7 +3673,7 @@ index 52b66d3..529d0d9 100644
            }
          }
        }
-@@ -304,6 +332,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
+@@ -304,6 +338,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
    }
  
  void MainWindow::mouseDownEvent(MouseEvent &event) {
@@ -2763,7 +3685,7 @@ index 52b66d3..529d0d9 100644
    if(event.button<sizeof(mouseP))
      mouseP[event.button]=true;
    auto act     = keycodec.tr(event);
-@@ -312,6 +345,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
+@@ -312,6 +351,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
    }
  
  void MainWindow::mouseUpEvent(MouseEvent &event) {
@@ -2774,7 +3696,7 @@ index 52b66d3..529d0d9 100644
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
    player.onKeyReleased(act,mapping);
-@@ -333,6 +370,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
+@@ -333,6 +376,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
    }
  
  void MainWindow::processMouse(MouseEvent& event, bool enable) {
@@ -2787,7 +3709,7 @@ index 52b66d3..529d0d9 100644
    auto center = Point(w()/2,h()/2);
    if(enable && event.pos()!=center && hasFocus()) {
      dMouse += (event.pos()-center);
-@@ -344,21 +387,23 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -344,21 +393,23 @@ void MainWindow::tickMouse(uint64_t dt) {
    auto camera = Gothic::inst().camera();
    if(dialogs.hasContent() || Gothic::inst().isPause() || camera==nullptr || camera->isCutscene()) {
      dMouse = Point();
@@ -2813,7 +3735,7 @@ index 52b66d3..529d0d9 100644
    dpScaled.x/=float(w());
    dpScaled.y/=float(h());
    if(camLookaroundInverse)
-@@ -381,6 +426,7 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -381,6 +432,7 @@ void MainWindow::tickMouse(uint64_t dt) {
      }
  
    dMouse = Point();
@@ -2821,7 +3743,38 @@ index 52b66d3..529d0d9 100644
    }
  
  void MainWindow::onSettings() {
-@@ -529,6 +575,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -398,6 +450,14 @@ void MainWindow::mouseWheelEvent(MouseEvent &event) {
+   }
+ 
+ void MainWindow::keyDownEvent(KeyEvent &event) {
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: карта «Путь», подтверждение, затемнение - клавиши не идут в игру, «Назад» закрывает окно
++  if(!rootMenu.isActive() && mobileUi.isModal()) {
++    uiKeyUp = &mobileUi;
++    event.accept();
++    return;
++    }
++#endif
+   if(video.isActive()){
+     event.accept();
+     video.keyDownEvent(event);
+@@ -495,6 +555,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
+   }
+ 
+ void MainWindow::keyUpEvent(KeyEvent &event) {
++#if defined(__MOBILE_PLATFORM__)
++  if(uiKeyUp==&mobileUi) {
++    uiKeyUp = nullptr;
++    if(event.key==Event::K_ESCAPE)
++      mobileUi.touchBack();
++    event.accept();
++    return;
++    }
++#endif
+   if(uiKeyUp==&video){
+     video.keyUpEvent(event);
+     if(event.isAccepted())
+@@ -529,6 +598,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
  
@@ -2833,7 +3786,7 @@ index 52b66d3..529d0d9 100644
    std::string_view menuEv;
    if(act==KeyCodec::Escape)
      menuEv = Gothic::inst().menuMain();
-@@ -543,6 +594,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -543,6 +617,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
      if(auto pl = Gothic::inst().player())
        rootMenu.setPlayer(*pl);
      clearInput();
@@ -2841,7 +3794,7 @@ index 52b66d3..529d0d9 100644
      }
    else if(act==KeyCodec::Inventory && !dialogs.isActive()) {
      if(inventory.isActive()) {
-@@ -553,10 +605,93 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -553,10 +628,136 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
          inventory.open(*pl);
        }
      clearInput();
@@ -2849,8 +3802,8 @@ index 52b66d3..529d0d9 100644
      }
 -  player.onKeyReleased(act, mapping);
 +  return false;
-   }
- 
++  }
++
 +#if defined(__MOBILE_PLATFORM__)
 +MainWindow::TouchMode MainWindow::touchMode() const {
 +  if(rootMenu.isActive() || Gothic::inst().checkLoading()!=Gothic::LoadState::Idle)
@@ -2883,11 +3836,54 @@ index 52b66d3..529d0d9 100644
 +
 +bool MainWindow::touchCanTakeAll() const {
 +  return inventory.canTakeAll();
+   }
+ 
++const char* MainWindow::touchQuickSave() {
++  auto& g  = Gothic::inst();
++  auto  pl = g.player();
++  if(g.checkLoading()!=Gothic::LoadState::Idle)
++    return "Сохранение уже идёт";
++  if(!g.isInGameAndAlive() || pl==nullptr || g.isPause() || dialogs.isActive() || inventory.isActive() || document.isActive())
++    return "Сейчас нельзя сохраниться";
++  if(auto w = g.world(); w==nullptr || w->currentCs()!=nullptr)
++    return "Сейчас нельзя сохраниться";
++  if(pl->isDown() || player.travelMode()==PlayerControl::TravelMode::Instant)
++    return "Сейчас нельзя сохраниться";
++  if(pl->isInAir() || pl->isFalling() || pl->isJump())
++    return "Нельзя сохраниться в прыжке";
++  // В бою - нет: случайное касание не должно записать быстрое сохранение за миг до гибели
++  if(player.isHeroAttacked())
++    return "Нельзя сохраниться во время боя";
++  g.quickSave();
++  return nullptr;
 +  }
 +
-+void MainWindow::touchQuickSave() {
-+  if(Gothic::inst().isInGameAndAlive() && !Gothic::inst().isPause() && !dialogs.isActive())
-+    Gothic::inst().quickSave();
++bool MainWindow::touchQuickSaveInfo(std::string& out) const {
++  static const char* slot = "save_slot_0.sav";
++  if(!FileUtil::exists(TextCodec::toUtf16(slot)))
++    return false;
++  SaveGameHeader hdr;
++  try {
++    RFile     fin(slot);
++    Serialize reader(fin);
++    reader.setEntry("header");
++    reader.read(hdr);
++    }
++  catch(...) {
++    return false;
++    }
++  char buf[128] = {};
++  std::snprintf(buf,sizeof(buf),"День %d, %d:%02d  (записано %d.%02d в %d:%02d)",
++                int(hdr.wrldTime.day()),int(hdr.wrldTime.hour()),int(hdr.wrldTime.minute()),
++                int(hdr.pcTime.tm_mday),int(hdr.pcTime.tm_mon+1),int(hdr.pcTime.tm_hour),int(hdr.pcTime.tm_min));
++  out = buf;
++  return true;
++  }
++
++void MainWindow::touchQuickLoad() {
++  player.stopTravel(nullptr);
++  if(Gothic::inst().checkLoading()==Gothic::LoadState::Idle && FileUtil::exists(u"save_slot_0.sav"))
++    Gothic::inst().quickLoad();
 +  }
 +
 +bool MainWindow::touchIsLockPick() const {
@@ -2936,7 +3932,83 @@ index 52b66d3..529d0d9 100644
  void MainWindow::focusEvent(FocusEvent &event) {
    if(!event.in)
      return;
-@@ -1245,11 +1380,17 @@ void MainWindow::render(){
+@@ -882,8 +1083,16 @@ uint64_t MainWindow::tick() {
+     Gothic::inst().finishLoading();
+     if(st==Gothic::LoadState::FailedLoad)
+       rootMenu.setMainMenu();
++#if defined(__MOBILE_PLATFORM__)
++    // Gothic II Mobile: сохранение идёт в отдельном потоке - итог виден только здесь
++    if(savePending) {
++      savePending = false;
++      Gothic::inst().onPrint(toCp1251(st==Gothic::LoadState::Finalize ? "Игра сохранена" : "Не удалось сохранить игру"));
++      }
++#else
+     if(st==Gothic::LoadState::FailedSave)
+       Gothic::inst().onPrint("unable to write savegame file");
++#endif
+     return 0;
+     }
+   else if(st!=Gothic::LoadState::Idle) {
+@@ -1102,20 +1311,46 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
+   auto& thumb = lres.isEmpty() ? tex : lres;
+   auto  pm    = device.readPixels(textureCast<const Texture2d&>(thumb));
+ 
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: путь и сбор ведут героя очередью ИИ - она не должна попасть в сохранение
++  player.onSaveGame();
++#endif
+   Gothic::inst().startSave(std::move(textureCast<Texture2d&>(tex)),[slot=std::string(slot),name=std::string(name),pm](std::unique_ptr<GameSession>&& game){
+     if(!game)
+       return std::move(game);
+ 
++#if defined(__MOBILE_PLATFORM__)
++    // Gothic II Mobile: во временный файл и замена одним шагом - сбой или нехватка места посреди записи не
++    // портят прежнее сохранение в этой ячейке
++    const std::string tmp = slot + ".tmp";
++    try {
++      {
++      Tempest::WFile  f(tmp);
++      Serialize      s(f);
++      game->save(s,name,pm);
++      }
++      if(std::rename(tmp.c_str(),slot.c_str())!=0)
++        throw std::runtime_error("unable to replace savegame file");
++      }
++    catch(...) {
++      std::remove(tmp.c_str());
++      throw;
++      }
++#else
+     {
+     Tempest::WFile  f(slot);
+     Serialize      s(f);
+     game->save(s,name,pm);
+     }
++#endif
+ 
+     // no print yet, because threading
+     // gothic.print("Game saved");
+     return std::move(game);
+     });
++#if defined(__MOBILE_PLATFORM__)
++  savePending = (Gothic::inst().checkLoading()!=Gothic::LoadState::Idle);
++#endif
+ 
+   update();
+   }
+@@ -1127,6 +1362,11 @@ void MainWindow::onVideo(std::string_view fname) {
+   }
+ 
+ void MainWindow::onStartLoading() {
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: загрузка или смена мира - путь кончается: его точки - в старом мире
++  if(Gothic::inst().checkLoading()==Gothic::LoadState::Loading)
++    player.stopTravel(nullptr);
++#endif
+   player   .clearInput();
+   inventory.onWorldChanged();
+   dialogs  .onWorldChanged();
+@@ -1245,11 +1485,17 @@ void MainWindow::render(){
      tickCamera(dt);
  
      auto& sync = fence[cmdId];
@@ -2955,10 +4027,10 @@ index 52b66d3..529d0d9 100644
  
      if(video.isActive()) {
 diff --git a/common/mainwindow.h b/common/mainwindow.h
-index 3fb2713..b78ac15 100644
+index 3fb2713..1817eab 100644
 --- a/common/mainwindow.h
 +++ b/common/mainwindow.h
-@@ -49,6 +49,40 @@ class MainWindow : public Tempest::Window {
+@@ -49,6 +49,44 @@ class MainWindow : public Tempest::Window {
  
      float uiScale() const;
  
@@ -2976,7 +4048,11 @@ index 3fb2713..b78ac15 100644
 +    void      touchLook(int dx, int dy);
 +    bool      touchCanTakeAll() const;
 +    void      touchTakeAll();
-+    void      touchQuickSave();
++    // Быстрое сохранение: nullptr - началось, иначе - почему нельзя (UTF-8)
++    const char* touchQuickSave();
++    // Быстрое сохранение есть: когда сделано (в игре и на самом деле) - для подтверждения загрузки
++    bool      touchQuickSaveInfo(std::string& out) const;
++    void      touchQuickLoad();
 +    // Экраны со списками: что открыто и касание по самим спискам
 +    bool      touchIsDialog() const    { return dialogs.isActive(); }
 +    bool      touchIsDocument() const  { return document.isActive(); }
@@ -2999,7 +4075,7 @@ index 3fb2713..b78ac15 100644
    private:
      void paintEvent     (Tempest::PaintEvent& event) override;
      void resizeEvent    (Tempest::SizeEvent & event) override;
-@@ -89,6 +123,7 @@ class MainWindow : public Tempest::Window {
+@@ -89,6 +127,7 @@ class MainWindow : public Tempest::Window {
      void setFullscreen(bool fs);
  
      void processMouse(Tempest::MouseEvent& event, bool enable);
@@ -3007,11 +4083,12 @@ index 3fb2713..b78ac15 100644
      void tickMouse(uint64_t dt);
      void onSettings();
  
-@@ -157,6 +192,7 @@ class MainWindow : public Tempest::Window {
+@@ -157,6 +196,8 @@ class MainWindow : public Tempest::Window {
  
      Tempest::Widget*          uiKeyUp=nullptr;
      Tempest::Point            dMouse;
 +    Tempest::Point            dTouch;
++    bool                      savePending = false; // Gothic II Mobile: ждём итог сохранения - сообщить
      PlayerControl             player;
      uint64_t                  lastTick=0;
  
@@ -3086,10 +4163,10 @@ index 5a7db4d..817dea1 100644
    return choice.size()!=0 && current.time==0 && !haveToWaitOutput() && trade.isOpen()==InventoryMenu::State::Closed;
    }
 diff --git a/common/ui/dialogmenu.h b/common/ui/dialogmenu.h
-index f08a36e..a6ed82b 100644
+index f08a36e..ecacc3a 100644
 --- a/common/ui/dialogmenu.h
 +++ b/common/ui/dialogmenu.h
-@@ -34,6 +34,12 @@ class DialogMenu : public Tempest::Widget {
+@@ -34,6 +34,14 @@ class DialogMenu : public Tempest::Widget {
      bool isActive() const;
      bool hasContent() const;
  
@@ -3098,11 +4175,13 @@ index f08a36e..a6ed82b 100644
 +    void touchChoice(size_t id);
 +    bool touchHasChoices() const { return isChoiceMenuActive(); }
 +    bool touchIsTalking()  const { return state!=State::Idle && current.time>0; }
++    // С кем разговор (кто заговорил с героем по дороге - «Путь»)
++    Npc* touchPartner()    const { return other; }
 +
      void print      (std::string_view msg);
      void printScreen(std::string_view msg, int x, int y, int time, const GthFont &font);
      void drawMsg    (Tempest::Painter& p, int offsetY);
-@@ -136,6 +142,7 @@ class DialogMenu : public Tempest::Widget {
+@@ -136,6 +144,7 @@ class DialogMenu : public Tempest::Widget {
      Tempest::SoundEffect                currentSnd;
      bool                                curentIsPl=false;
      bool                                dlgTrade=false;
@@ -3404,10 +4483,10 @@ index d4ddb41..e6cbee7 100644
      PageLocal                 pageLocal[2];
 diff --git a/common/ui/touchicons.cpp b/common/ui/touchicons.cpp
 new file mode 100644
-index 0000000..b57e987
+index 0000000..75c7573
 --- /dev/null
 +++ b/common/ui/touchicons.cpp
-@@ -0,0 +1,666 @@
+@@ -0,0 +1,730 @@
 +#include "touchicons.h"
 +
 +#include <Tempest/Pixmap>
@@ -3860,6 +4939,70 @@ index 0000000..b57e987
 +    case TouchIcons::I_Dot:
 +      g.disc({0.5f,0.5f},0.42f);
 +      break;
++    case TouchIcons::I_Save:
++      // гусиное перо над строкой
++      g.push(40);
++      g.poly({{0.5f,0.04f},{0.60f,0.16f},{0.63f,0.36f},{0.58f,0.56f},{0.5f,0.66f},{0.42f,0.56f},{0.37f,0.36f},{0.40f,0.16f}});
++      g.cut();
++      g.seg({0.5f,0.14f},{0.5f,0.62f},0.03f);
++      g.seg({0.5f,0.30f},{0.42f,0.24f},0.022f);
++      g.seg({0.5f,0.42f},{0.58f,0.36f},0.022f);
++      g.add();
++      g.seg({0.5f,0.62f},{0.5f,0.86f},0.045f);
++      g.head({0.5f,0.95f},{0,1},0.10f,0.07f);
++      g.pop();
++      g.seg({0.12f,0.88f},{0.50f,0.88f},0.05f);
++      break;
++    case TouchIcons::I_Load: {
++      g.arc({0.5f,0.5f},0.34f,70,340,0.08f);
++      const float a = 70.f*Pi/180.f;
++      const P     e = P{0.5f+0.34f*std::cos(a), 0.5f-0.34f*std::sin(a)};
++      g.head(e+P{std::sin(a),std::cos(a)}*0.08f, P{std::sin(a),std::cos(a)}, 0.19f, 0.21f);
++      g.disc({0.5f,0.5f},0.09f);
++      break;
++      }
++    case TouchIcons::I_Travel:
++      // дорожный указатель: столб и две доски-стрелки
++      g.seg({0.5f,0.08f},{0.5f,0.90f},0.08f);
++      g.poly({{0.22f,0.17f},{0.72f,0.17f},{0.86f,0.28f},{0.72f,0.39f},{0.22f,0.39f}});
++      g.poly({{0.78f,0.47f},{0.28f,0.47f},{0.14f,0.58f},{0.28f,0.69f},{0.78f,0.69f}});
++      g.seg({0.30f,0.91f},{0.70f,0.91f},0.05f);
++      break;
++    case TouchIcons::I_Run:
++      // следы и стрелка вперёд
++      for(int k=0; k<2; ++k) {
++        const P o = k==0 ? P{0.24f,0.46f} : P{0.50f,0.14f};
++        g.seg(o+P{0,0.08f},o+P{0.01f,0.19f},0.15f);
++        g.disc(o+P{0.015f,0.31f},0.065f);
++        g.disc(o+P{-0.055f,-0.005f},0.03f);
++        g.disc(o+P{-0.015f,-0.025f},0.033f);
++        g.disc(o+P{ 0.03f,-0.02f},0.03f);
++        g.disc(o+P{ 0.065f,0.005f},0.026f);
++        }
++      g.seg({0.58f,0.86f},{0.80f,0.64f},0.07f);
++      g.head({0.90f,0.54f},{1,-1},0.17f,0.20f);
++      break;
++    case TouchIcons::I_Teleport:
++      // портал: кольца и звезда в центре
++      g.ring({0.5f,0.5f},0.38f,0.06f);
++      g.ring({0.5f,0.5f},0.23f,0.05f);
++      g.poly({{0.5f,0.36f},{0.535f,0.465f},{0.64f,0.5f},{0.535f,0.535f},{0.5f,0.64f},{0.465f,0.535f},{0.36f,0.5f},{0.465f,0.465f}});
++      break;
++    case TouchIcons::I_City:
++      // крепостная башня с зубцами и воротами
++      g.poly({{0.24f,0.88f},{0.24f,0.30f},{0.34f,0.30f},{0.34f,0.20f},{0.44f,0.20f},{0.44f,0.30f},{0.56f,0.30f},
++              {0.56f,0.20f},{0.66f,0.20f},{0.66f,0.30f},{0.76f,0.30f},{0.76f,0.88f}});
++      g.cut();
++      g.seg({0.5f,0.66f},{0.5f,0.90f},0.18f);
++      g.disc({0.5f,0.66f},0.09f);
++      g.seg({0.5f,0.42f},{0.5f,0.50f},0.05f);
++      g.add();
++      break;
++    case TouchIcons::I_Pin:
++      g.disc({0.5f,0.38f},0.27f);
++      g.poly({{0.27f,0.50f},{0.73f,0.50f},{0.5f,0.94f}});
++      g.cut().disc({0.5f,0.38f},0.11f).add();
++      break;
 +    case TouchIcons::I_Count:
 +      break;
 +    }
@@ -4076,10 +5219,10 @@ index 0000000..b57e987
 +  }
 diff --git a/common/ui/touchicons.h b/common/ui/touchicons.h
 new file mode 100644
-index 0000000..5eb3773
+index 0000000..2f91440
 --- /dev/null
 +++ b/common/ui/touchicons.h
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,79 @@
 +#pragma once
 +
 +#include <Tempest/Texture2d>
@@ -4132,6 +5275,13 @@ index 0000000..5eb3773
 +      I_Finish,
 +      I_Stop,
 +      I_Dot,
++      I_Save,
++      I_Load,
++      I_Travel,
++      I_Run,
++      I_Teleport,
++      I_City,
++      I_Pin,
 +      I_Count
 +      };
 +
@@ -4153,22 +5303,25 @@ index 0000000..5eb3773
 +    const Tempest::Texture2d& cached(uint64_t key, const std::function<Tempest::Texture2d()>& make);
 +  };
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f1730..c097b51 100644
+index d9f1730..0e88ef3 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,1242 @@
+@@ -1,41 +1,1891 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
++#include <Tempest/Log>
  #include <Tempest/Painter>
  
 +#include <algorithm>
 +#include <cmath>
++#include <cstdio>
 +
  #include "game/playercontrol.h"
 +#include "world/objects/npc.h"
 +#include "world/objects/item.h"
 +#include "world/objects/interactive.h"
++#include "world/waypoint.h"
 +#include "world/world.h"
 +#include "utils/cp1251.h"
 +#include "utils/gthfont.h"
@@ -4205,8 +5358,15 @@ index d9f1730..c097b51 100644
 +    return Ui::Skip;
 +  if(owner.touchIsLockPick())
 +    return Ui::LockPick;
-+  if(m==M::World)
++  if(m==M::World) {
++    if(ctrl.travelMode()==PlayerControl::TravelMode::Instant)
++      return Ui::Fade;
++    if(confirmOpen)
++      return Ui::Confirm;
++    if(mapOpen)
++      return Ui::Travel;
 +    return Ui::World;
++    }
 +  // Торговля открывается поверх диалога - сначала сумка
 +  if(owner.touchIsInventory())
 +    return Ui::Inventory;
@@ -4239,7 +5399,8 @@ index d9f1730..c097b51 100644
 +    b.c    = Point(int(x+pw*0.5f),int(y+ph*0.5f));
 +    return b;
 +    };
-+  // Ряд системных кнопок справа вверху; самая нужная - «Сумка» - ближе к краю
++  // Ряд системных кнопок справа вверху; самая нужная - «Сумка» - ближе к краю, «Путь» - рядом с «Картой»,
++  // «Сохранить» - рядом с «Меню»
 +  auto top = [&](int k) {
 +    return round(W - m - 19*d - float(k)*44*d, 12*d + 19*d, 19*d);
 +    };
@@ -4257,9 +5418,11 @@ index d9f1730..c097b51 100644
 +    case C_Sneak:   return round(m + 22*d, H*0.5f, 22*d);
 +    case C_Bag:     return top(0);
 +    case C_Map:     return top(1);
-+    case C_Log:     return top(2);
-+    case C_Hero:    return top(3);
-+    case C_Menu:    return top(4);
++    case C_Travel:  return top(2);
++    case C_Log:     return top(3);
++    case C_Hero:    return top(4);
++    case C_Save:    return top(5);
++    case C_Menu:    return top(6);
 +    case C_Back:    return pill(m, H - m - ph, pw*0.9f, ph);
 +    case C_Select:  return pill(W - m - pw, H - m - ph, pw, ph);
 +    // Над сеткой сундука, рядом с его названием: внизу справа - сетка сумки героя
@@ -4295,6 +5458,8 @@ index d9f1730..c097b51 100644
 +    case C_Log:
 +    case C_Hero:
 +    case C_Menu:
++    case C_Travel:
++    case C_Save:
 +      return ui==Ui::World;
 +    case C_Block:
 +      return ui==Ui::World && (ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H);
@@ -4453,8 +5618,26 @@ index d9f1730..c097b51 100644
 +    releaseAll();
 +    lastUi = ui;
 +    }
++  // Карта «Путь» и подтверждение - только поверх мира: открылось меню игры, заговорили, загрузка - закрыть
++  if(mapOpen && ui!=Ui::Travel)
++    closeTravelMap();
++  if(confirmOpen && ui!=Ui::Confirm)
++    closeConfirm();
 +  if(ui==Ui::Hidden)
 +    return;
++
++  if(ui==Ui::Travel || ui==Ui::Confirm || ui==Ui::Fade) {
++    Painter p(e);
++    if(ui==Ui::Travel)
++      drawTravelMap(p);
++    else if(ui==Ui::Confirm)
++      drawConfirm(p);
++    else {
++      p.setBrush(Color(0.f,0.f,0.f,ctrl.travelFade()));
++      p.drawRect(0,0,w(),h());
++      }
++    return;
++    }
 +
 +  if(ui==Ui::World) {
 +    if(auto w = Gothic::inst().world())
@@ -4468,6 +5651,7 @@ index d9f1730..c097b51 100644
 +    drawTarget(p);
 +    drawSquad(p);
 +    drawJoystick(p);
++    drawTravelBanner(p);
 +    }
 +
 +  for(uint8_t i=C_Main; i<C_Count; ++i) {
@@ -4499,6 +5683,12 @@ index d9f1730..c097b51 100644
 +      case C_Log:    drawRound(p,b,TouchIcons::I_Log,   pressed,false,0.8f); break;
 +      case C_Hero:   drawRound(p,b,TouchIcons::I_Hero,  pressed,false,0.8f); break;
 +      case C_Menu:   drawRound(p,b,TouchIcons::I_Menu,  pressed,false,0.8f); break;
++      case C_Save:   drawRound(p,b,TouchIcons::I_Save,  pressed,false,0.8f); break;
++      case C_Travel: {
++        const bool run = ctrl.travelMode()==PlayerControl::TravelMode::Run;
++        drawRound(p,b,run ? TouchIcons::I_Stop : TouchIcons::I_Travel,pressed,run,0.8f);
++        break;
++        }
 +      case C_Up:     drawRound(p,b,TouchIcons::I_Up,    pressed,false,1.f); break;
 +      case C_Down:   drawRound(p,b,TouchIcons::I_Down,  pressed,false,1.f); break;
 +      case C_Left:   drawRound(p,b,TouchIcons::I_Left,  pressed,false,1.f); break;
@@ -4549,21 +5739,16 @@ index d9f1730..c097b51 100644
 +  for(auto& f:fingers) {
 +    if(f.held || f.moved)
 +      continue;
-+    if(f.ctl==C_Menu && now-f.downAt>150)
-+      drawHoldRing(p,buttonOf(C_Menu),float(now-f.downAt-150)/550.f);
++    if(f.ctl==C_Save && now-f.downAt>150)
++      drawHoldRing(p,buttonOf(C_Save),float(now-f.downAt-150)/550.f);
 +    if(f.ctl==C_Potion && now-f.downAt>150 && ctrl.potionCount(true)>0)
 +      drawHoldRing(p,buttonOf(C_Potion),float(now-f.downAt-150)/300.f);
 +    }
- 
--  p.setBrush(Color(1,1,1, 0.2f));
--  p.drawRect(10, h()-10 - 100, 100, 100);
++
 +  if(wheel!=Wheel::None)
 +    drawWheel(p);
-   }
- 
--void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
--  auto r = Rect(10, h()-10-100, 100, 100);
--  if(!r.contains(e.pos())) {
++  }
++
 +void TouchInput::drawGlyph(Painter& p, TouchIcons::Icon ic, Point c, int size, const Color& cl) {
 +  if(size<4)
 +    return;
@@ -4832,7 +6017,9 @@ index d9f1730..c097b51 100644
 +  wheelSel   = -1;
 +  wheelOwner = finger;
 +  wheel      = wh;
-+
+ 
+-  p.setBrush(Color(1,1,1, 0.2f));
+-  p.drawRect(10, h()-10 - 100, 100, 100);
 +  if(wh==Wheel::Weapon) {
 +    const auto ws = pl->weaponState();
 +    auto&      in = pl->inventory();
@@ -4921,8 +6108,11 @@ index d9f1730..c097b51 100644
 +  wheelOwner = -1;
 +  wheelItems.clear();
 +  update();
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
+-  auto r = Rect(10, h()-10-100, 100, 100);
+-  if(!r.contains(e.pos())) {
 +void TouchInput::applyWheel(int id) {
 +  if(id<0 || size_t(id)>=wheelItems.size() || !wheelItems[size_t(id)].enabled)
 +    return;
@@ -4985,6 +6175,17 @@ index d9f1730..c097b51 100644
 +  f.last   = e.pos();
 +  f.downAt = Application::tickCount();
 +
++  // Карта «Путь», подтверждение, затемнение: касание - только им (выбор - на отпускание)
++  if(ui==Ui::Travel || ui==Ui::Confirm || ui==Ui::Fade) {
++    f.ctl = C_Absorb;
++    if(ui==Ui::Travel && mapFinger<0) {
++      mapFinger = e.mouseID;
++      mapDownAt = e.pos();
++      mapDrag   = false;
++      }
++    return;
++    }
++
 +  // Колесо открыто и ждёт выбора: касание выбирает или закрывает его
 +  if(wheel!=Wheel::None && wheelOwner<0) {
 +    applyWheel(wheelPickAt(e.pos()));
@@ -5012,6 +6213,9 @@ index d9f1730..c097b51 100644
 +      case Ui::Document:
 +      case Ui::LockPick:
 +      case Ui::Skip:
++      case Ui::Travel:
++      case Ui::Confirm:
++      case Ui::Fade:
 +        // Касание мимо кнопок поглощается: случайный тап ничего не сделает
 +        c = C_Absorb;
 +        break;
@@ -5037,6 +6241,20 @@ index d9f1730..c097b51 100644
 +  const int  dy  = pos.y-f.start.y;
 +  if(!f.moved && dx*dx+dy*dy>int(12*d)*int(12*d))
 +    f.moved = true;
++
++  if(mapOpen && e.mouseID==mapFinger) {
++    // Палец вверх-вниз по списку мест - листать
++    const auto l = mapLayout();
++    if(f.moved && l.list.contains(mapDownAt))
++      mapDrag = true;
++    if(mapDrag) {
++      const int total = int(mapRows().size())*l.rowH;
++      mapScroll = std::clamp(mapScroll-(pos.y-f.last.y), 0, std::max(0,total-l.list.h));
++      }
++    f.last = pos;
++    update();
++    return;
++    }
 +
 +  switch(f.ctl) {
 +    case C_Joy:
@@ -5095,6 +6313,21 @@ index d9f1730..c097b51 100644
 +  if(e.mouseID<0 || size_t(e.mouseID)>=fingers.size())
 +    return;
 +  auto& f = fingers[size_t(e.mouseID)];
++  if(mapOpen && e.mouseID==mapFinger) {
++    mapFinger = -1;
++    if(!f.moved)
++      mapTap(e.pos());
++    f = Finger();
++    update();
++    return;
++    }
++  if(confirmOpen && f.ctl==C_Absorb) {
++    if(!f.moved)
++      confirmTap(e.pos());
++    f = Finger();
++    update();
++    return;
++    }
 +  release(f.ctl, f, e.pos());
 +  f = Finger();
 +  update();
@@ -5170,6 +6403,9 @@ index d9f1730..c097b51 100644
 +
 +void TouchInput::press(Ctl c, Finger& f) {
 +  (void)f;
++  // Игрок сам взялся за героя - путь бегом прерывается
++  if(c==C_Joy || c==C_Main || c==C_Block || c==C_Jump || c==C_Weapon)
++    stopTravelByHand();
 +  switch(c) {
 +    case C_Main:
 +      ctrl.setTouchAttack(true);
@@ -5239,6 +6475,8 @@ index d9f1730..c097b51 100644
 +    case C_Squad:
 +    case C_Map:
 +    case C_Menu:
++    case C_Travel:
++    case C_Save:
 +    case C_Count:
 +      break;
 +    }
@@ -5307,8 +6545,20 @@ index d9f1730..c097b51 100644
 +      ctrl.onKeyReleased(KeyCodec::Map, KeyCodec::Mapping::Primary);
 +      break;
 +    case C_Menu:
-+      if(!f.held)
-+        owner.touchKey(Event::K_ESCAPE);
++      owner.touchKey(Event::K_ESCAPE);
++      break;
++    case C_Travel:
++      // В пути - остановиться; иначе - карта с местами
++      if(ctrl.travelMode()==PlayerControl::TravelMode::Run)
++        ctrl.stopTravel("Путь остановлен"); else
++        openTravelMap();
++      break;
++    case C_Save:
++      // Коснуться - быстрое сохранение; подержать - быстрая загрузка (с подтверждением)
++      if(!f.held) {
++        if(auto why = owner.touchQuickSave())
++          Gothic::inst().onPrint(toCp1251(why));
++        }
 +      break;
 +    case C_Up:
 +    case C_Down:
@@ -5328,14 +6578,8 @@ index d9f1730..c097b51 100644
 +    default:
 +      break;
 +    }
-   }
- 
--void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
--  auto dp = e.pos() - mpos;
--  mpos = e.pos();
--  if(std::abs(dp.x)>0) {
--    const float scale = 4.f;
--    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
++  }
++
 +void TouchInput::releaseAll() {
 +  for(size_t i=0; i<fingers.size(); ++i) {
 +    auto& f = fingers[i];
@@ -5346,6 +6590,8 @@ index d9f1730..c097b51 100644
 +      case C_Potion:
 +      case C_Map:
 +      case C_Menu:
++      case C_Travel:
++      case C_Save:
 +      case C_Look:
 +      case C_List:
 +        break;
@@ -5354,15 +6600,13 @@ index d9f1730..c097b51 100644
 +        break;
 +      }
 +    f = Finger();
-     }
++    }
 +  repeatCtl = C_None;
 +  timer.stop();
 +  if(wheel!=Wheel::None)
 +    closeWheel();
-   }
- 
--void TouchInput::mouseUpEvent(Tempest::MouseEvent& e) {
--  ctrl.onKeyReleased(KeyCodec::Forward, KeyCodec::Mapping::Primary);
++  }
++
 +void TouchInput::onTimer() {
 +  const uint64_t now  = Application::tickCount();
 +  bool           busy = false;
@@ -5370,7 +6614,7 @@ index d9f1730..c097b51 100644
 +    auto& f = fingers[i];
 +    if(f.ctl==C_None || f.held)
 +      continue;
-+    // Долгое нажатие: колесо оружия, зелье маны, быстрое сохранение
++    // Долгое нажатие: колесо оружия, зелье маны, быстрая загрузка
 +    if(f.ctl==C_Weapon && !f.moved) {
 +      busy = true;
 +      if(now-f.downAt>=300) {
@@ -5386,11 +6630,11 @@ index d9f1730..c097b51 100644
 +        ctrl.drinkManaPotion();
 +        }
 +      }
-+    if(f.ctl==C_Menu && !f.moved) {
++    if(f.ctl==C_Save && !f.moved) {
 +      busy = true;
 +      if(now-f.downAt>=700) {
 +        f.held = true;
-+        owner.touchQuickSave();
++        openConfirm();
 +        }
 +      }
 +    }
@@ -5415,12 +6659,567 @@ index d9f1730..c097b51 100644
 +    case C_Right: owner.touchKey(Event::K_Right); break;
 +    default: break;
 +    }
++  }
++
++// Gothic II Mobile: «Путь» - карта с местами быстрого перемещения (docs/CONTROLS.md, «Путь»)
++
++bool TouchInput::isModal() const {
++  return mapOpen || confirmOpen || ctrl.travelMode()==PlayerControl::TravelMode::Instant;
++  }
++
++void TouchInput::touchBack() {
++  if(confirmOpen)
++    closeConfirm();
++  else if(mapOpen)
++    closeTravelMap();
++  }
++
++void TouchInput::stopTravelByHand() {
++  if(ctrl.travelMode()==PlayerControl::TravelMode::Run)
++    ctrl.stopTravel("Путь прерван");
++  }
++
++static std::string distText(float cm) {
++  // «340 м», «1,4 км»
++  char buf[32] = {};
++  const int m = int(cm/100.f+0.5f);
++  if(m<1000)
++    std::snprintf(buf,sizeof(buf),"%d м",std::max(m,1)); else
++    std::snprintf(buf,sizeof(buf),"%d,%d км",m/1000,(m%1000)/100);
++  return toCp1251(buf);
++  }
++
++void TouchInput::openTravelMap() {
++  auto w  = Gothic::inst().world();
++  auto pl = w!=nullptr ? w->player() : nullptr;
++  if(pl==nullptr)
++    return;
++  mapTabs = TravelPoints::mapsOf(w->name());
++  std::vector<TravelPoints::Spot> spots;
++  if(!mapTabs.empty())
++    TravelPoints::resolve(*w,spots);
++  if(spots.empty()) {
++    Gothic::inst().onPrint(toCp1251("Здесь некуда отправиться"));
++    return;
++    }
++  mapSpots.clear();
++  for(auto& sp:spots) {
++    MapSpot ms;
++    ms.spot = sp;
++    ms.name = toCp1251(sp.point->name);
++    ms.pos  = sp.at->position();
++    mapSpots.push_back(std::move(ms));
++    }
++  mapOpen     = true;
++  mapFinger   = -1;
++  mapStatus.clear();
++  // Вкладка - там, где герой: в городе - карта города
++  mapTab = mapTabs[0];
++  for(auto m:mapTabs) {
++    if(m!=TravelPoints::M_City)
++      continue;
++    const auto uv = TravelPoints::toMap(m,pl->position());
++    if(uv.x>0.08f && uv.x<0.92f && uv.y>0.08f && uv.y<0.92f)
++      mapTab = m;
++    }
++  setMapTab(mapTab);
++  // Куда шли в прошлый раз - выбрано: продолжить путь - одно касание
++  for(size_t i=0; i<mapSpots.size(); ++i)
++    if(mapSpots[i].spot.point==lastTravel) {
++      setMapTab(lastTravel->map);
++      selectSpot(int(i));
++      }
++  Gothic::inst().pushPause();
++  Tempest::Log::i("[g2m] travel: map, ", int(mapSpots.size()), " points");
++  update();
++  }
++
++void TouchInput::closeTravelMap() {
++  if(!mapOpen)
++    return;
++  mapOpen   = false;
++  mapFinger = -1;
++  mapRoute.clear();
++  Gothic::inst().popPause();
++  update();
++  }
++
++void TouchInput::setMapTab(TravelPoints::Map m) {
++  mapTab    = m;
++  mapScroll = 0;
++  if(mapSel>=0 && (size_t(mapSel)>=mapSpots.size() || mapSpots[size_t(mapSel)].spot.point->map!=m))
++    selectSpot(-1);
++  }
++
++std::vector<int> TouchInput::mapRows() const {
++  std::vector<int> ret;
++  for(size_t i=0; i<mapSpots.size(); ++i)
++    if(mapSpots[i].spot.point->map==mapTab)
++      ret.push_back(int(i));
++  return ret;
++  }
++
++void TouchInput::selectSpot(int id) {
++  mapSel      = (id>=0 && size_t(id)<mapSpots.size()) ? id : -1;
++  mapStatus.clear();
++  mapRoute.clear();
++  mapRouteLen = -1;
++  auto w  = Gothic::inst().world();
++  auto pl = w!=nullptr ? w->player() : nullptr;
++  if(mapSel<0 || pl==nullptr)
++    return;
++  // Путь бегом - тот же поиск по сети путей, что у героя в пути
++  auto&      sp   = mapSpots[size_t(mapSel)].spot;
++  const auto from = pl->position();
++  const auto path = w->wayTo(*pl,*sp.way).points();
++  const auto wpos = sp.way->position();
++  const float dxw = wpos.x-from.x, dzw = wpos.z-from.z;
++  if(path.empty() && dxw*dxw+dzw*dzw>2000.f*2000.f &&
++     !pl->canRayHitPoint(wpos+Tempest::Vec3(0.f,60.f,0.f),true,6000.f))
++    return; // дороги нет
++  mapRoute.push_back(from);
++  for(auto wp:path)
++    mapRoute.push_back(wp->position());
++  if(path.empty())
++    mapRoute.push_back(wpos);
++  if(sp.at!=sp.way)
++    mapRoute.push_back(sp.at->position());
++  mapRouteLen = 0;
++  for(size_t i=1; i<mapRoute.size(); ++i) {
++    const float dx = mapRoute[i].x-mapRoute[i-1].x, dz = mapRoute[i].z-mapRoute[i-1].z;
++    mapRouteLen += std::sqrt(dx*dx+dz*dz);
++    }
++  // Выбранное - видно в списке
++  const auto l    = mapLayout();
++  const auto rows = mapRows();
++  for(size_t i=0; i<rows.size(); ++i) {
++    if(rows[i]!=mapSel)
++      continue;
++    const int y = int(i)*l.rowH;
++    if(y<mapScroll)
++      mapScroll = y;
++    if(y+l.rowH>mapScroll+l.list.h)
++      mapScroll = y+l.rowH-l.list.h;
++    }
++  }
++
++void TouchInput::travelTo(bool instant) {
++  if(mapSel<0) {
++    mapStatus = toCp1251("Сначала выбери место");
++    return;
++    }
++  if(!instant && mapRouteLen<0) {
++    mapStatus = toCp1251("Туда нет дороги - только мгновенно");
++    return;
++    }
++  if(auto why = ctrl.travelBlocked(instant)) {
++    mapStatus = toCp1251(why);
++    return;
++    }
++  const auto& sp = mapSpots[size_t(mapSel)].spot;
++  lastTravel = sp.point;
++  closeTravelMap();
++  ctrl.startTravel(*sp.at,*sp.way,sp.point->name,instant);
++  }
++
++TouchInput::MapLayout TouchInput::mapLayout() const {
++  MapLayout   l;
++  const float d = dp();
++  const int   m = int(12*d);
++  const int   W = w(), H = h();
++  auto&       mi = TravelPoints::info(mapTab);
++  // Карта - во всю высоту, с пропорциями мира (игра растягивала текстуру карты на экран 4:3), справа - список
++  const float aspect = float(mi.right-mi.left)/float(std::max(1,mi.top-mi.bottom));
++  int mh = H-2*m;
++  int mw = int(float(mh)*aspect);
++  const int maxW = W-3*m-int(300*d);
++  if(mw>maxW) {
++    mw = std::max(1,maxW);
++    mh = int(float(mw)/aspect);
++    }
++  l.map   = Rect(m, (H-mh)/2, mw, mh);
++  const int px = l.map.x+mw+m;
++  l.panel = Rect(px, m, W-px-m, H-2*m);
++
++  const int pad = int(12*d);
++  l.closeR = int(17*d);
++  l.close  = Point(l.panel.x+l.panel.w-pad-l.closeR, l.panel.y+pad+l.closeR);
++  int y = l.panel.y+pad+2*l.closeR+int(8*d);
++  l.tabs = mapTabs.size()>1 ? std::min<size_t>(mapTabs.size(),2) : 0;
++  if(l.tabs>0) {
++    const int tw = (l.panel.w-2*pad-int(8*d))/2;
++    for(size_t i=0; i<l.tabs; ++i)
++      l.tab[i] = Rect(l.panel.x+pad+int(i)*(tw+int(8*d)), y, tw, int(32*d));
++    y += int(32*d)+int(8*d);
++    }
++  const int bh = int(44*d);
++  const int bw = (l.panel.w-2*pad-int(8*d))/2;
++  l.run   = Rect(l.panel.x+pad,             l.panel.y+l.panel.h-pad-bh, bw, bh);
++  l.inst  = Rect(l.panel.x+pad+bw+int(8*d), l.panel.y+l.panel.h-pad-bh, bw, bh);
++  l.infoY = l.run.y-int(10*d);
++  l.rowH  = int(30*d);
++  const int listBottom = l.infoY-int(24*d);
++  l.list  = Rect(l.panel.x+pad, y, l.panel.w-2*pad, std::max(l.rowH, listBottom-y));
++  return l;
++  }
++
++Point TouchInput::mapToScreen(const MapLayout& l, const Tempest::Vec3& pos) const {
++  const auto uv = TravelPoints::toMap(mapTab,pos);
++  return Point(l.map.x+int(uv.x*float(l.map.w)), l.map.y+int(uv.y*float(l.map.h)));
++  }
++
++static Tempest::Vec3 cityCenter() {
++  auto& ci = TravelPoints::info(TravelPoints::M_City);
++  return Tempest::Vec3(float(ci.left+ci.right)*0.5f, 0.f, float(ci.top+ci.bottom)*0.5f);
++  }
++
++void TouchInput::mapTap(Point p) {
++  const auto  l    = mapLayout();
++  const float d    = dp();
++  const int   slop = int(8*d);
++  {
++  const int dx = p.x-l.close.x, dy = p.y-l.close.y, r = l.closeR+slop;
++  if(dx*dx+dy*dy<=r*r) {
++    closeTravelMap();
++    return;
++    }
++  }
++  for(size_t i=0; i<l.tabs; ++i)
++    if(l.tab[i].contains(p)) {
++      setMapTab(mapTabs[i]);
++      return;
++      }
++  if(Rect(l.run.x-slop/2,l.run.y-slop/2,l.run.w+slop,l.run.h+slop).contains(p)) {
++    travelTo(false);
++    return;
++    }
++  if(Rect(l.inst.x-slop/2,l.inst.y-slop/2,l.inst.w+slop,l.inst.h+slop).contains(p)) {
++    travelTo(true);
++    return;
++    }
++  if(l.list.contains(p)) {
++    const auto rows = mapRows();
++    const int  row  = (p.y-l.list.y+mapScroll)/std::max(1,l.rowH);
++    if(row>=0 && size_t(row)<rows.size())
++      selectSpot(rows[size_t(row)]);
++    return;
++    }
++  if(!l.map.contains(p))
++    return;
++  // Город на карте острова - открыть карту города
++  const bool hasCity = std::find(mapTabs.begin(),mapTabs.end(),TravelPoints::M_City)!=mapTabs.end();
++  const int  pick    = int(26*d);
++  if(mapTab==TravelPoints::M_Island && hasCity) {
++    const auto c  = mapToScreen(l,cityCenter());
++    const int  dx = p.x-c.x, dy = p.y-c.y;
++    if(dx*dx+dy*dy<=pick*pick) {
++      setMapTab(TravelPoints::M_City);
++      return;
++      }
++    }
++  int best = -1, bestD = pick*pick;
++  for(int id:mapRows()) {
++    const auto c  = mapToScreen(l,mapSpots[size_t(id)].pos);
++    const int  dx = p.x-c.x, dy = p.y-c.y;
++    if(dx*dx+dy*dy<bestD) {
++      bestD = dx*dx+dy*dy;
++      best  = id;
++      }
++    }
++  if(best>=0)
++    selectSpot(best);
++  }
++
++void TouchInput::drawPanel(Painter& p, const Rect& r) {
++  // Тёмная кожа с рамкой старой бронзы
++  const int b = std::max(1, int(1.5f*dp()));
++  p.setBrush(Color(0.36f,0.27f,0.16f,0.95f));
++  p.drawRect(r.x-b, r.y-b, r.w+2*b, r.h+2*b);
++  p.setBrush(Color(0.07f,0.055f,0.045f,0.94f));
++  p.drawRect(r.x, r.y, r.w, r.h);
++  }
++
++void TouchInput::drawText(Painter& p, std::string_view txt, int x, int y, bool hi, float scale) {
++  // y - верх строки
++  auto&      fnt = Resources::font(hi ? Resources::FontType::Hi : Resources::FontType::Normal, Gothic::interfaceScale(this)*scale);
++  const auto sz  = fnt.textSize(txt);
++  fnt.drawText(p, x, y+sz.h, txt);
++  }
++
++void TouchInput::drawTravelMap(Painter& p) {
++  auto        wr = Gothic::inst().world();
++  auto        pl = wr!=nullptr ? wr->player() : nullptr;
++  const auto  l  = mapLayout();
++  const float d  = dp();
++  auto&       mi = TravelPoints::info(mapTab);
++
++  // Мир под картой - темнее; сама карта - текстура из игры
++  p.setBrush(Color(0.f,0.f,0.f,0.75f));
++  p.drawRect(0,0,w(),h());
++  if(auto tex = Resources::loadTexture(mi.texture)) {
++    p.setBrush(Brush(*tex,Color(1.f)));
++    p.drawRect(l.map.x,l.map.y,l.map.w,l.map.h, 0,0,tex->w(),tex->h());
++    } else {
++    p.setBrush(Color(0.55f,0.45f,0.30f,1.f));
++    p.drawRect(l.map);
++    }
++
++  auto& fnt = Resources::font(Resources::FontType::Normal, Gothic::interfaceScale(this)*0.72f);
++  auto  tag = [&](std::string_view txt, Point c, int off, bool hi) {
++    // подпись места справа от метки на тёмной подложке - читается на светлом пергаменте
++    auto&      f  = hi ? Resources::font(Resources::FontType::Hi, Gothic::interfaceScale(this)*0.78f) : fnt;
++    const auto ts = f.textSize(txt);
++    int x = c.x+off;
++    if(x+ts.w+int(4*d)>l.map.x+l.map.w)
++      x = c.x-off-ts.w; // у правого края - слева от метки
++    p.setBrush(Color(0.f,0.f,0.f,0.55f));
++    p.drawRect(x-int(3*d), c.y-ts.h/2-int(2*d), ts.w+int(6*d), ts.h+int(4*d));
++    f.drawText(p, x, c.y+ts.h/2, txt);
++    };
++
++  // Путь бегом к выбранному месту - золотые точки
++  if(mapRoute.size()>1) {
++    const float step = 9*d;
++    float       acc  = 0;
++    for(size_t i=1; i<mapRoute.size(); ++i) {
++      const auto  a  = mapToScreen(l,mapRoute[i-1]);
++      const auto  b  = mapToScreen(l,mapRoute[i]);
++      const float dx = float(b.x-a.x), dy = float(b.y-a.y);
++      const float sl = std::sqrt(dx*dx+dy*dy);
++      while(acc<=sl) {
++        const float t = sl>0 ? acc/sl : 0.f;
++        drawGlyph(p, TouchIcons::I_Dot, Point(a.x+int(dx*t), a.y+int(dy*t)), std::max(4,int(5*d)), GoldBright);
++        acc += step;
++        }
++      acc -= sl;
++      }
++    }
++
++  // Город на карте острова: одна метка - коснуться, чтобы открыть карту города
++  const bool hasCity = std::find(mapTabs.begin(),mapTabs.end(),TravelPoints::M_City)!=mapTabs.end();
++  if(mapTab==TravelPoints::M_Island && hasCity) {
++    Button cb;
++    cb.c = mapToScreen(l,cityCenter());
++    cb.r = int(13*d);
++    drawRound(p, cb, TouchIcons::I_City, false, false, 1.f);
++    tag(toCp1251("Город"), cb.c, cb.r+int(4*d), false);
++    }
++
++  const auto rows = mapRows();
++  for(int id:rows) {
++    auto&      ms    = mapSpots[size_t(id)];
++    const bool sel   = (id==mapSel);
++    const bool major = ms.spot.point->major;
++    Button     b;
++    b.c = mapToScreen(l,ms.pos);
++    b.r = int((major ? 9.f : 6.5f)*d) + (sel ? int(3*d) : 0);
++    const int ds = int(float(2*b.r)/0.88f);
++    if(sel) {
++      const int gs = int(float(ds)*1.6f);
++      drawGlow(p, Rect(b.c.x-gs/2, b.c.y-gs/2, gs, gs), ds, 0.9f);
++      }
++    auto& disc = icons.disc(ds);
++    p.setBrush(Brush(disc,Color(1.f)));
++    p.drawRect(b.c.x-ds/2, b.c.y-ds/2, ds, ds, 0,0,disc.w(),disc.h());
++    drawGlyph(p, TouchIcons::I_Dot, b.c, int(float(b.r)*0.9f), sel ? GoldBright : (major ? GoldIdle : GoldDim));
++    if(major || sel)
++      tag(ms.name, b.c, b.r+int(4*d), sel);
++    }
++
++  // Герой - стрелка, как на карте игры
++  if(pl!=nullptr) {
++    const auto c   = mapToScreen(l,pl->position());
++    auto       cur = Resources::loadTexture("U.TGA");
++    if(cur!=nullptr && l.map.contains(c)) {
++      const int sz = int(24*d);
++      p.setBrush(*cur);
++      p.pushState();
++      p.translate(c.x,c.y);
++      p.rotate(-pl->rotation()-90);
++      p.drawRect(-sz/2,-sz/2,sz,sz, 0,0,cur->w(),cur->h());
++      p.popState();
++      }
++    }
++
++  // Справа - название карты, вкладки, список мест, кнопки
++  drawPanel(p, l.panel);
++  const int pad = int(12*d);
++  drawText(p, toCp1251(mi.title), l.panel.x+pad, l.panel.y+pad+int(6*d), true, 1.f);
++  {
++  Button cb;
++  cb.c = l.close;
++  cb.r = l.closeR;
++  drawRound(p, cb, TouchIcons::I_Stop, false, false, 1.f);
++  }
++  for(size_t i=0; i<l.tabs; ++i) {
++    const bool city = mapTabs[i]==TravelPoints::M_City;
++    drawPill(p, l.tab[i], city ? TouchIcons::I_City : TouchIcons::I_Map, toCp1251(city ? "Город" : "Остров"), mapTabs[i]==mapTab);
++    }
++
++  p.pushState();
++  p.setScissor(l.list);
++  auto& rf = Resources::font(Resources::FontType::Normal, Gothic::interfaceScale(this)*0.85f);
++  auto& rh = Resources::font(Resources::FontType::Hi,     Gothic::interfaceScale(this)*0.85f);
++  for(size_t i=0; i<rows.size(); ++i) {
++    const int y = l.list.y+int(i)*l.rowH-mapScroll;
++    if(y+l.rowH<l.list.y || y>l.list.y+l.list.h)
++      continue;
++    auto&      ms  = mapSpots[size_t(rows[i])];
++    const bool sel = (rows[i]==mapSel);
++    if(sel) {
++      p.setBrush(Color(0.85f,0.62f,0.30f,0.22f));
++      p.drawRect(l.list.x, y+int(2*d), l.list.w, l.rowH-int(4*d));
++      }
++    const int gs = int(8*d);
++    drawGlyph(p, TouchIcons::I_Dot, Point(l.list.x+int(8*d), y+l.rowH/2), gs,
++              sel ? GoldBright : (ms.spot.point->major ? GoldIdle : GoldDim));
++    std::string dist;
++    if(pl!=nullptr) {
++      const float dx = ms.pos.x-pl->position().x, dz = ms.pos.z-pl->position().z;
++      dist = distText(std::sqrt(dx*dx+dz*dz));
++      }
++    auto&      f    = sel ? rh : rf;
++    const auto dw   = rf.textSize(dist).w;
++    const int  tx   = l.list.x+int(20*d);
++    const auto name = fit(ms.name, l.list.w-int(20*d)-dw-int(12*d), 0.85f);
++    const auto ts   = f.textSize(name);
++    f.drawText(p, tx, y+(l.rowH+ts.h)/2, name);
++    rf.drawText(p, l.list.x+l.list.w-dw-int(4*d), y+(l.rowH+ts.h)/2, dist);
++    }
++  p.popState();
++  p.setScissor(0,0,w(),h());
++
++  // Что будет: длина пути бегом или почему нельзя
++  std::string info;
++  if(!mapStatus.empty())
++    info = mapStatus;
++  else if(mapSel<0)
++    info = toCp1251("Выбери место на карте или в списке");
++  else if(mapRouteLen<0)
++    info = toCp1251("Дороги нет - только мгновенно");
++  else
++    info = toCp1251("Бегом по дороге: ") + distText(mapRouteLen);
++  drawText(p, fit(info, l.panel.w-2*pad, 0.8f), l.panel.x+pad, l.infoY-int(18*d), false, 0.8f);
++
++  const bool canRun = mapSel>=0 && mapRouteLen>=0;
++  drawPill(p, l.run,  TouchIcons::I_Run,      toCp1251("Бегом"),     false);
++  drawPill(p, l.inst, TouchIcons::I_Teleport, toCp1251("Мгновенно"), false);
++  // Недоступное - притушено
++  p.setBrush(Color(0.f,0.f,0.f,0.5f));
++  if(!canRun)
++    p.drawRect(l.run);
++  if(mapSel<0)
++    p.drawRect(l.inst);
++  }
++
++void TouchInput::drawTravelBanner(Painter& p) {
++  if(ctrl.travelMode()!=PlayerControl::TravelMode::Run)
++    return;
++  // Внизу посередине, между джойстиком и кнопками: куда, сколько осталось, что сейчас
++  const float d = dp();
++  TouchIcons::Icon ic = TouchIcons::I_Run;
++  std::string      txt = toCp1251(ctrl.travelName());
++  switch(ctrl.travelState()) {
++    case PlayerControl::TravelState::Go:
++      txt += "  " + distText(ctrl.travelLeft());
++      break;
++    case PlayerControl::TravelState::Fight:
++      ic   = TouchIcons::I_Sword;
++      txt += toCp1251(" - бой");
++      break;
++    case PlayerControl::TravelState::Loot:
++      ic   = TouchIcons::I_Gather;
++      txt += toCp1251(" - сбор добычи");
++      break;
++    case PlayerControl::TravelState::Talk:
++      ic   = TouchIcons::I_Talk;
++      txt += toCp1251(" - разговор");
++      break;
++    case PlayerControl::TravelState::Fade:
++      break;
++    }
++  const int  bh  = int(34*d);
++  const int  maxW = std::min(int(420*d), w()-int(440*d));
++  if(maxW<int(120*d))
++    return;
++  auto&      fnt = Resources::font(Resources::FontType::Normal, Gothic::interfaceScale(this));
++  txt = fit(txt, maxW-bh-int(30*d), 1.f);
++  const int  bw  = std::min(maxW, fnt.textSize(txt).w+bh+int(30*d));
++  drawPill(p, Rect((w()-bw)/2, h()-int(16*d)-bh, bw, bh), ic, txt, false);
++  }
++
++Rect TouchInput::confirmRect() const {
++  const float d  = dp();
++  const int   cw = std::min(w()-int(32*d), int(400*d));
++  const int   ch = int(170*d);
++  return Rect((w()-cw)/2, (h()-ch)/2, cw, ch);
++  }
++
++Rect TouchInput::confirmButton(bool yes) const {
++  const float d   = dp();
++  const auto  r   = confirmRect();
++  const int   pad = int(14*d);
++  const int   bw  = (r.w-2*pad-int(10*d))/2;
++  const int   bh  = int(44*d);
++  return Rect(r.x+pad+(yes ? 0 : bw+int(10*d)), r.y+r.h-pad-bh, bw, bh);
++  }
++
++void TouchInput::openConfirm() {
++  std::string info;
++  if(!owner.touchQuickSaveInfo(info)) {
++    Gothic::inst().onPrint(toCp1251("Быстрого сохранения нет"));
++    return;
++    }
++  confirmInfo = toCp1251(info);
++  confirmOpen = true;
++  Gothic::inst().pushPause();
++  update();
++  }
++
++void TouchInput::closeConfirm() {
++  if(!confirmOpen)
++    return;
++  confirmOpen = false;
++  Gothic::inst().popPause();
++  update();
+   }
+ 
+-void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
+-  auto dp = e.pos() - mpos;
+-  mpos = e.pos();
+-  if(std::abs(dp.x)>0) {
+-    const float scale = 4.f;
+-    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
++void TouchInput::confirmTap(Point p) {
++  if(confirmButton(true).contains(p)) {
++    closeConfirm();
++    owner.touchQuickLoad();
++    return;
+     }
++  if(confirmButton(false).contains(p) || !confirmRect().contains(p))
++    closeConfirm();
+   }
+ 
+-void TouchInput::mouseUpEvent(Tempest::MouseEvent& e) {
+-  ctrl.onKeyReleased(KeyCodec::Forward, KeyCodec::Mapping::Primary);
++void TouchInput::drawConfirm(Painter& p) {
++  const float d   = dp();
++  const auto  r   = confirmRect();
++  const int   pad = int(14*d);
++  p.setBrush(Color(0.f,0.f,0.f,0.6f));
++  p.drawRect(0,0,w(),h());
++  drawPanel(p, r);
++  drawText(p, fit(toCp1251("Загрузить быстрое сохранение?"), r.w-2*pad, 1.f), r.x+pad, r.y+pad, true, 1.f);
++  drawText(p, fit(confirmInfo, r.w-2*pad, 0.8f), r.x+pad, r.y+pad+int(34*d), false, 0.8f);
++  drawText(p, fit(toCp1251("Всё, что после него, будет потеряно"), r.w-2*pad, 0.8f), r.x+pad, r.y+pad+int(58*d), false, 0.8f);
++  drawPill(p, confirmButton(true),  TouchIcons::I_Load, toCp1251("Загрузить"), false);
++  drawPill(p, confirmButton(false), TouchIcons::I_Back, toCp1251("Отмена"),    false);
    }
 diff --git a/common/ui/touchinput.h b/common/ui/touchinput.h
-index f46becc..8a103a1 100644
+index f46becc..95c6229 100644
 --- a/common/ui/touchinput.h
 +++ b/common/ui/touchinput.h
-@@ -1,21 +1,171 @@
+@@ -1,21 +1,242 @@
  #pragma once
  
  #include <Tempest/Widget>
@@ -5431,6 +7230,7 @@ index f46becc..8a103a1 100644
 +#include <vector>
 +
 +#include "touchicons.h"
++#include "game/travelpoints.h"
 +
 +class MainWindow;
  class PlayerControl;
@@ -5441,13 +7241,19 @@ index f46becc..8a103a1 100644
 +// выбрать цель. Справа внизу дуга под большим пальцем: главная кнопка (говорить/взять/удар/выстрел/
 +// магия - по обстановке), вокруг - «Блок», «Прыжок», «Оружие» (подержать - колесо оружия и заклинаний),
 +// дальше - «Зелье», «Автобой», «Собрать» (когда есть что), «Отряд» (когда есть напарники).
-+// Справа вверху - «Сумка», «Карта», «Журнал», «Герой», «Меню» (подержать - быстрое сохранение).
++// Справа вверху - «Сумка», «Карта», «Путь» (быстрое перемещение), «Журнал», «Герой», «Сохранить» (быстрое
++// сохранение; подержать - быстрая загрузка), «Меню».
 +// Слева вверху - полоски игры и состояние отряда. Диалог: касание по реплике, «Выбрать», «Пропуск».
 +// Сумка, сундук, торговля: касание по ячейке, листать пальцем, «Взять всё». Взлом: влево/вправо.
  class TouchInput : public Tempest::Widget {
    public:
 -    TouchInput(PlayerControl& ctrl);
 +    TouchInput(MainWindow& owner, PlayerControl& ctrl);
++
++    // Окно поверх игры (карта «Путь», подтверждение загрузки, затемнение): клавиши не идут в игру
++    bool isModal() const;
++    // Кнопка «Назад» телефона в таком окне
++    void touchBack();
  
 -    void paintEvent(Tempest::PaintEvent& e);
 -    void mouseDownEvent(Tempest::MouseEvent& e);
@@ -5481,6 +7287,8 @@ index f46becc..8a103a1 100644
 +      C_Log,
 +      C_Hero,
 +      C_Menu,
++      C_Travel,
++      C_Save,
 +      // экраны со списками и взлом
 +      C_Up,
 +      C_Down,
@@ -5504,6 +7312,29 @@ index f46becc..8a103a1 100644
 +      Document,
 +      LockPick,
 +      Skip,
++      Travel,  // карта «Путь»
++      Confirm, // подтверждение быстрой загрузки
++      Fade,    // мгновенное перемещение: экран темнеет
++      };
++
++    // Карта «Путь»: где что на экране
++    struct MapLayout {
++      Tempest::Rect  map;
++      Tempest::Rect  panel;
++      Tempest::Rect  list;
++      int            rowH  = 0;
++      Tempest::Point close;
++      int            closeR = 0;
++      Tempest::Rect  tab[2];
++      size_t         tabs  = 0;
++      Tempest::Rect  run;
++      Tempest::Rect  inst;
++      int            infoY = 0;
++      };
++    struct MapSpot {
++      TravelPoints::Spot spot;
++      std::string        name;   // Windows-1251
++      Tempest::Vec3      pos;
 +      };
 +
 +    enum class Wheel : uint8_t {
@@ -5560,6 +7391,24 @@ index f46becc..8a103a1 100644
 +
 +    std::vector<Npc*>      squad;
 +
++    // Карта «Путь»
++    bool                   mapOpen    = false;
++    TravelPoints::Map      mapTab     = TravelPoints::M_Island;
++    std::vector<TravelPoints::Map> mapTabs;
++    std::vector<MapSpot>   mapSpots;
++    int                    mapSel     = -1;
++    int                    mapScroll  = 0;   // прокрутка списка, пиксели
++    int                    mapFinger  = -1;
++    Tempest::Point         mapDownAt;
++    bool                   mapDrag    = false;
++    std::vector<Tempest::Vec3> mapRoute;     // путь бегом к выбранной точке
++    float                  mapRouteLen = -1; // см; меньше нуля - дороги нет
++    std::string            mapStatus;        // почему нельзя (Windows-1251)
++    const TravelPoints::Point* lastTravel = nullptr; // куда шли в прошлый раз - выбрано при открытии
++    // Подтверждение быстрой загрузки
++    bool                   confirmOpen = false;
++    std::string            confirmInfo;      // Windows-1251
++
 +    float          dp() const;
 +    Ui             currentUi() const;
 +    Button         buttonOf(Ctl c) const;
@@ -5577,6 +7426,22 @@ index f46becc..8a103a1 100644
 +    void           sendNav(Ctl c);
 +    void           joystick(Finger& f, Tempest::Point pos);
 +    void           tapWorld(Tempest::Point p);
++    void           stopTravelByHand();
++
++    void           openTravelMap();
++    void           closeTravelMap();
++    void           setMapTab(TravelPoints::Map m);
++    void           selectSpot(int id);
++    void           travelTo(bool instant);
++    std::vector<int> mapRows() const;
++    MapLayout      mapLayout() const;
++    Tempest::Point mapToScreen(const MapLayout& l, const Tempest::Vec3& pos) const;
++    void           mapTap(Tempest::Point p);
++    void           openConfirm();
++    void           closeConfirm();
++    void           confirmTap(Tempest::Point p);
++    Tempest::Rect  confirmRect() const;
++    Tempest::Rect  confirmButton(bool yes) const;
 +
 +    void           openWheel(Wheel w, int finger);
 +    void           closeWheel();
@@ -5599,6 +7464,11 @@ index f46becc..8a103a1 100644
 +    void           drawSquad   (Tempest::Painter& p);
 +    void           drawBadge   (Tempest::Painter& p, const Button& b, size_t n);
 +    void           drawHoldRing(Tempest::Painter& p, const Button& b, float k);
++    void           drawPanel   (Tempest::Painter& p, const Tempest::Rect& r);
++    void           drawTravelMap(Tempest::Painter& p);
++    void           drawTravelBanner(Tempest::Painter& p);
++    void           drawConfirm (Tempest::Painter& p);
++    void           drawText    (Tempest::Painter& p, std::string_view txt, int x, int y, bool hi, float scale);
 +  };
 diff --git a/common/utils/cp1251.h b/common/utils/cp1251.h
 new file mode 100644
@@ -6023,6 +7893,19 @@ index 7309936..4b6959b 100644
      uint64_t                       lastEventTime=0;
  
      float                          angleY   = 0.f;
+diff --git a/common/world/waypath.h b/common/world/waypath.h
+index 915e49b..8a1732c 100644
+--- a/common/world/waypath.h
++++ b/common/world/waypath.h
+@@ -19,6 +19,8 @@ class WayPath final {
+     const WayPoint* pop();
+     const WayPoint* first() const;
+     const WayPoint* last()  const;
++    // Gothic II Mobile: точки по порядку хода - путь на карте «Путь» и ход бегом
++    std::vector<const WayPoint*> points() const { return {dat.rbegin(), dat.rend()}; }
+ 
+   private:
+     std::vector<const WayPoint*> dat;
 diff --git a/shader/materials/visibility_pass.comp b/shader/materials/visibility_pass.comp
 index 378d837..570542f 100644
 --- a/shader/materials/visibility_pass.comp
