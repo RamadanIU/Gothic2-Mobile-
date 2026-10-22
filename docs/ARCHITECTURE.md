@@ -41,6 +41,8 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
 | Напарник не погибает (без сознания), его не добить и не обобрать, сам не обирает; зелья перед `ZS_HealSelf` | `Npc::onNoHealth`, `Npc::canFinish`, `AI_StartState` → `GameScript::companionState` |
 | Обмен «Покажи, что у тебя есть»: торговля даром, без денег | `DlgChoice::freeTrade`, `InventoryMenu::trade(…, free)` |
 | Привал: случайные занятия ждущих и отряда рядом со стоящим героем, беседы | `GameScript::tickSquadIdle/idleBegin/idlePulse/idleTalk`, `Npc::isCompanionIdle` |
+| Враги отряда: бьют своих, угрожают, ударены героем (отметки `squadNoteHit` из `Npc::takeDamage`) | `GameScript::squadThreat/squadEnemy` |
+| В пути: строй позади героя, след героя, путь по точкам, телепорт отставших; точка на земле — `GT_Point` | `GameScript::tickSquadFollow`, `Npc::goToPos`, `Npc::GoTo::isClose` |
 | Графика из `g2m.ini`: FPS, разрешение, тени, отражения, лучи солнца | `Gothic::Gothic`, `Renderer::setupSettings` |
 | Дальность прорисовки и отсечение мелочи по угловому размеру | `shader/materials/visibility_pass.comp`, `DrawCommands::visibilityPass` |
 | Рендер ждёт видеокарту, а не крутит цикл | `MainWindow::render` |
