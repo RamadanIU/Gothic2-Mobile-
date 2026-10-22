@@ -1,9 +1,9 @@
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
-index 0000000..21d3fc3
+index 0000000..4e05e0c
 --- /dev/null
 +++ b/common/game/companions.cpp
-@@ -0,0 +1,1041 @@
+@@ -0,0 +1,1128 @@
 +#include "gamescript.h"
 +
 +#include <Tempest/Log>
@@ -268,6 +268,79 @@ index 0000000..21d3fc3
 +  Tempest::Log::i("[g2m] companion: \"",npc.displayName(),"\" potions +",n);
 +  }
 +
++bool GameScript::isSquadSide(Npc& npc) {
++  return npc.isPlayer() || isHired(npc);
++  }
++
++bool GameScript::companionPerceives(Npc& npc, Npc& other, Npc* victim, PercType perc) {
++  // Нанятый не обижается на героя и на других напарников: не видит «кражи» (своего оружия, вещей в
++  // доме), урона от своих, входа в дом, оружия в руках, убийств, шума, тревоги стражи. Иначе по скриптам
++  // он нападает, запоминает преступление (B_MemorizePlayerCrime: лорд Андре, Парлан, Ли) и потом в
++  // разговоре сразу обрывает его укором (DIA_Ambient_NEWS)
++  switch(perc) {
++    case PERC_ASSESSTHEFT:
++    case PERC_ASSESSUSEMOB:
++    case PERC_ASSESSENTERROOM:
++    case PERC_ASSESSTHREAT:
++    case PERC_DRAWWEAPON:
++    case PERC_ASSESSDAMAGE:
++    case PERC_ASSESSMURDER:
++    case PERC_ASSESSQUIETSOUND:
++    case PERC_ASSESSWARN:
++    case PERC_ASSESSDEFEAT:
++    case PERC_ASSESSOTHERSDAMAGE:
++    case PERC_ASSESSFIGHTSOUND:
++      break;
++    default:
++      return true;
++    }
++  if(!isHired(npc))
++    return true;
++  if(perc==PERC_ASSESSWARN)
++    return false; // тревога стражи - всегда о герое
++  if(!isSquadSide(other))
++    return true;  // чужой бьёт или ворует - как обычно
++  if(perc==PERC_ASSESSFIGHTSOUND || perc==PERC_ASSESSOTHERSDAMAGE || perc==PERC_ASSESSDEFEAT) {
++    // Герой бьёт врага - помочь; бьёт кого-то другого - не вступаться за него
++    return victim!=nullptr && victim!=&npc && !isSquadSide(*victim) && personAttitude(npc,*victim)==ATT_HOSTILE;
++    }
++  return false;
++  }
++
++void GameScript::companionCalm(Npc& npc) {
++  // Сразу в распорядок, без конца ZS_Attack (там реплики, «жалоба» и обыск). Если состояние то же
++  // (B_Attack уже снял перцепции), оно начнётся заново и включит их
++  const size_t zs = findSymbolIndex(squadIsWaiting(npc) ? "ZS_STAND_ARMSCROSSED" : "ZS_FOLLOW_PLAYER");
++  if(zs==size_t(-1))
++    return;
++  auto wp = npc.currentTaPoint();
++  npc.setTarget(nullptr);
++  npc.startState(zs, wp!=nullptr ? std::string_view(wp->name) : std::string_view(), gtime::endOfTime(), !npc.isInState(zs));
++  }
++
++void GameScript::companionForgive(Npc& npc, Npc& player) {
++  auto& h = npc.handle();
++  // Запомненное «преступление» героя: откатить его вклад в счётчики (как скрипты при смерти NPC,
++  // B_DeletePetzCrime) и забыть - иначе он не даёт поговорить и грозит лордом Андре
++  const int32_t aivCrime = scriptConst("AIV_NPCSAWPLAYERCOMMIT",1);
++  const int32_t none     = scriptConst("CRIME_NONE",0);
++  if(aivCrime>=0 && uint32_t(aivCrime)<zenkit::INpc::aivar_count && h.aivar[size_t(aivCrime)]!=none) {
++    invokeNpcFn("B_DELETEPETZCRIME",npc,player);
++    Tempest::Log::i("[g2m] companion: \"",npc.displayName(),"\" forgives crime ",h.aivar[size_t(aivCrime)]);
++    h.aivar[size_t(aivCrime)] = none;
++    }
++  // Обида (ATT_ANGRY/HOSTILE после драки) - прощена
++  if(npc.attitude()==ATT_ANGRY || npc.attitude()==ATT_HOSTILE)
++    npc.setAttitude(ATT_FRIENDLY);
++  if(npc.tempAttitude()==ATT_ANGRY || npc.tempAttitude()==ATT_HOSTILE)
++    npc.setTempAttitude(npc.attitude());
++  // Дерётся с героем или с другим напарником - перестать
++  if(npc.isAttack() && npc.target()!=nullptr && isSquadSide(*npc.target())) {
++    Tempest::Log::i("[g2m] companion: \"",npc.displayName(),"\" stops fighting \"",npc.target()->displayName(),"\"");
++    companionCalm(npc);
++    }
++  }
++
 +ScriptFn GameScript::companionState(Npc& npc, ScriptFn fn, Npc* other) {
 +  if(!fn.isValid() || Gothic::inst().version().game!=2)
 +    return fn;
@@ -275,6 +348,19 @@ index 0000000..21d3fc3
 +  const bool victim = other!=nullptr && other!=&npc && isHired(*other);
 +  if(!self && !victim)
 +    return fn;
++
++  if(self && other!=nullptr && other!=&npc && isSquadSide(*other)) {
++    // Напасть на героя или на своего, выгнать из дома, следить, отшатнуться - нет: обратно в распорядок
++    static const char* hostile[] = {"ZS_ATTACK", "ZS_REACTTOWEAPON", "ZS_REACTTODAMAGE", "ZS_OBSERVEPLAYER",
++                                    "ZS_CLEARROOM", "ZS_FLEE"};
++    for(auto name:hostile) {
++      if(fn.ptr!=findSymbolIndex(name))
++        continue;
++      Tempest::Log::i("[g2m] companion: \"",npc.displayName(),"\" won't ",name," \"",other->displayName(),"\"");
++      companionCalm(npc);
++      return ScriptFn();
++      }
++    }
 +
 +  if(fn.ptr==findSymbolIndex("ZS_RANSACKBODY")) {
 +    // Победитель обирает побеждённого: забирает золото и подбирает его оружие (конец ZS_Attack).
@@ -427,6 +513,7 @@ index 0000000..21d3fc3
 +  for(auto npc:squadTmp) {
 +    if(npc->isDown())
 +      continue;
++    companionForgive(*npc,*pl);
 +    tickSquadHeal(*npc,now);
 +    if(isPassive(*npc)) {
 +      // Сам не начинает: ни врагов вокруг, ни чужих драк. Перцепции заново включает каждое
@@ -1045,6 +1132,19 @@ index 0000000..21d3fc3
 +    idleBegin(*npc,player,waiting,heroIdle,now);
 +    }
 +  }
+diff --git a/common/game/constants.h b/common/game/constants.h
+index 0e0008a..4199b94 100644
+--- a/common/game/constants.h
++++ b/common/game/constants.h
+@@ -322,7 +322,7 @@ enum ItmFlags : uint32_t {
+   ITM_CAT_LIGHT  = 1 << 8,
+   ITM_CAT_RUNE   = 1 << 9,
+   ITM_CAT_MAGIC  = 1u << 31,
+-  ITM_10         = 1 << 10, // ???
++  ITM_DROPPED    = 1 << 10, // Gothic II Mobile: ITEM_DROPPED скриптов - выпало у NPC, подобрать не кража
+   ITM_RING       = 1 << 11,
+   ITM_MISSION    = 1 << 12,
+   ITM_DAG        = 1 << 13,
 diff --git a/common/game/fightalgo.cpp b/common/game/fightalgo.cpp
 index b1d951f..8d5f5cd 100644
 --- a/common/game/fightalgo.cpp
@@ -1059,7 +1159,7 @@ index b1d951f..8d5f5cd 100644
  
    if(hitFlg) {
 diff --git a/common/game/gamescript.cpp b/common/game/gamescript.cpp
-index 4b32af2..ba0f409 100644
+index 4b32af2..468e769 100644
 --- a/common/game/gamescript.cpp
 +++ b/common/game/gamescript.cpp
 @@ -920,6 +920,12 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
@@ -1087,7 +1187,7 @@ index 4b32af2..ba0f409 100644
    ScopeVar self (*vm.global_self(), npc.handlePtr());
    ScopeVar other(*vm.global_other(), player.handlePtr());
  
-@@ -1118,6 +1129,18 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
+@@ -1118,6 +1129,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
    return ret;
    }
  
@@ -1103,10 +1203,21 @@ index 4b32af2..ba0f409 100644
 +  vm.call_function<void>(fn, npc.handlePtr(), target.handlePtr(), reason, int32_t(0));
 +  }
 +
++void GameScript::invokeNpcFn(std::string_view name, Npc& npc, Npc& other) {
++  // Gothic II Mobile: скриптовая функция с параметром C_NPC (self = npc, other = other)
++  auto* fn = vm.find_symbol_by_name(name);
++  if(fn==nullptr || fn->type()!=zenkit::DaedalusDataType::FUNCTION)
++    return;
++  ScopeCtx ctx  (*this, npc.processPolicy());
++  ScopeVar self (*vm.global_self(),  npc.handlePtr());
++  ScopeVar oth  (*vm.global_other(), other.handlePtr());
++  vm.call_function<void>(fn, npc.handlePtr());
++  }
++
  void GameScript::invokeItem(Npc *npc, ScriptFn fn) {
    if(fn==size_t(-1) || fn == 0)
      return;
-@@ -1472,6 +1495,8 @@ uint64_t GameScript::tickCount() const {
+@@ -1472,6 +1506,8 @@ uint64_t GameScript::tickCount() const {
  void GameScript::tick(uint64_t dt) {
    if(dma!=nullptr)
      dma->tick(dt);
@@ -1116,7 +1227,7 @@ index 4b32af2..ba0f409 100644
  
  uint32_t GameScript::rand(uint32_t max) {
 diff --git a/common/game/gamescript.h b/common/game/gamescript.h
-index 2cccb63..9302be6 100644
+index 2cccb63..21105e6 100644
 --- a/common/game/gamescript.h
 +++ b/common/game/gamescript.h
 @@ -25,6 +25,7 @@ class Npc;
@@ -1136,7 +1247,7 @@ index 2cccb63..9302be6 100644
        zenkit::IInfo*   handle   = nullptr;
        };
  
-@@ -121,6 +124,31 @@ class GameScript final {
+@@ -121,6 +124,35 @@ class GameScript final {
      auto updateDialog (const GameScript::DlgChoice &dlg, Npc &player, Npc &npc) -> std::vector<GameScript::DlgChoice>;
      void exec(const DlgChoice &dlg, Npc &player, Npc &npc);
  
@@ -1160,15 +1271,19 @@ index 2cccb63..9302be6 100644
 +    // В бою с ним напарники помогают: не дуэль, не арена, не свой
 +    bool   squadCanFight(Npc& enemy);
 +    void   invokeAttack(Npc& npc, Npc& target, int32_t reason);
++    void   invokeNpcFn (std::string_view name, Npc& npc, Npc& other);
 +    // Нанятый напарник: не погибает, только теряет сознание; его не добить и не обобрать
 +    bool   isHired     (Npc& npc);
-+    // AI_StartState напарника: без обыска побеждённых, без «смерти» скриптом, перед лечением - зелья
++    // AI_StartState напарника: без обыска побеждённых, без «смерти» скриптом, перед лечением - зелья,
++    // без нападения на героя и своих
 +    ScriptFn companionState(Npc& npc, ScriptFn fn, Npc* other);
++    // Перцепция напарника: проступки героя и отряда (кража, урон, вход в дом...) он не замечает
++    bool   companionPerceives(Npc& npc, Npc& other, Npc* victim, PercType perc);
 +
      void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
      void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
      void  printCannotBuyError         (Npc &npc);
-@@ -445,6 +473,41 @@ class GameScript final {
+@@ -445,6 +477,44 @@ class GameScript final {
      void exitsession         ();
  
      void sort(std::vector<DlgChoice>& dlg);
@@ -1190,6 +1305,9 @@ index 2cccb63..9302be6 100644
 +    int32_t attackReason (Npc& npc, Npc& enemy);
 +    Npc*    squadEnemy   (Npc& npc, Npc& player, bool following);
 +    bool    squadInFight (Npc& player);
++    bool    isSquadSide  (Npc& npc);
++    void    companionCalm(Npc& npc);
++    void    companionForgive(Npc& npc, Npc& player);
 +    void    supplyPotions(Npc& npc);
 +    void    tickSquadHeal(Npc& npc, uint64_t now);
 +    // Привал: случайные занятия ждущих напарников и отряда рядом с долго стоящим героем
@@ -1210,7 +1328,7 @@ index 2cccb63..9302be6 100644
      void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
      bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
  
-@@ -486,6 +549,10 @@ class GameScript final {
+@@ -486,6 +556,10 @@ class GameScript final {
      size_t                                                      gilCount=0;
      std::vector<int32_t>                                        gilAttitudes;
      int                                                         aiOutOrderId=0;
@@ -2025,6 +2143,34 @@ index 1bf7897..00616c0 100644
  
      auto* pso = &Shaders::inst().visibilityPassSh;
      if(viewport==SceneGlobals::V_Main)
+diff --git a/common/graphics/mdlvisual.cpp b/common/graphics/mdlvisual.cpp
+index cc2576c..3b68ba5 100644
+--- a/common/graphics/mdlvisual.cpp
++++ b/common/graphics/mdlvisual.cpp
+@@ -290,7 +290,10 @@ void MdlVisual::dropWeapon(Npc& npc) {
+   if(itm==nullptr)
+     return;
+ 
+-  auto it = npc.world().addItemDyn(itm->clsId(),p,npc.handle().symbol_index());
++  // Gothic II Mobile: выпавшее - ничьё и помечено выпавшим (ITEM_DROPPED), как в оригинальной игре:
++  // подобрать его не кража (C_IsTakenItemMyPossession), «Собрать» его берёт
++  auto it = npc.world().addItemDyn(itm->clsId(),p,size_t(-1));
++  it->handle().flags = zenkit::ItemFlag(uint32_t(it->handle().flags) | ITM_DROPPED);
+   it->setCount(1);
+ 
+   npc.delItem(itm->clsId(),1);
+@@ -311,7 +314,10 @@ void MdlVisual::dropShield(Npc& npc) {
+   if(itm==nullptr)
+     return;
+ 
+-  auto it = npc.world().addItemDyn(itm->clsId(),p,npc.handle().symbol_index());
++  // Gothic II Mobile: выпавшее - ничьё и помечено выпавшим (ITEM_DROPPED), как в оригинальной игре:
++  // подобрать его не кража (C_IsTakenItemMyPossession), «Собрать» его берёт
++  auto it = npc.world().addItemDyn(itm->clsId(),p,size_t(-1));
++  it->handle().flags = zenkit::ItemFlag(uint32_t(it->handle().flags) | ITM_DROPPED);
+   it->setCount(1);
+ 
+   npc.delItem(itm->clsId(),1);
 diff --git a/common/graphics/mesh/pose.cpp b/common/graphics/mesh/pose.cpp
 index 9a4f166..9d0e67d 100644
 --- a/common/graphics/mesh/pose.cpp
@@ -5131,14 +5277,15 @@ index 1624d79..461c1e1 100644
    if(path.empty())
      return u"";
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..ee13037 100644
+index e015398..18bc62c 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
-@@ -593,6 +593,15 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
+@@ -593,9 +593,22 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
    }
  
  void Npc::onNoHealth(bool death, HitSound sndMask) {
-+  if(death && owner.script().isHired(*this)) {
++  const bool hired = owner.script().isHired(*this);
++  if(death && hired) {
 +    // Gothic II Mobile: нанятый напарник не погибает - теряет сознание, потом встаёт, пьёт зелья и
 +    // идёт дальше (ZS_Unconscious -> ZS_HealSelf). В воде без сознания утонул бы - там просто держится
 +    if(isSwim() || isDive()) {
@@ -5148,9 +5295,17 @@ index e015398..ee13037 100644
 +    death = false;
 +    }
    invent.switchActiveWeapon(*this,Item::NSLOT);
-   visual.dropWeapon(*this);
-   visual.dropShield(*this);
-@@ -1555,7 +1564,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
+-  visual.dropWeapon(*this);
+-  visual.dropShield(*this);
++  if(!hired) {
++    // Gothic II Mobile: напарник оружие не роняет - встанет с ним же, и подобрать его чужим нельзя
++    visual.dropWeapon(*this);
++    visual.dropShield(*this);
++    }
+   dropTorch();
+   visual.setToFightMode(WeaponState::NoWeapon);
+   updateWeaponSkeleton();
+@@ -1555,7 +1568,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
    }
  
  bool Npc::implAttack(uint64_t dt) {
@@ -5159,7 +5314,7 @@ index e015398..ee13037 100644
      return false;
  
    if(currentTarget->isDown()){
-@@ -1580,8 +1589,11 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1580,8 +1593,11 @@ bool Npc::implAttack(uint64_t dt) {
      return true;
      }
  
@@ -5173,7 +5328,7 @@ index e015398..ee13037 100644
  
    if(bs==BS_LIE) {
      setAnim(Npc::Anim::Idle);
-@@ -1882,6 +1894,9 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1882,6 +1898,9 @@ bool Npc::implAttack(uint64_t dt) {
  bool Npc::implAiTick(uint64_t dt) {
    // Note AI-action queue takes priority, test case: Vatras pray at night
    if(aiQueue.size()==0) {
@@ -5183,7 +5338,7 @@ index e015398..ee13037 100644
      tickRoutine();
      if(aiQueue.size()>0)
        nextAiAction(aiQueue,dt);
-@@ -2529,6 +2544,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2529,6 +2548,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -5195,7 +5350,16 @@ index e015398..ee13037 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -3793,6 +3813,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3504,6 +3528,8 @@ void Npc::dropItem(size_t id, size_t count) {
+     mat = visual.pose().bone(rightHand);
+ 
+   auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
++  // Gothic II Mobile: брошенное помечено выпавшим (ITEM_DROPPED), как в оригинале: поднять своё - не кража
++  it->handle().flags = zenkit::ItemFlag(uint32_t(it->handle().flags) | ITM_DROPPED);
+   it->setCount(count);
+   invent.delItem(id,count,*this);
+   }
+@@ -3793,6 +3819,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
@@ -5206,7 +5370,7 @@ index e015398..ee13037 100644
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -4158,6 +4182,44 @@ bool Npc::isPrehit() const {
+@@ -4158,6 +4188,44 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -5251,7 +5415,18 @@ index e015398..ee13037 100644
  bool Npc::isImmortal() const {
    return hnpc->flags & zenkit::NpcFlag::IMMORTAL;
    }
-@@ -4356,6 +4418,20 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4238,6 +4306,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+     return false;
+     }
+ 
++  // Gothic II Mobile: нанятый напарник не обижается на героя и на отряд (companions.cpp)
++  if(!owner.script().companionPerceives(*this,pl,victim,perc))
++    return false;
++
+   float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
+   r = r*r;
+ 
+@@ -4356,6 +4428,20 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
