@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..c04385b
+index 0000000..8cf72ee
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,1972 @@
+@@ -0,0 +1,2128 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -287,6 +287,8 @@ index 0000000..c04385b
 +  const size_t   AivToken    = 97;
 +  const size_t   AivSpawn    = 98;
 +  const int32_t  SpawnVersion = 2;
++  // aivar[99] жителя: распорядок заменён по просьбе героя (вернуть после загрузки сохранения - daily_routine)
++  const size_t   AivRoutine  = 99;
 +
 +  const float    NearDist    = 800.f;   // герой подошёл (см)
 +  const float    LeftDist    = 2000.f;  // герой ушёл
@@ -485,27 +487,125 @@ index 0000000..c04385b
 +  return isAiNpc(npc) && AiLink::enabled();
 +  }
 +
-+bool AiNpc::canHear(const Npc& player) const {
++Npc* AiNpc::addressee(const Npc& player, Npc* candidate) const {
++  if(!AiLink::enabled())
++    return nullptr;
++  // Выбранный касанием или тот, на кого смотрит герой: человек в сознании рядом - живой житель
++  if(candidate!=nullptr && candidate!=&player && !candidate->isMonster() && !candidate->isDead() &&
++     !candidate->isUnconscious() && player.qDistTo(*candidate)<SayDist*SayDist) {
++    if(candidate!=geralt || !talking)
++      return candidate;
++    }
 +  // Мир сменился, а tick ещё не нашёл Геральта заново - указатель от прежнего мира
-+  if(geralt==nullptr || geraltWorld!=Gothic::inst().world() || !AiLink::enabled() || talking)
-+    return false;
++  if(geralt==nullptr || geraltWorld!=Gothic::inst().world() || talking)
++    return nullptr;
 +  if(geralt->isDead() || geralt->isUnconscious())
-+    return false;
-+  return player.qDistTo(*geralt)<SayDist*SayDist;
++    return nullptr;
++  return player.qDistTo(*geralt)<SayDist*SayDist ? geralt : nullptr;
 +  }
 +
-+void AiNpc::heroSpeak() {
++void AiNpc::heroSpeak(Npc& to) {
 +  auto* w = world();
-+  if(geralt==nullptr || w==nullptr || w->player()==nullptr)
++  if(w==nullptr || w->player()==nullptr)
 +    return;
 +  // Слушает: стоящий без дела поворачивается к герою (на ходу, в бою и сидя - как есть)
-+  Npc& npc = *geralt;
-+  Npc* pl  = w->player();
-+  if(npc.isAiQueueEmpty() && !npc.isAttack() && npc.interactive()==nullptr && npc.bodyStateMasked()==BS_STAND)
-+    npc.aiPush(AiQueue::aiTurnToNpc(pl));
-+  npc.aiPush(AiQueue::aiLookAtNpc(pl));
-+  // free - без диалога: слова героя и ответ - субтитрами над миром
-+  AiLink::send("{\"ev\":\"listen\",\"free\":1}");
++  Npc* pl = w->player();
++  if(to.isAiQueueEmpty() && !to.isAttack() && to.interactive()==nullptr && to.bodyStateMasked()==BS_STAND)
++    to.aiPush(AiQueue::aiTurnToNpc(pl));
++  to.aiPush(AiQueue::aiLookAtNpc(pl));
++  // free - без диалога: слова героя и ответ - субтитрами над миром; target - кому (self - Геральт)
++  rapidjson::StringBuffer buf;
++  JsonOut j(buf);
++  j.StartObject();
++  put(j,"ev","listen");
++  put(j,"free",1);
++  put(j,"target",&to==geralt ? std::string("self") : refOf(to));
++  put(j,"name",fromCp1251(to.displayName()));
++  j.EndObject();
++  AiLink::send(buf.GetString());
++  }
++
++Npc* AiNpc::actorOf(std::string_view who) {
++  if(who.empty() || who=="self")
++    return geralt;
++  Npc* n = npcByRef(who);
++  if(n==nullptr || n->isPlayer() || n->isMonster())
++    return nullptr;
++  return n;
++  }
++
++void AiNpc::leaveRoutine(Npc& npc) {
++  if(&npc==geralt || npc.isPlayer())
++    return;
++  npc.saveRoutines();
++  npc.handle().aivar[AivRoutine] = 1;
++  for(auto& r:residents)
++    if(r.npc==&npc)
++      return;
++  residents.push_back(Resident{&npc,0});
++  }
++
++void AiNpc::goHome(Npc& npc) {
++  if(&npc==geralt) {
++    // Геральт - обратно за стол в кабаке, пешком (распорядок сам ведёт к точке)
++    setParty(npc,false);
++    if(auto* w = world())
++      if(auto* wp = spawnPoint(*w)) {
++        const size_t fn = owner.findSymbolIndex("ZS_SIT_CHAIR");
++        if(fn!=size_t(-1))
++          npc.setRoutineAllDay(fn,wp->name);
++        }
++    npc.resumeAiRoutine();
++    return;
++    }
++  const int32_t aiv = owner.scriptConst("AIV_PARTYMEMBER",15);
++  if(aiv>=0 && uint32_t(aiv)<zenkit::INpc::aivar_count)
++    npc.handle().aivar[size_t(aiv)] = 0;
++  npc.companionIdle = Npc::CompanionIdle();
++  if(!npc.restoreRoutines()) {
++    if(npc.handle().daily_routine>0)
++      npc.excRoutine(size_t(npc.handle().daily_routine));
++    npc.resumeAiRoutine();
++    }
++  npc.handle().aivar[AivRoutine] = 0;
++  residents.erase(std::remove_if(residents.begin(),residents.end(),[&](const Resident& r){ return r.npc==&npc; }),
++                  residents.end());
++  Log::i("[g2m] ai: resident \"",npc.displayName(),"\" back to routine");
++  }
++
++void AiNpc::tickResidents(uint64_t now) {
++  // Житель, оставленный ждать или ушедший по делу, возвращается к своей жизни, когда герой минуту далеко
++  // (идущие с героем - нет); после загрузки сохранения - сразу к daily_routine
++  if(now<residentTick)
++    return;
++  residentTick = now+1000;
++  auto* w = world();
++  if(w==nullptr || w->player()==nullptr)
++    return;
++  Npc* pl = w->player();
++  for(size_t i=0; i<residents.size(); ) {
++    auto& r = residents[i];
++    if(!npcAlive(r.npc) || r.npc->isDead()) {
++      residents.erase(residents.begin()+long(i));
++      continue;
++      }
++    bool busyHere = owner.isPartyMember(*r.npc);
++    for(auto& a:acts)
++      if(a.actor==r.npc && !a.closed)
++        busyHere = true;
++    if(busyHere || pl->qDistTo(*r.npc)<4000.f*4000.f || r.npc->isTalk()) {
++      r.farSince = 0;
++      ++i;
++      continue;
++      }
++    if(r.farSince==0)
++      r.farSince = now;
++    if(now>r.farSince+60000) {
++      goHome(*r.npc);
++      continue;
++      }
++    ++i;
++    }
 +  }
 +
 +float AiNpc::dist(const Npc& a, const Npc& b) {
@@ -768,6 +868,16 @@ index 0000000..c04385b
 +           ", base npc=",thorusSym!=size_t(-1) ? 1 : 0,", geralt=",npc!=nullptr ? "found" : "absent");
 +    if(thorusSym==size_t(-1) && isTargetWorld(*w))
 +      Log::e("[g2m] ai: no VLK_2000_THORUS in scripts - Geralt can not be created");
++    // Жители, которых герой куда-то увёл (aivar[99]), после загрузки или смены мира - к своему распорядку:
++    // прежний распорядок в сохранение не пишется (Npc::saveRoutines). Идущие с героем - остаются с ним
++    residents.clear();
++    for(uint32_t i=0; i<w->npcCount(); ++i) {
++      Npc* n = w->npcById(i);
++      if(n==nullptr || n==npc || n->isPlayer() || n->isDead())
++        continue;
++      if(n->handle().aivar[AivRoutine]!=0 && !owner.isPartyMember(*n))
++        goHome(*n);
++      }
 +    }
 +  if(npc==nullptr && isTargetWorld(*w) && thorusSym!=size_t(-1) && now>=insertTry) {
 +    insertTry = now+5000;
@@ -784,6 +894,11 @@ index 0000000..c04385b
 +  for(auto& c:cmds)
 +    handle(c);
 +
++  // Дела и реплики жителей идут и там, где Геральта нет
++  tickActions(now);
++  tickLines(now);
++  tickResidents(now);
++
 +  if(geralt==nullptr)
 +    return;
 +  if(!readySent) {
@@ -797,8 +912,6 @@ index 0000000..c04385b
 +  if(talking && !geralt->isTalk() && !w->isInDialog())
 +    onDialogEnd(nullptr,geralt);
 +
-+  tickActions(now);
-+  tickLines(now);
 +  tickEvents(now);
 +  }
 +
@@ -810,16 +923,18 @@ index 0000000..c04385b
 +  const std::string cmd = str(d,"cmd");
 +
 +  if(cmd=="snapshot") {
-+    if(geralt!=nullptr)
-+      sendSnapshot(str(d,"req"));
++    // who - чьими глазами: Геральт (self) или житель (n12)
++    if(Npc* me = actorOf(str(d,"who"))) {
++      refSelf = me;
++      sendSnapshot(*me,str(d,"req"));
++      refSelf = nullptr; // по умолчанию self - Геральт (указатель не хранится: мир может смениться)
++      }
 +    return;
 +    }
 +  if(cmd=="lore") {
 +    sendLore(str(d,"req"),str(d,"target"));
 +    return;
 +    }
-+  if(geralt==nullptr)
-+    return;
 +
 +  if(cmd=="say") {
 +    cmdSay(str(d,"id"),str(d,"who"),str(d,"text"),uint32_t(std::clamp<int64_t>(num(d,"ms",2000),300,60000)),
@@ -828,7 +943,17 @@ index 0000000..c04385b
 +  else if(cmd=="act") {
 +    auto it = d.FindMember("args");
 +    static const rapidjson::Value empty(rapidjson::kObjectType);
-+    cmdAct(str(d,"id"),str(d,"name"),it!=d.MemberEnd() ? &it->value : &empty);
++    Npc* actor = actorOf(str(d,"who"));
++    if(actor==nullptr) {
++      Action a;
++      a.id   = str(d,"id");
++      a.name = str(d,"name");
++      finish(a,false,"тебя здесь нет");
++      return;
++      }
++    refSelf = actor;
++    cmdAct(*actor,str(d,"id"),str(d,"name"),it!=d.MemberEnd() ? &it->value : &empty);
++    refSelf = nullptr; // по умолчанию self - Геральт (указатель не хранится: мир может смениться)
 +    }
 +  else if(cmd=="think") {
 +    busy      = flag(d,"on",false);
@@ -991,7 +1116,8 @@ index 0000000..c04385b
 +  }
 +
 +void AiNpc::paint(Painter& p, int w, int h, float scale) {
-+  if(geralt==nullptr || lines.empty())
++  // Субтитры и Геральта, и живых жителей - жители говорят и там, где Геральта нет
++  if(lines.empty())
 +    return;
 +  auto* wrld = world();
 +  if(wrld==nullptr || wrld->player()==nullptr)
@@ -1025,10 +1151,10 @@ index 0000000..c04385b
 +  // отвечала так, будто он что-то сказал)
 +  busy    = false;
 +  // Разговор прерывает дело: стоит лицом к герою
-+  cancelBody("разговор с героем");
++  cancelBody(geralt,"разговор с героем");
 +  rememberInventory();
 +  AiLink::send("{\"ev\":\"talk_start\"}");
-+  sendSnapshot("talk");
++  sendSnapshot(npc,"talk");
 +  }
 +
 +void AiNpc::onDialogEnd(Npc* player, Npc* npc) {
@@ -1305,11 +1431,11 @@ index 0000000..c04385b
 +    }
 +  }
 +
-+void AiNpc::cancelBody(std::string_view why) {
++void AiNpc::cancelBody(Npc* actor, std::string_view why) {
 +  for(auto& a:acts)
-+    if(!a.closed)
++    if(!a.closed && a.actor==actor)
 +      finish(a,false,std::string("прервано: ")+std::string(why));
-+  acts.clear();
++  acts.erase(std::remove_if(acts.begin(),acts.end(),[](const Action& a){ return a.closed; }),acts.end());
 +  }
 +
 +void AiNpc::finish(Action& a, bool ok, std::string_view note) {
@@ -1455,10 +1581,9 @@ index 0000000..c04385b
 +  return sym!=nullptr ? std::string(sym->name()) : std::string();
 +  }
 +
-+std::string AiNpc::itemNameUtf8(size_t symbol) {
-+  if(geralt!=nullptr)
-+    if(auto* it = geralt->getItem(symbol))
-+      return fromCp1251(it->displayName());
++std::string AiNpc::itemNameUtf8(Npc& npc, size_t symbol) {
++  if(auto* it = npc.getItem(symbol))
++    return fromCp1251(it->displayName());
 +  return {};
 +  }
 +
@@ -1466,7 +1591,7 @@ index 0000000..c04385b
 +  // Действия тела: начинаются вне разговора - конец ZS_Talk и смена состояния стирают очередь ИИ
 +  bool isBodyAct(std::string_view n) {
 +    static const char* list[] = {"go_to_place","go_to_npc","approach","follow_hero","wait_here","stop_following",
-+                                 "attack","stop_fight","take_item","activity","use_mob","loot"};
++                                 "attack","stop_fight","take_item","activity","use_mob","loot","go_home"};
 +    for(auto* i:list)
 +      if(n==i)
 +        return true;
@@ -1474,20 +1599,21 @@ index 0000000..c04385b
 +    }
 +  // Мгновенные из них: итог известен сразу, движение - потом
 +  bool isInstantBody(std::string_view n) {
-+    return n=="follow_hero" || n=="wait_here" || n=="stop_following" || n=="stop_fight" || n=="activity";
++    return n=="follow_hero" || n=="wait_here" || n=="stop_following" || n=="stop_fight" || n=="activity" ||
++           n=="go_home";
 +    }
 +  }
 +
-+void AiNpc::cmdAct(const std::string& id, const std::string& name, const void* argsPtr) {
++void AiNpc::cmdAct(Npc& npc, const std::string& id, const std::string& name, const void* argsPtr) {
 +  const auto& args = *reinterpret_cast<const rapidjson::Value*>(argsPtr);
 +  auto* w  = world();
 +  Npc*  pl = w!=nullptr ? w->player() : nullptr;
-+  if(w==nullptr || pl==nullptr || geralt==nullptr)
++  if(w==nullptr || pl==nullptr)
 +    return;
-+  Npc& npc = *geralt;
 +  const uint64_t now = owner.tickCount();
 +
 +  Action a;
++  a.actor    = &npc;
 +  a.id       = id;
 +  a.name     = name;
 +  a.started  = now;
@@ -1567,8 +1693,8 @@ index 0000000..c04385b
 +    }
 +
 +  if(isBodyAct(name)) {
-+    cancelBody("новое действие");
-+    if(talking || npc.isTalk()) {
++    cancelBody(&npc,"новое действие");
++    if((&npc==geralt && talking) || npc.isTalk()) {
 +      // Сначала договорить: начнётся, когда герой закроет разговор. Сам разговор не обрывает (прежде
 +      // закрывал диалог сразу после реплики - разговор не складывался)
 +      if(isInstantBody(name)) {
@@ -1616,12 +1742,12 @@ index 0000000..c04385b
 +      return;
 +      }
 +    const size_t n    = std::min(count,npc.itemCount(sym));
-+    const auto   item = itemNameUtf8(sym);
++    const auto   item = itemNameUtf8(npc,sym);
 +    if(auto* it = npc.getItem(sym); it!=nullptr && it->isEquipped())
 +      npc.unequipItem(sym);
 +    to->addItem(sym,npc,n);
 +    if(to->isPlayer()) {
-+      std::string msg = "Геральт дал тебе: "+item+(n>1 ? " x"+std::to_string(n) : std::string());
++      std::string msg = fromCp1251(npc.displayName())+" дал(а) тебе: "+item+(n>1 ? " x"+std::to_string(n) : std::string());
 +      Gothic::inst().onPrint(toCp1251(msg));
 +      }
 +    done("отдано: "+item+" x"+std::to_string(n));
@@ -1634,7 +1760,7 @@ index 0000000..c04385b
 +      return;
 +      }
 +    npc.aiPush(AiQueue::aiUseItem(int32_t(sym)));
-+    done("использовано: "+itemNameUtf8(sym));
++    done("использовано: "+itemNameUtf8(npc,sym));
 +    return;
 +    }
 +  if(name=="gesture") {
@@ -1691,7 +1817,7 @@ index 0000000..c04385b
 +    acts.push_back(a);
 +    return;
 +    }
-+  if(name=="end_conversation") {
++  if(name=="end_conversation" && &npc==geralt) {
 +    endDialog();
 +    done("разговор окончен");
 +    return;
@@ -1749,13 +1875,14 @@ index 0000000..c04385b
 +  }
 +
 +void AiNpc::beginBody(Action& a) {
-+  Npc& npc = *geralt;
++  Npc& npc = *a.actor;
 +  const uint64_t now = owner.tickCount();
 +  a.begun   = true;
 +  a.started = now;
 +  // Заново начатое состояние распорядка (лагерь на месте или ZS_Follow_Player) очищает очередь ИИ -
-+  // движение кладётся в неё после
++  // движение кладётся в неё после. Житель при этом уходит от своего распорядка (запоминается - leaveRoutine)
 +  auto restart = [&](bool party) {
++    leaveRoutine(npc);
 +    setParty(npc,party);
 +    npc.resumeAiRoutine();
 +    };
@@ -1800,11 +1927,18 @@ index 0000000..c04385b
 +    }
 +  else if(a.name=="stop_fight") {
 +    npc.setTarget(nullptr);
-+    restart(owner.isPartyMember(npc));
++    if(&npc==geralt || owner.isPartyMember(npc) || npc.hasSavedRoutines())
++      restart(owner.isPartyMember(npc)); else
++      npc.resumeAiRoutine(); // житель - к своему распорядку
 +    npc.aiPush(AiQueue::aiRemoveWeapon());
 +    finish(a,true,"ты прекратил бой");
 +    }
++  else if(a.name=="go_home") {
++    goHome(npc);
++    finish(a,true,&npc==geralt ? "идёшь обратно в кабак Корагона" : "вернулся к своим делам");
++    }
 +  else if(a.name=="activity") {
++    leaveRoutine(npc);
 +    setParty(npc,false);
 +    setActivity(npc,a.text);
 +    npc.resumeAiRoutine();
@@ -1817,14 +1951,19 @@ index 0000000..c04385b
 +
 +void AiNpc::tickActions(uint64_t now) {
 +  auto* w  = world();
-+  Npc&  npc = *geralt;
 +  for(size_t i=0; i<acts.size(); ++i) {
 +    auto& a = acts[i];
 +    if(a.closed)
 +      continue;
++    if(a.actor==nullptr || !npcAlive(a.actor) || a.actor->isDead()) {
++      finish(a,false,"тебя больше нет");
++      continue;
++      }
++    Npc& npc = *a.actor;
 +    if(!a.begun) {
 +      // Ждёт конца разговора (не дольше 10 минут)
-+      if(!talking && !npc.isTalk() && !w->isInDialog())
++      const bool inTalk = (&npc==geralt && talking) || npc.isTalk() || (&npc==geralt && w->isInDialog());
++      if(!inTalk)
 +        beginBody(a);
 +      else if(now>a.started+600000)
 +        finish(a,false,"разговор так и не закончился");
@@ -1889,7 +2028,7 @@ index 0000000..c04385b
 +        for(auto& [cls,n]:take) {
 +          npc.addItem(cls,*a.target,n);
 +          if(got.size()<300)
-+            got += (got.empty() ? "" : ", ")+itemNameUtf8(cls)+(n>1 ? " x"+std::to_string(n) : std::string());
++            got += (got.empty() ? "" : ", ")+itemNameUtf8(npc,cls)+(n>1 ? " x"+std::to_string(n) : std::string());
 +          }
 +        npc.aiPush(AiQueue::aiPlayAnim("T_PLUNDER"));
 +        finish(a,true,got.empty() ? "ничего не нашёл" : "забрал: "+got);
@@ -1904,7 +2043,8 @@ index 0000000..c04385b
 +std::string AiNpc::refOf(Npc& npc) {
 +  if(npc.isPlayer())
 +    return "hero";
-+  if(&npc==geralt)
++  // self - тот, чьими глазами снимок (Геральт или житель); Геральт для жителя - обычный nN
++  if(&npc==(refSelf!=nullptr ? refSelf : geralt))
 +    return "self";
 +  auto it = npcRefs.find(&npc);
 +  if(it!=npcRefs.end())
@@ -1932,7 +2072,7 @@ index 0000000..c04385b
 +  if(ref=="hero")
 +    return w->player();
 +  if(ref=="self")
-+    return geralt;
++    return refSelf!=nullptr ? refSelf : geralt;
 +  if(ref.size()<2 || ref[0]!='n')
 +    return nullptr;
 +  const uint32_t id = uint32_t(std::strtoul(std::string(ref.substr(1)).c_str(),nullptr,10));
@@ -1948,14 +2088,15 @@ index 0000000..c04385b
 +
 +Item* AiNpc::itemByRef(std::string_view ref) {
 +  auto* w = world();
-+  if(w==nullptr || geralt==nullptr || ref.size()<2 || ref[0]!='i')
++  Npc* me = refSelf!=nullptr ? refSelf : geralt;
++  if(w==nullptr || me==nullptr || ref.size()<2 || ref[0]!='i')
 +    return nullptr;
 +  const uint32_t id = uint32_t(std::strtoul(std::string(ref.substr(1)).c_str(),nullptr,10));
 +  auto it = itmByNum.find(id);
 +  if(it==itmByNum.end())
 +    return nullptr;
 +  Item* ret = nullptr;
-+  w->detectItem(geralt->position(),ItemDist*2,[&](Item& i){ if(&i==it->second) ret = &i; });
++  w->detectItem(me->position(),ItemDist*2,[&](Item& i){ if(&i==it->second) ret = &i; });
 +  return ret;
 +  }
 +
@@ -1991,19 +2132,25 @@ index 0000000..c04385b
 +  return best->point->name;
 +  }
 +
-+void AiNpc::sendSnapshot(std::string_view reason) {
++void AiNpc::sendSnapshot(Npc& me, std::string_view reason) {
 +  // Метка запроса - только буквы и цифры: вставляется в JSON как есть
 +  std::string req;
 +  for(char c:reason)
 +    if(std::isalnum(uint8_t(c)) || c=='_')
 +      req.push_back(c);
-+  AiLink::send(snapshot().insert(1,"\"req\":\""+req+"\","));
++  std::string head = "\"req\":\""+req+"\",";
++  // Снимок жителя - с пометкой, чей он: мозг Геральта не путает его со своим
++  if(&me!=geralt) {
++    refSelf = nullptr;
++    head += "\"actor\":\""+refOf(me)+"\",";
++    refSelf = &me;
++    }
++  AiLink::send(snapshot(me).insert(1,head));
 +  }
 +
-+std::string AiNpc::snapshot() {
++std::string AiNpc::snapshot(Npc& me) {
 +  auto* w  = world();
 +  Npc*  pl = w->player();
-+  Npc&  me = *geralt;
 +
 +  rapidjson::StringBuffer buf;
 +  JsonOut j(buf);
@@ -2051,6 +2198,15 @@ index 0000000..c04385b
 +  // Сам
 +  j.Key("self");
 +  j.StartObject();
++  put(j,"id",npcId(me));
++  put(j,"name",fromCp1251(me.displayName()));
++  if(&me!=geralt) {
++    put(j,"guild",guildName(int32_t(me.guild())));
++    put(j,"female",me.handle().voice==16 || me.handle().voice==17 ? 1 : 0);
++    put(j,"voice",me.handle().voice);
++    if(me.hasSavedRoutines())
++      put(j,"away",1); // ушёл от своего распорядка по просьбе (go_home - вернуться)
++    }
 +  put(j,"hp",me.attribute(ATR_HITPOINTS));
 +  put(j,"hpMax",me.attribute(ATR_HITPOINTSMAX));
 +  put(j,"inParty",owner.isPartyMember(me) ? 1 : 0);
@@ -2212,10 +2368,10 @@ index 0000000..c04385b
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..011167b
+index 0000000..77f6f1b
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,216 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -2257,9 +2413,10 @@ index 0000000..011167b
 +    // Свои доспехи и оружие: скрипты (ZS_Attack, ...) и вставка не меняют их на «лучшие» - надевает он сам
 +    bool keepsOwnGear(const Npc& npc) const;
 +
-+    // Кнопка «Сказать» (TouchInput): Геральт рядом и слышит героя - сказать без диалога
-+    bool canHear(const Npc& player) const;
-+    void heroSpeak();
++    // Кнопка «Сказать» (TouchInput): кому герой скажет - выбранному или тому, на кого смотрит (живые жители), иначе
++    // Геральту рядом; nullptr - некому. Сказать без диалога: слова - модели этого жителя
++    Npc* addressee(const Npc& player, Npc* candidate) const;
++    void heroSpeak(Npc& to);
 +
 +    // Диалог с ним: свой выбор реплик вместо скриптов игры
 +    bool dialogChoices(Npc& player, Npc& npc, std::vector<GameScript::DlgChoice>& out);
@@ -2307,6 +2464,7 @@ index 0000000..011167b
 +    struct Action {
 +      std::string     id;
 +      std::string     name;
++      Npc*            actor    = nullptr; // кто делает: Геральт или житель
 +      uint64_t        started  = 0;
 +      uint64_t        deadline = 0;
 +      Npc*            target   = nullptr;
@@ -2340,7 +2498,13 @@ index 0000000..011167b
 +    void   handle(const std::string& json);
 +    void   cmdSay(const std::string& id, const std::string& who, const std::string& text, uint32_t ms,
 +                  const std::string& to, const std::string& mood);
-+    void   cmdAct(const std::string& id, const std::string& name, const void* args);
++    void   cmdAct(Npc& actor, const std::string& id, const std::string& name, const void* args);
++    Npc*   actorOf(std::string_view who);
++    // Житель уходит от своего распорядка (идёт куда попросили, ждёт, идёт с героем) - распорядок запоминается;
++    // домой - когда попросят (go_home) или когда герой давно далеко (tickResidents)
++    void   leaveRoutine(Npc& npc);
++    void   goHome(Npc& npc);
++    void   tickResidents(uint64_t now);
 +    std::string equip  (Npc& npc, size_t sym, bool& ok);
 +    std::string unequip(Npc& npc, size_t sym, bool& ok);
 +    void   finish(Action& a, bool ok, std::string_view note);
@@ -2348,17 +2512,17 @@ index 0000000..011167b
 +    void   tickActions(uint64_t now);
 +    void   tickLines(uint64_t now);
 +    void   tickEvents(uint64_t now);
-+    void   cancelBody(std::string_view why);
++    void   cancelBody(Npc* actor, std::string_view why);
 +    void   speakOverlay(Npc& speaker, Npc* to, const std::string& id, const std::string& text, uint32_t ms);
 +    void   endDialog();
 +
 +    void   sendReady();
 +    void   rememberInventory();
 +    void   reportTrade();
-+    void   sendSnapshot(std::string_view reason);
++    void   sendSnapshot(Npc& me, std::string_view reason);
 +    void   sendLore(std::string_view req, std::string_view ref);
 +    void   sendEvent(std::string_view kind, std::string_view text, Npc* who);
-+    std::string snapshot();
++    std::string snapshot(Npc& me);
 +
 +    // Ссылки на NPC и предметы для модели: n17, i42 - живут, пока живёт объект
 +    std::string refOf(Npc& npc);
@@ -2369,7 +2533,7 @@ index 0000000..011167b
 +    std::string guildName(int32_t guild);
 +    std::string placeName(const Tempest::Vec3& pos, float& dist);
 +    size_t      itemSymbol(std::string_view name);
-+    std::string itemNameUtf8(size_t symbol);
++    std::string itemNameUtf8(Npc& owner, size_t symbol);
 +    std::string itemId(const Item& it);
 +    std::string npcId(Npc& npc);
 +    const WayPoint* placeByName(std::string_view name);
@@ -2399,6 +2563,14 @@ index 0000000..011167b
 +
 +    std::vector<Line>              lines;
 +    std::vector<Action>            acts;
++    // Кто для ссылок «self»: Геральт или житель, чей ход сейчас разбирается
++    Npc*                           refSelf     = nullptr;
++    struct Resident {
++      Npc*     npc      = nullptr;
++      uint64_t farSince = 0;
++      };
++    std::vector<Resident>          residents;
++    uint64_t                       residentTick = 0;
 +    std::vector<std::string>       inbox;
 +
 +    std::unordered_map<const Npc*,uint32_t>  npcRefs;
@@ -8915,10 +9087,10 @@ index 0000000..8538a5a
 +    const Tempest::Texture2d& cached(uint64_t key, const std::function<Tempest::Texture2d()>& make);
 +  };
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f1730..106a8e2 100644
+index d9f1730..533f0e9 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,2003 @@
+@@ -1,41 +1,2023 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
@@ -9105,8 +9277,7 @@ index d9f1730..106a8e2 100644
 +    case C_Say: {
 +      if(ui!=Ui::World || pl==nullptr || ctrl.travelMode()!=PlayerControl::TravelMode::None)
 +        return false;
-+      auto w = Gothic::inst().world();
-+      return w!=nullptr && w->script().aiNpc().canHear(*pl);
++      return sayTarget()!=nullptr;
 +      }
 +    case C_Up:
 +    case C_Down:
@@ -9241,6 +9412,18 @@ index d9f1730..106a8e2 100644
 +  return nullptr;
 +  }
 +
++Npc* TouchInput::sayTarget() const {
++  // Кому «Сказать»: выбранный касанием, иначе тот, на кого смотрит герой, иначе Геральт рядом (AiNpc::addressee)
++  auto w  = Gothic::inst().world();
++  auto pl = Gothic::inst().player();
++  if(w==nullptr || pl==nullptr)
++    return nullptr;
++  Npc* cand = ctrl.touchTarget();
++  if(cand==nullptr)
++    cand = w->validateFocus(ctrl.focus()).npc;
++  return w->script().aiNpc().addressee(*pl,cand);
++  }
++
 +std::string TouchInput::fit(std::string txt, int maxW, float scale) const {
 +  auto& fnt = Resources::font(Resources::FontType::Normal, Gothic::interfaceScale(this)*scale);
 +  if(fnt.textSize(txt).w<=maxW)
@@ -9316,10 +9499,18 @@ index d9f1730..106a8e2 100644
 +        drawRound(p,b,TouchIcons::I_Squad,pressed,wheel==Wheel::Squad,1.f);
 +        drawBadge(p,b,squad.size());
 +        break;
-+      case C_Say:
++      case C_Say: {
++        // Подпись - кому скажешь: герой видит, к кому обращается
 +        drawRound(p,b,TouchIcons::I_Mic,pressed,false,1.f);
-+        drawLabel(p,toCp1251("Сказать"),Point(b.c.x,b.c.y-b.r-int(10*dp())),pressed,0.75f);
++        auto* to = sayTarget();
++        const std::string who = to!=nullptr ? std::string(to->displayName()) : toCp1251("Сказать");
++        const auto txt = fit(who,int(96*dp()),0.75f);
++        // У правого края: подпись не вылезает за экран
++        const int  tw  = Resources::font(Resources::FontType::Normal,Gothic::interfaceScale(this)*0.75f).textSize(txt).w;
++        const int  cx  = std::min(b.c.x, w()-int(6*dp())-tw/2);
++        drawLabel(p,txt,Point(cx,b.c.y-b.r-int(10*dp())),pressed,0.75f);
 +        break;
++        }
 +      case C_Sneak:  drawRound(p,b,TouchIcons::I_Sneak, pressed,ctrl.isSneak(),0.8f); break;
 +      case C_Bag:    drawRound(p,b,TouchIcons::I_Sack,  pressed,false,0.8f); break;
 +      case C_Map:    drawRound(p,b,TouchIcons::I_Map,   pressed,false,0.8f); break;
@@ -9429,9 +9620,7 @@ index d9f1730..106a8e2 100644
 +  cl.set(cl.r(), cl.g(), cl.b(), cl.a()*alpha);
 +  drawGlyph(p, ic, b.c, int(float(b.r)*1.12f), cl);
 +  }
- 
--  p.setBrush(Color(1,1,1, 0.2f));
--  p.drawRect(10, h()-10 - 100, 100, 100);
++
 +void TouchInput::drawPill(Painter& p, const Rect& r, TouchIcons::Icon ic, std::string_view label, bool pressed) {
 +  if(pressed)
 +    drawGlow(p, Rect(r.x-r.h/6, r.y-r.h/6, r.w+r.h/3, r.h+r.h/3), r.h, 0.35f);
@@ -9500,11 +9689,8 @@ index d9f1730..106a8e2 100644
 +    const auto  c = Point(b.c.x+int(rad*std::cos(a)), b.c.y-int(rad*std::sin(a)));
 +    drawGlyph(p, TouchIcons::I_Dot, c, ds, GoldBright);
 +    }
-   }
- 
--void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
--  auto r = Rect(10, h()-10-100, 100, 100);
--  if(!r.contains(e.pos())) {
++  }
++
 +void TouchInput::drawJoystick(Painter& p) {
 +  const float d  = dp();
 +  const int   R  = int(56*d);
@@ -9546,7 +9732,9 @@ index d9f1730..106a8e2 100644
 +  kb.r = kr;
 +  drawRound(p, kb, TouchIcons::I_Dot, false, active && joyRun, alpha+0.15f);
 +  }
-+
+ 
+-  p.setBrush(Color(1,1,1, 0.2f));
+-  p.drawRect(10, h()-10 - 100, 100, 100);
 +void TouchInput::drawTarget(Painter& p) {
 +  auto tg  = ctrl.touchTarget();
 +  auto cam = Gothic::inst().camera();
@@ -9569,8 +9757,11 @@ index d9f1730..106a8e2 100644
 +  drawGlyph(p, TouchIcons::I_Down, Point(ix, iy-int(26*d)+bob), gs, GoldBright);
 +  if(ctrl.focus().npc!=tg)
 +    drawLabel(p, tg->displayName(), Point(ix, iy-int(44*d)+bob), false, 0.85f);
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
+-  auto r = Rect(10, h()-10-100, 100, 100);
+-  if(!r.contains(e.pos())) {
 +void TouchInput::drawSquad(Painter& p) {
 +  if(squad.empty())
 +    return;
@@ -10229,7 +10420,8 @@ index d9f1730..106a8e2 100644
 +    case C_Say:
 +      // Голосом или текстом - как выбрано в настройках; в панели можно переключиться
 +      if(auto w = Gothic::inst().world())
-+        w->script().aiNpc().heroSpeak();
++        if(auto* to = sayTarget())
++          w->script().aiNpc().heroSpeak(*to);
 +      break;
 +    case C_Potion:
 +      if(!f.held && !ctrl.drinkHealPotion())
@@ -10370,14 +10562,8 @@ index d9f1730..106a8e2 100644
 +
 +bool TouchInput::isModal() const {
 +  return mapOpen || confirmOpen || ctrl.travelMode()==PlayerControl::TravelMode::Instant;
-   }
- 
--void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
--  auto dp = e.pos() - mpos;
--  mpos = e.pos();
--  if(std::abs(dp.x)>0) {
--    const float scale = 4.f;
--    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
++  }
++
 +void TouchInput::touchBack() {
 +  if(confirmOpen)
 +    closeConfirm();
@@ -10590,8 +10776,14 @@ index d9f1730..106a8e2 100644
 +static Tempest::Vec3 cityCenter() {
 +  auto& ci = TravelPoints::info(TravelPoints::M_City);
 +  return Tempest::Vec3(float(ci.left+ci.right)*0.5f, 0.f, float(ci.top+ci.bottom)*0.5f);
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
+-  auto dp = e.pos() - mpos;
+-  mpos = e.pos();
+-  if(std::abs(dp.x)>0) {
+-    const float scale = 4.f;
+-    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
 +void TouchInput::mapTap(Point p) {
 +  const auto  l    = mapLayout();
 +  const float d    = dp();
@@ -10940,10 +11132,10 @@ index d9f1730..106a8e2 100644
 +  drawPill(p, confirmButton(false), TouchIcons::I_Back, toCp1251("Отмена"),    false);
    }
 diff --git a/common/ui/touchinput.h b/common/ui/touchinput.h
-index f46becc..7eb1966 100644
+index f46becc..cf89ab6 100644
 --- a/common/ui/touchinput.h
 +++ b/common/ui/touchinput.h
-@@ -1,21 +1,249 @@
+@@ -1,21 +1,251 @@
  #pragma once
  
  #include <Tempest/Widget>
@@ -10965,7 +11157,8 @@ index f46becc..7eb1966 100644
 +// выбрать цель. Справа внизу дуга под большим пальцем: главная кнопка (говорить/взять/удар/выстрел/
 +// магия - по обстановке), вокруг - «Блок», «Прыжок», «Оружие» (подержать - колесо оружия и заклинаний),
 +// дальше - «Зелье», «Автобой», «Собрать» (когда есть что), «Отряд» (когда есть напарники), над ними -
-+// «Сказать» (рядом живой NPC: голосом или текстом, без диалога).
++// «Сказать» (кому - выбранному касанием, тому, на кого смотрит герой, или Геральту рядом; голосом или текстом,
++// без диалога - отвечает модель этого жителя).
 +// Справа вверху - «Сумка», «Карта», «Путь» (быстрое перемещение), «Журнал», «Герой», «Сохранить» (быстрое
 +// сохранение; подержать - быстрая загрузка), «Меню».
 +// Слева вверху - полоски игры и состояние отряда. Диалог: касание по реплике, «Выбрать», «Пропуск».
@@ -11148,6 +11341,7 @@ index f46becc..7eb1966 100644
 +    bool           isPressed(Ctl c) const;
 +    MainCtx        mainContext() const;
 +    Npc*           squadTarget() const;
++    Npc*           sayTarget() const;
 +    std::string    fit(std::string txt, int maxW, float scale) const;
 +
 +    void           press  (Ctl c, Finger& f);
@@ -11577,7 +11771,7 @@ index f8badbd..a918201 100644
    while(true) {
      {
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..f640b09 100644
+index e015398..3fead12 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -4,10 +4,12 @@
@@ -11845,7 +12039,7 @@ index e015398..f640b09 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4356,6 +4479,20 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4479,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -11854,6 +12048,23 @@ index e015398..f640b09 100644
 +  routines.clear();
 +  addRoutine(gtime(8,0), gtime(20,0),uint32_t(state),point);
 +  addRoutine(gtime(20,0),gtime(8,0), uint32_t(state),point);
++  }
++
++void Npc::saveRoutines() {
++  if(routinesSaved)
++    return;
++  savedRoutines = routines;
++  routinesSaved = true;
++  }
++
++bool Npc::restoreRoutines() {
++  if(!routinesSaved)
++    return false;
++  routines      = std::move(savedRoutines);
++  savedRoutines.clear();
++  routinesSaved = false;
++  resumeAiRoutine();
++  return true;
 +  }
 +
 +bool Npc::hasRoutineState(size_t state) const {
@@ -11866,7 +12077,7 @@ index e015398..f640b09 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4822,3 +4959,40 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4822,3 +4976,40 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
    if(syncAtt)
      visual.syncAttaches();
    }
@@ -11908,7 +12119,7 @@ index e015398..f640b09 100644
 +  }
 +
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..1cddb9a 100644
+index 7309936..26653ee 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
 @@ -21,6 +21,7 @@
@@ -11936,7 +12147,7 @@ index 7309936..1cddb9a 100644
  
      std::string_view displayName() const;
      auto       displayPosition() const -> Tempest::Vec3;
-@@ -289,6 +300,56 @@ class Npc final {
+@@ -289,6 +300,61 @@ class Npc final {
  
      bool      isAttackAnim() const;
      bool      isPrehit() const;
@@ -11946,6 +12157,11 @@ index 7309936..1cddb9a 100644
 +    // Gothic II Mobile: напарник - один распорядок на весь день (следовать, ждать)
 +    void      setRoutineAllDay(size_t state, std::string_view point);
 +    bool      hasRoutineState(size_t state) const;
++    // Gothic II Mobile: распорядок жителя до просьбы героя (живые жители, ainpc.cpp) - вернуть, когда дела кончились.
++    // В сохранение не пишется: после загрузки распорядок возвращает daily_routine
++    void      saveRoutines();
++    bool      restoreRoutines();
++    bool      hasSavedRoutines() const { return routinesSaved; }
 +    bool      isAutoFight() const { return autoFight; }
 +    int32_t   fightTactic() const;
 +    // Gothic II Mobile: занятие напарника на привале (companions.cpp); не сохраняется
@@ -11993,7 +12209,7 @@ index 7309936..1cddb9a 100644
      bool      isImmortal() const;
  
      void      setPerceptionTime   (uint64_t time);
-@@ -456,6 +517,7 @@ class Npc final {
+@@ -456,6 +522,7 @@ class Npc final {
        Npc*             npc  = nullptr;
        const WayPoint*  wp   = nullptr;
        Tempest::Vec3    pos  = {};
@@ -12001,7 +12217,7 @@ index 7309936..1cddb9a 100644
  
        void             save(Serialize& fout) const;
        void             load(Serialize&  fin);
-@@ -555,6 +617,7 @@ class Npc final {
+@@ -555,6 +622,7 @@ class Npc final {
  
      // visual props (cache)
      uint8_t                        durtyTranform=0;
@@ -12009,7 +12225,16 @@ index 7309936..1cddb9a 100644
      Tempest::Vec3                  lastGroundNormal;
  
      DynamicWorld::NpcItem          physic;
-@@ -629,6 +692,7 @@ class Npc final {
+@@ -608,6 +676,8 @@ class Npc final {
+     AiQueue                        aiQueue;
+     AiQueue                        aiQueueOverlay;
+     std::vector<Routine>           routines;
++    std::vector<Routine>           savedRoutines;
++    bool                           routinesSaved = false;
+ 
+     Interactive*                   currentInteract=nullptr;
+     Npc*                           currentOther   =nullptr;
+@@ -629,6 +699,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;

@@ -244,6 +244,39 @@ public class AiLogicTest {
     }
 
     @Test
+    public void residentHasToolsRulesAndOwnLife() {
+        String p = Persona.resident("Корагон", "Горожанин", false, NpcLore.of("VLK_420_CORAGON"),
+            new ArrayList<>(), new ArrayList<>());
+        assertTrue(p, p.contains("Хозяин кабака"));
+        assertTrue(p, p.contains("go_home"));
+        assertTrue(p, p.contains("give_item"));
+        assertTrue(p, p.contains("self — это ты"));
+        assertTrue(p, p.contains("Не обрывай разговор"));
+        // живой житель - не помощник и не ИИ
+        assertTrue(p, p.contains("а не помощник и не ИИ"));
+        Map<String, Object> c = Tools.engineAct("A9", "go_home", Json.of());
+        assertEquals("go_home", c.get("name"));
+    }
+
+    @Test
+    public void memoryKeepsResidentNotes() throws IOException {
+        File dir = tmp.newFolder("notes");
+        Memory m = new Memory(dir);
+        m.load(4, 0);
+        for (int i = 0; i < Memory.NPC_NOTES + 3; i++) m.npcNote("VLK_420_CORAGON", "заметка " + i);
+        m.addTalk("VLK_420_CORAGON", "Герой: Налей пива");
+        m.save(4, 9);
+        Memory back = new Memory(dir);
+        back.load(4, 9);
+        String ctx = back.npcContext("VLK_420_CORAGON");
+        assertTrue(ctx, ctx.startsWith("Ты запомнил:"));
+        assertFalse(ctx, ctx.contains("заметка 0\n"));
+        assertTrue(ctx, ctx.contains("заметка " + (Memory.NPC_NOTES + 2)));
+        assertTrue(ctx, ctx.contains("Недавние разговоры:\nГерой: Налей пива"));
+        assertEquals("", back.npcContext("NONE"));
+    }
+
+    @Test
     public void memoryKeepsTalksWithNpcs() throws IOException {
         File dir = tmp.newFolder("talks");
         Memory m = new Memory(dir);

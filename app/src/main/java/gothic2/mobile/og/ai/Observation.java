@@ -29,6 +29,7 @@ public final class Observation {
             }
             sb.append(", оружие: ").append(Json.str(me, "weapon"));
             if (Json.bool(me, "inParty", false)) sb.append(", идёшь с героем (в его отряде)");
+            if (Json.bool(me, "away", false)) sb.append(", ты ушёл от своих дел (go_home — вернуться)");
             if (Json.bool(me, "fighting", false)) sb.append(", в бою");
             if (Json.bool(me, "down", false)) sb.append(", без сознания");
             String using = Json.str(me, "using");

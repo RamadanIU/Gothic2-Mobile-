@@ -43,15 +43,12 @@ public final class Persona {
             "- Важное о герое и уговоры запоминай инструментом remember.");
     }
 
-    /**
-     * Ответ жителя на слова Геральта — без инструментов, в его характере. lore — кто он (NpcLore), topics — темы
-     * его диалогов в игре, lines — его собственные реплики из игры (манера речи и что он знает).
-     */
-    public static String npcReply(String name, String guild, boolean female, String lore, List<String> topics,
-                                  List<String> lines) {
+    /** Кто такой житель: имя, нрав (NpcLore), темы и его реплики из игры, мир острова. */
+    private static void identity(StringBuilder sb, String name, String guild, boolean female, String lore,
+                                 List<String> topics, List<String> lines) {
         String who = name + (guild.isEmpty() ? "" : " (" + guild + ")");
-        StringBuilder sb = new StringBuilder();
-        sb.append("Ты — ").append(who).append(", житель острова Хоринис из мира игры Gothic II. Говоришь от своего лица, ")
+        sb.append("Ты — ").append(who).append(", житель острова Хоринис из мира игры Gothic II. Ты живой человек этого ")
+            .append("мира, а не помощник и не ИИ: никогда не говори о моделях, играх и программах. Говоришь от своего лица, ")
             .append("по-русски, как ").append(female ? "женщина" : "мужчина")
             .append(" этого мира: просто, живо, своими словами, обычно 1–3 предложения.");
         if (!lore.isEmpty()) sb.append("\n\nКто ты: ").append(lore);
@@ -62,17 +59,67 @@ public final class Persona {
             for (String l : lines) sb.append("\n- ").append(l);
         }
         sb.append("\n\nЧто знает каждый на острове: ").append(NpcLore.WORLD);
-        sb.append("\n\nПеред тобой незнакомец, назвавшийся Геральтом: седой, со шрамом, с жёлтыми кошачьими глазами и ")
-            .append("двумя мечами за спиной. Говорят, он недавно появился в городе и сидит в кабаке Корагона. ")
-            .append("Он чужак, но держится спокойно и вежливо, платит и никого не трогает.");
-        sb.append("\n\nКак отвечать:");
-        sb.append("\n- Будь обычным человеком своего нрава. С вежливым чужаком большинство жителей говорят нормально: ")
+        sb.append("\n\nВ кабаке Корагона несколько дней сидит чужак, назвавшийся Геральтом: седой, со шрамом, с жёлтыми ")
+            .append("кошачьими глазами и двумя мечами за спиной. Держится спокойно и вежливо, платит и никого не трогает.");
+    }
+
+    /** Общие правила тона: обычный человек своего нрава, не грубит без причины, поддерживает беседу. */
+    private static void manners(StringBuilder sb, String other) {
+        sb.append("\n- Будь обычным человеком своего нрава. С вежливым собеседником большинство жителей говорят нормально: ")
             .append("отвечают на вопросы, делятся слухами, советуют, торговцы зазывают к своему товару. Грубишь, только если ")
-            .append("таков твой нрав (о нём сказано выше) или если Геральт сам грубит.");
+            .append("таков твой нрав (о нём сказано выше) или если ").append(other).append(" сам грубит.");
         sb.append("\n- Отвечай по существу и поддерживай беседу: можешь спросить что-то в ответ. Не обрывай разговор и не ")
             .append("прогоняй собеседника без причины.");
         sb.append("\n- Только то, что произносишь вслух, без ремарок и описаний. Не выдумывай важных сюжетных событий, ")
-            .append("не обещай наград и заданий.");
+            .append("не обещай наград и заданий, которых не можешь дать.");
+    }
+
+    /**
+     * Ответ жителя на слова другого (Геральта или жителя) — без инструментов, в его характере. lore — кто он
+     * (NpcLore), topics — темы его диалогов в игре, lines — его собственные реплики из игры (манера речи и что он
+     * знает), stranger — кто с ним говорит (null — Геральт).
+     */
+    public static String npcReply(String name, String guild, boolean female, String lore, List<String> topics,
+                                  List<String> lines, String stranger) {
+        StringBuilder sb = new StringBuilder();
+        identity(sb, name, guild, female, lore, topics, lines);
+        sb.append("\n\nС тобой говорит ").append(stranger == null ? "этот чужак — Геральт." : stranger + ".");
+        sb.append("\n\nКак отвечать:");
+        manners(sb, "собеседник");
+        return sb.toString();
+    }
+
+    public static String npcReply(String name, String guild, boolean female, String lore, List<String> topics,
+                                  List<String> lines) {
+        return npcReply(name, guild, female, lore, topics, lines, null);
+    }
+
+    /**
+     * Живой житель: герой заговорил с ним кнопкой «Сказать». Те же инструменты, что у Геральта: житель отвечает и
+     * действует в мире — но живёт своей жизнью и не раздаёт своё даром.
+     */
+    public static String resident(String name, String guild, boolean female, String lore, List<String> topics,
+                                  List<String> lines) {
+        StringBuilder sb = new StringBuilder();
+        identity(sb, name, guild, female, lore, topics, lines);
+        sb.append("\n\nС тобой заговорил герой — странник, каких на острове теперь много; кто он такой, видно в ")
+            .append("«Обстановке» (гильдия, одежда, оружие). Его слова приходят в кавычках после «Герой говорит тебе».");
+        sb.append("\n\nКак говорить:");
+        manners(sb, "герой");
+        sb.append("\n- Отвечай только на то, что герой действительно сказал; не выдумывай за него слов.");
+        sb.append("\n- Можно промолчать: пустой ответ без инструментов.");
+        sb.append("\n\nМир ты видишь только через «Обстановку»: людей, зверей и предметы бери оттуда по ref (n12, i5, ")
+            .append("hero, self — это ты); места для go_to_place — из списка «Места». Не выдумывай того, чего там нет.");
+        sb.append("\n\nДействуешь только инструментами (как сказал — так и сделай):");
+        sb.append("\n- Ты живёшь своей жизнью: у тебя свои дела и своё место. Уйти с него (go_to_place, go_to_npc, ")
+            .append("follow_hero, wait_here) можно по веской причине: заплатили, друг попросил, беда. Дело сделано — ")
+            .append("вернись к своим делам (go_home). В «Обстановке» видно, если ты уже ушёл со своего места.");
+        sb.append("\n- Вещи и деньги отдаёшь только свои (give_item по id из инвентаря) и обычно не даром: за плату, ")
+            .append("за услугу или по дружбе. Торгуешь — назови цену; что герой хочет купить, он купит у тебя в диалоге.");
+        sb.append("\n- Драться (attack) — только если на тебя или на твоих напали, или если таков твой нрав и тебя ")
+            .append("всерьёз оскорбили. Отношение к герою меняй по делу (set_attitude).");
+        sb.append("\n- Жесты, занятия, повернуться к кому-то — gesture, activity, look_at. Спросить другого жителя — ")
+            .append("talk_to_npc. Важное о герое (уговор, долг, имя) — remember.");
         return sb.toString();
     }
 

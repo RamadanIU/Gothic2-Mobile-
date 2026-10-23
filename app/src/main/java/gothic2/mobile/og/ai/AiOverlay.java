@@ -47,6 +47,11 @@ final class AiOverlay {
 
     /** Слушать микрофон; итог — в onText (пустая строка — отмена). */
     void listen(Consumer<String> onText) {
+        listen(null, onText);
+    }
+
+    /** Слушать микрофон для who (имя того, кому говорят; null — Геральт). */
+    void listen(String who, Consumer<String> onText) {
         main.post(() -> {
             close();
             if (!SpeechRecognizer.isRecognitionAvailable(activity)) {
@@ -55,7 +60,7 @@ final class AiOverlay {
                 return;
             }
             LinearLayout box = panel();
-            TextView title = label("Говори… (Геральт слушает)", 17, GOLD);
+            TextView title = label("Говори… (" + name(who) + " слушает)", 17, GOLD);
             TextView heard = label("", 16, TEXT);
             box.addView(title);
             box.addView(heard);
@@ -72,7 +77,7 @@ final class AiOverlay {
             // Шумно или не хочется говорить вслух - тот же разговор текстом
             Button write = button("Написать", v -> {
                 finished[0] = true;
-                type(onText, () -> listen(onText));
+                type(who, onText, () -> listen(who, onText));
             });
             row.addView(stop);
             row.addView(write);
@@ -139,10 +144,14 @@ final class AiOverlay {
 
     /** Ввод текстом с кнопкой «Голосом» (toVoice — переключиться на микрофон; null — без кнопки). */
     void type(Consumer<String> onText, Runnable toVoice) {
+        type(null, onText, toVoice);
+    }
+
+    void type(String who, Consumer<String> onText, Runnable toVoice) {
         main.post(() -> {
             close();
             LinearLayout box = panel();
-            box.addView(label("Что сказать Геральту?", 17, GOLD));
+            box.addView(label(who == null ? "Что сказать Геральту?" : "Что сказать: " + who + "?", 17, GOLD));
             EditText edit = new EditText(activity);
             edit.setTextColor(TEXT);
             edit.setHintTextColor(Color.rgb(0x8A, 0x80, 0x70));
@@ -297,6 +306,10 @@ final class AiOverlay {
         b.setBackgroundColor(Color.TRANSPARENT);
         b.setOnClickListener(l);
         return b;
+    }
+
+    private static String name(String who) {
+        return who == null || who.isEmpty() ? "Геральт" : who;
     }
 
     private int dp(int v) {
