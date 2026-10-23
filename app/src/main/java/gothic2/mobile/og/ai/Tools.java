@@ -18,7 +18,8 @@ public final class Tools {
 
     static final String[] GESTURES = {"nod", "no", "shrug", "come_here", "greet", "dismiss", "get_lost", "salute",
         "look_around", "cheer", "angry"};
-    static final String[] ACTIVITIES = {"stand", "guard", "sit", "practice_sword", "eat", "drink", "look_around", "smoke"};
+    static final String[] ACTIVITIES = {"stand", "guard", "sit", "sit_chair", "sit_bench", "practice_sword", "eat", "drink",
+        "look_around", "smoke"};
 
     public static List<Map<String, Object>> all() {
         List<Map<String, Object>> t = new ArrayList<>();
@@ -41,10 +42,15 @@ public final class Tools {
             props("item", str("ref, например i7")), "item"));
         t.add(tool("use_item", "Выпить зелье, съесть или использовать свой предмет (id из инвентаря).",
             props("item", str("id предмета")), "item"));
+        t.add(tool("equip_item", "Надеть свою одежду или доспехи, взять оружие (меч, топор, лук, арбалет, щит), надеть кольцо, амулет, пояс. "
+                + "item — id из инвентаря; прежнее того же вида снимается само. Смена меча — в любой момент, даже с мечом в руке.",
+            props("item", str("id предмета")), "item"));
+        t.add(tool("unequip_item", "Снять надетое (одежду, оружие, кольцо и т. п.). item — id из инвентаря.",
+            props("item", str("id предмета")), "item"));
         t.add(tool("gesture", "Жест: кивнуть, покачать головой, пожать плечами, подозвать, поприветствовать, отмахнуться, прогнать, отдать честь, оглядеться, обрадоваться, возмутиться.",
             props("name", en(GESTURES)), "name"));
         t.add(tool("look_at", "Повернуться и посмотреть на кого-то.", props("target", str("ref или hero")), "target"));
-        t.add(tool("activity", "Заняться делом на месте: стоять, сторожить, сесть на землю, упражняться с мечом, есть, пить, осматриваться, курить.",
+        t.add(tool("activity", "Заняться делом на месте: стоять, сторожить, сесть на землю, сесть на стул (за стол), сесть на скамью, упражняться с мечом, есть, пить, осматриваться, курить.",
             props("name", en(ACTIVITIES)), "name"));
         t.add(tool("use_mob", "Воспользоваться вещью мира рядом: сесть на скамью, к костру, открыть сундук и т. п. scheme — из «Вещи мира».",
             props("scheme", str("например BENCH, CHESTBIG, CAULDRON")), "scheme"));
@@ -111,6 +117,11 @@ public final class Tools {
             case "take_item":
             case "use_item":
                 a.put("item", Json.str(args, "item"));
+                break;
+            case "equip_item":
+            case "unequip_item":
+                a.put("item", Json.str(args, "item"));
+                name = tool.equals("equip_item") ? "equip" : "unequip";
                 break;
             case "gesture":
             case "activity":

@@ -78,6 +78,36 @@ public class AiLogicTest {
     }
 
     @Test
+    public void observationSeparatesWornGear() {
+        String snap = "{\"ev\":\"snapshot\",\"time\":\"20:00\",\"day\":3,"
+            + "\"self\":{\"hp\":900,\"hpMax\":900,\"str\":160,\"dex\":140,\"weapon\":\"убрано\",\"items\":["
+            + "{\"id\":\"ITAR_DJG_L\",\"name\":\"Лёгкие доспехи\",\"n\":1,\"kind\":\"armor\",\"equipped\":1,\"prot\":80},"
+            + "{\"id\":\"ITMW_SCHWERT5\",\"name\":\"Изысканный полуторный меч\",\"n\":1,\"kind\":\"melee\",\"equipped\":1,\"dmg\":70},"
+            + "{\"id\":\"ITMW_1H_SPECIAL_01\",\"name\":\"Длинный рудный меч\",\"n\":1,\"kind\":\"melee\",\"dmg\":80},"
+            + "{\"id\":\"ITAR_PAL_H\",\"name\":\"Тяжёлые доспехи\",\"n\":1,\"kind\":\"armor\",\"prot\":150,\"need\":\"силы 200\"},"
+            + "{\"id\":\"ITPO_HEALTH_02\",\"name\":\"Лечебный эликсир\",\"n\":5,\"kind\":\"potion\"}]},"
+            + "\"hero\":{\"dist\":2,\"side\":\"спереди\",\"hp\":40,\"hpMax\":40,\"level\":1,\"attitude\":\"дружески\",\"ranged\":\"Короткий лук\"}}";
+        String d = Observation.describe(Json.obj(Json.parse(snap)));
+        assertTrue(d, d.contains("сила 160, ловкость 140"));
+        assertTrue(d, d.contains("Надето на тебе: Лёгкие доспехи [ITAR_DJG_L] — доспехи/одежда, защита 80; "
+            + "Изысканный полуторный меч [ITMW_SCHWERT5] — одноручное оружие, урон 70."));
+        assertTrue(d, d.contains("Длинный рудный меч [ITMW_1H_SPECIAL_01] — одноручное оружие, урон 80"));
+        assertTrue(d, d.contains("не надеть — нужно силы 200"));
+        assertTrue(d, d.contains("Лечебный эликсир [ITPO_HEALTH_02] — зелье x5"));
+        assertTrue(d, d.contains("за спиной: Короткий лук"));
+        // надетое - не в списке инвентаря
+        assertFalse(d, d.substring(d.indexOf("Твой инвентарь")).contains("ITAR_DJG_L"));
+    }
+
+    @Test
+    public void observationWithoutGear() {
+        String snap = "{\"self\":{\"hp\":10,\"hpMax\":900,\"weapon\":\"кулаки\",\"items\":[]}}";
+        String d = Observation.describe(Json.obj(Json.parse(snap)));
+        assertTrue(d, d.contains("Надето на тебе: ничего"));
+        assertFalse(d, d.contains("Твой инвентарь"));
+    }
+
+    @Test
     public void parsesToolCalls() throws IOException {
         String resp = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Идём.\",\"tool_calls\":["
             + "{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"follow_hero\",\"arguments\":\"{}\"}},"
@@ -146,6 +176,10 @@ public class AiLogicTest {
         assertEquals("turn_to", c.get("name"));
         assertEquals("n5", Json.str(Json.obj(c.get("args")), "target"));
         assertNull(Tools.engineAct("A3", "remember", Json.of("note", "x")));
+        c = Tools.engineAct("A4", "equip_item", Json.of("item", "ITMW_1H_SPECIAL_01"));
+        assertEquals("equip", c.get("name"));
+        assertEquals("ITMW_1H_SPECIAL_01", Json.str(Json.obj(c.get("args")), "item"));
+        assertEquals("unequip", Tools.engineAct("A5", "unequip_item", Json.of("item", "ITAR_DJG_L")).get("name"));
         // все инструменты - корректный JSON с именем и параметрами
         for (Map<String, Object> t : Tools.all()) {
             Map<String, Object> fn = Json.obj(t.get("function"));
@@ -174,6 +208,15 @@ public class AiLogicTest {
         other.load(7, 999);
         assertTrue(other.journal.isEmpty());
         assertTrue(other.context(10).isEmpty());
+    }
+
+    @Test
+    public void personaKnowsTavernAndGear() {
+        String p = Persona.system();
+        assertTrue(p.contains("кабаке Корагона"));
+        assertTrue(p.contains("equip_item"));
+        // не выдумывает слов героя: прежде отвечал, будто герой уже что-то сказал
+        assertTrue(p.contains("Не выдумывай за него слов"));
     }
 
     @Test
