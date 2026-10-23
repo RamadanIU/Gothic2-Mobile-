@@ -29,8 +29,10 @@ Android-приложение «Gothic II»: запускает **лицензи�
 Пользователь подтвердил бой и автобой; новое управление (docs/CONTROLS.md), отряд, «Собрать», напарники и
 новая графика ждут проверки. 2026-10-22: отряд до 6, напарники без смерти и обыска, зелья, обмен, привал;
 «Собрать» — 20 м и без остановок у тел; **быстрое сохранение** отдельной кнопкой и **«Путь»** — быстрое
-перемещение бегом или мгновенно (docs/CONTROLS.md). Там же **оптимизация движка под телефон** (docs/PROGRESS.md,
-последний раздел): ждёт проверки и журнала со строками `[perf]`.
+перемещение бегом или мгновенно (docs/CONTROLS.md). Там же **оптимизация движка под телефон** (docs/PROGRESS.md):
+ждёт проверки и журнала со строками `[perf]`. **Живой NPC — Геральт из Ривии** (**docs/AI_NPC.md**): в пещере у
+водопада под башней Ксардаса, думает языковая модель по ключу игрока (Ollama Cloud / любой адрес, совместимый
+с OpenAI), голос — Gemini/Azure/ElevenLabs/свой/телефон, память по сохранениям; ждёт проверки на телефоне.
 
 - **Приложение** (`app/`, Java, пакет `gothic2.mobile.og`): `LauncherActivity` — разрешение «Файлы», поиск
   папки игры (`GameFolder`), выбор вручную через SAF, «Играть», раздел «Графика» (`GraphicsSettings` →
@@ -74,7 +76,11 @@ Android-приложение «Gothic II»: запускает **лицензи�
     подсказки планировщику и перегрев (`utils/mobileperf.*`), охлаждение 30 FPS; **строка `[perf]` в журнале
     раз в 10 с** — по ней видно, во что упирается телефон (`gpu-wait` — видеокарта, `logic`/`anim` — процессор);
   - «Взять всё» (`InventoryMenu::takeAll`), путь к игре из `gothic_path.txt` (`InstallDetect`), имя сохранения
-    по умолчанию — дата, кнопка «Назад» телефона = Esc (Tempest).
+    по умолчанию — дата, кнопка «Назад» телефона = Esc (Tempest);
+  - **живой NPC** (`common/game/ainpc.*`, JNI — `ailink.*`): Геральт = `Vlk_2000_Thorus` с другим именем и
+    внешностью, снимок обстановки, действия, реплики модели через `GameScript::messageByName/messageTime`
+    и `DialogMenu`; приложение — пакет `gothic2.mobile.og.ai` (`GeraltBrain`, `LlmClient`, `Tts`, `Memory`),
+    настройки — `AiSettingsActivity`.
 - Сохранения движка — `files/save_slot_N.sav` в каталоге приложения (формат OpenGothic; с сохранениями
   оригинальной игры не совместимы). Удаление приложения их удаляет.
 - Id `gothic2.mobile.og` оставлен от пробной сборки намеренно: обновление ставится поверх неё, сохранения
@@ -82,7 +88,7 @@ Android-приложение «Gothic II»: запускает **лицензи�
 
 ## Следующие действия
 
-1. Ждём от пользователя: новое управление, отряд в драках с людьми, «Собрать», «Путь» (стоят ли метки там, где
+1. Ждём от пользователя: Геральта (docs/TEST_PLAN.md, пункт 10: ключ, голос, разговор, действия, память), новое управление, отряд в драках с людьми, «Собрать», «Путь» (стоят ли метки там, где
    подписаны; камера в пути, галочки), быстрое сохранение, нагрев и FPS после оптимизации — журнал со строками
    `[perf]` (docs/PROGRESS.md, разделы «Ожидается от пользователя»; docs/TEST_PLAN.md). По `[perf]` — следующая
    оптимизация: упор в видеокарту (`gpu-wait`) или в процессор (`logic`, `anim`).
@@ -128,7 +134,8 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
   ```bash
   cd third_party/opengothic
   git add -N common/game/companions.cpp common/game/travelpoints.cpp common/game/travelpoints.h common/utils/cp1251.h \
-    common/game/travelcamera.cpp common/game/travelcamera.h \
+    common/game/travelcamera.cpp common/game/travelcamera.h common/game/ainpc.cpp common/game/ainpc.h \
+    common/game/ailink.cpp common/game/ailink.h common/utils/mobileperf.cpp common/utils/mobileperf.h common/utils/perfstats.h \
     common/ui/touchicons.cpp common/ui/touchicons.h   # и другие новые файлы; не -A: build/ не в .gitignore движка
   git diff --ignore-submodules=all > ../opengothic.patch && git reset -q
   git -C lib/Tempest diff > ../opengothic-tempest.patch
@@ -169,6 +176,12 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
 - Любой внешний ввод (папка игры, путь SAF) — недоверенный: не-файловые тома SAF отклоняются (`docIdToPath`).
 - Никаких игровых файлов в репозитории (`.gitignore` исключает `*.vdf`, `*.mod`, `game-data/`).
 - Комментарии и строки интерфейса — по-русски, в стиле окружающего кода.
+- **Живой NPC:** действия тела (идти, следовать, бой, занятие) нельзя класть в очередь ИИ во время диалога —
+  конец `ZS_Talk` и `Npc::startState` очищают её; сначала конец разговора, затем `resumeAiRoutine`, затем
+  движение (`AiNpc::beginBody`). Строки для Java — только UTF-8 байтами (`fromCp1251`), не `NewStringUTF`.
+  Java-методы движка находятся только после `System.loadLibrary("Gothic2Notr")` в `GameActivity`.
+  JSON в Java — свой `ai/Json` (org.json в модульных тестах — заглушка), в движке — rapidjson в
+  `#pragma GCC diagnostic ignored "-Wdeprecated-declarations"`.
 
 ## Git и PR
 

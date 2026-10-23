@@ -7,8 +7,9 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
  ├─ разрешение «Файлы»              └─ libGothic2Notr.so — OpenGothic (C++20, Vulkan)
  ├─ папка игры (GameFolder)              ├─ Tempest: окно Android, касания, звук (OpenAL Soft), Vulkan
  ├─ графика (GraphicsSettings)           ├─ ZenKit: VDF, Daedalus-скрипты, миры, модели игры
- ├─ журнал в «Загрузки»                  └─ наш патч: TouchInput, бой, автобой, напарники, графика
- └─ лицензии (LicensesActivity)
+ ├─ журнал в «Загрузки»                  ├─ наш патч: TouchInput, бой, автобой, напарники, графика
+ ├─ живой NPC (AiSettingsActivity)       └─ живой NPC: AiNpc ←JNI (AiLink)→ ai/AiBridge → GeraltBrain
+ └─ лицензии (LicensesActivity)              (модель, голос, память — docs/AI_NPC.md)
         │  files/gothic_path.txt (путь к папке игры)
         └─ files/g2m.ini        (графика)  ──► читает движок при старте
 ```
@@ -65,6 +66,18 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
 | Камера в пути: ракурсы (свободная, издалека, с высоты, сбоку, первое лицо, кино с камерой у дороги), палец крутит только камеру, кнопка и колесо ракурсов | `common/game/travelcamera.*`, `Camera::setDirector/tickDirector`, `MainWindow::tickCamera/tickMouse`, `TouchInput` (`C_Camera`, `Wheel::Camera`) |
 | Папка игры из `gothic_path.txt`; имя сохранения по умолчанию — дата | `InstallDetect`, `GameMenu::SavNameDialog` |
 | Путь к заголовкам Vulkan параметром CMake | `Tempest Engine/CMakeLists.txt` (`TEMPEST_VULKAN_SDK`) |
+| Живой NPC Геральт (docs/AI_NPC.md): вставка в пещеру у водопада, снимок обстановки, действия, реплики модели в диалоге и вне его, метка памяти перед сохранением | `common/game/ainpc.*`, `common/game/ailink.*` (JNI), `GameScript::dialogChoices/exec/messageByName/messageTime/aiOutput`, `DialogMenu::aiOutput/onStart/close/haveToWaitOutput/skipPhrase`, `Npc::onNoHealth/canFinish/takeDamage`, `MainWindow::saveGame/paintEvent` |
+| Место «Пещера у водопада» в «Пути» | `common/game/travelpoints.cpp` |
+
+## Живой NPC: приложение
+
+`gothic2.mobile.og.ai` (Java, без зависимостей): `AiBridge` — JNI (`System.loadLibrary` в `GameActivity`,
+иначе Java-методы движка не находятся), голос и микрофон — сразу, остальные события — в очередь
+`GeraltBrain`; `LlmClient` — `/chat/completions` с инструментами, запасной ключ при 429; `Tts` — Gemini,
+Azure, ElevenLabs, свой адрес, голос телефона (`AndroidTts`); `VoicePlayer` — AudioTrack; `AiOverlay` —
+PopupWindow над экраном движка (микрофон, ввод текста, «думает…», ошибки); `Memory` — файлы
+`files/ai/memory/<прохождение>_<метка>.json`; `Observation`, `Persona`, `Speech`, `Tools`, `Json`.
+Настройки — `AiSettingsActivity` (SharedPreferences `ai`). Тесты чистой логики — `AiLogicTest`.
 
 ## Ввод
 

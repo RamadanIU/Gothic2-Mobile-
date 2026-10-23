@@ -9,6 +9,8 @@ import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.WindowManager;
 
+import gothic2.mobile.og.ai.AiBridge;
+
 /**
  * Экран игры: NativeActivity движка OpenGothic во весь экран, без системных панелей,
  * экран не гаснет. Кнопку «Назад» движок получает как Esc (патч Tempest).
@@ -22,11 +24,33 @@ public class GameActivity extends NativeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Живой NPC: Java-методы движка (AiBridge.native*) находятся, только если библиотеку загрузил и
+        // System.loadLibrary - NativeActivity грузит её сама, мимо Java. Тот же файл, второй загрузки нет.
+        try {
+            System.loadLibrary("Gothic2Notr");
+        } catch (UnsatisfiedLinkError ignored) {
+            // NativeActivity сообщит об ошибке сама
+        }
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemUi();
         fpsLimit = new GraphicsSettings(getSharedPreferences("launcher", MODE_PRIVATE)).fpsLimit();
         preferDisplayMode(fpsLimit);
+        AiBridge.start(this);
+    }
+
+    @Override
+    protected void onDestroy() {
+        AiBridge.stop();
+        super.onDestroy();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (!AiBridge.onPermission(requestCode, grantResults)) {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        }
+        hideSystemUi();
     }
 
     @Override
