@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..560e728
+index 0000000..f8ca8f6
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,1530 @@
+@@ -0,0 +1,1535 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -448,7 +448,11 @@ index 0000000..560e728
 +    insertFailLogged = true;
 +    return;
 +    }
-+  Npc* npc = w.addNpc(thorusSym,SpawnPoint);
++  // По координатам, а не по имени точки: addNpc(имя) ставит NPC на точку его распорядка из скрипта, а у
++  // Торуса это несуществующая "XXX" - он уходил в список «без точки» (npcInvalid) на точку мёртвых
++  Npc* npc = w.addNpc(thorusSym,wp->position());
++  if(npc!=nullptr)
++    npc->setDirection(wp->direction());
 +  if(npc==nullptr) {
 +    if(!insertFailLogged)
 +      Log::e("[g2m] ai: unable to insert Geralt");
@@ -458,7 +462,8 @@ index 0000000..560e728
 +  setup(*npc,true);
 +  geralt      = npc;
 +  geraltWorld = &w;
-+  Log::i("[g2m] ai: Geralt inserted at ",SpawnPoint);
++  const auto pos = npc->position();
++  Log::i("[g2m] ai: Geralt inserted at ",SpawnPoint," (",int(pos.x),", ",int(pos.y),", ",int(pos.z),")");
 +  }
 +
 +void AiNpc::setup(Npc& npc, bool fresh) {
@@ -11078,7 +11083,7 @@ index f8badbd..a918201 100644
    while(true) {
      {
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..2c91f89 100644
+index e015398..6fd39ab 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -4,10 +4,12 @@
@@ -11136,8 +11141,8 @@ index e015398..2c91f89 100644
      return true;
  
 +  // Gothic II Mobile: напарника перевод времени (сон) не уносит к точке распорядка - он остаётся, где был:
-+  // идущий за героем - рядом с ним, ждущий - в лагере
-+  if(!isDead && owner.script().isHired(*this)) {
++  // идущий за героем - рядом с ним, ждущий - в лагере. Живой NPC - тоже: точки распорядка у него нет (лагерь)
++  if(!isDead && (owner.script().isHired(*this) || owner.script().aiNpc().isAiNpc(*this))) {
 +    invent.autoEquipWeapons(*this);
 +    owner.script().invokeRefreshAtInsert(*this);
 +    return true;
