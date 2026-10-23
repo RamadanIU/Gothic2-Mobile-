@@ -34,6 +34,9 @@ final class GeraltBrain {
     }
 
     private static final int MAX_STEPS = 3;
+    /** Беседа с жителем: ход модели продлевается, пока Геральт продолжает её (talk_to_npc), но не дальше. */
+    private static final int MAX_TALK_STEPS = 8;
+    private static final String GERALT_LINE = "Геральт: ";
 
     private final AiSettings settings;
     private final Engine engine;
@@ -49,6 +52,8 @@ final class GeraltBrain {
     private final ArrayDeque<Map<String, Object>> deferred = new ArrayDeque<>();
     private final ExecutorService ttsPool = Executors.newSingleThreadExecutor();
     private final Map<String, String> pendingActs = new java.util.HashMap<>();
+    /** Кто такой житель (id экземпляра → событие lore движка): запрашивается один раз за сеанс. */
+    private final Map<String, Map<String, Object>> lore = new java.util.HashMap<>();
     private Thread worker;
     private volatile boolean running;
 
@@ -283,7 +288,8 @@ final class GeraltBrain {
             String mem = memory.context(30);
             msgs.add(Json.of("role", "user", "content",
                 (mem.isEmpty() ? "" : mem + "\n\n") + Observation.describe(snap) + "\n\n" + trigger));
-            for (int step = 0; step < MAX_STEPS; step++) {
+            int steps = MAX_STEPS;
+            for (int step = 0; step < steps; step++) {
                 long t0 = now();
                 LlmClient.Reply r = llm.chat(msgs, tools, 1500);
                 String speech = Speech.clean(r.text);
@@ -306,6 +312,8 @@ final class GeraltBrain {
                     String[] res = runTool(c);
                     msgs.add(Json.of("role", "tool", "tool_call_id", c.id, "content", res[0]));
                     if ("again".equals(res[1])) again = true;
+                    // Беседа с жителем: Геральт может ответить на его слова ещё раз
+                    if ("talk_to_npc".equals(c.name)) steps = Math.min(MAX_TALK_STEPS, Math.max(steps, step + 2));
                 }
                 if (!again) break;
             }
@@ -376,21 +384,49 @@ final class GeraltBrain {
         }
         String said = Speech.clean(text);
         speak("self", ref, said, Tts.Voice.geralt(""));
+        // Житель помнит прежние беседы с Геральтом (память сохранения), знает, кто он такой (справочник и его
+        // реплики из игры игрока)
+        String key = Json.str(who, "id").isEmpty() ? name : Json.str(who, "id");
+        Map<String, Object> info = loreOf(key, ref);
+        List<String> topics = new ArrayList<>();
+        for (Object o : Json.arr(info.get("topics"))) topics.add(String.valueOf(o));
+        List<String> lines = new ArrayList<>();
+        for (Object o : Json.arr(info.get("lines"))) lines.add(String.valueOf(o));
         String reply;
         try {
             List<Map<String, Object>> msgs = new ArrayList<>();
-            msgs.add(Json.of("role", "system", "content",
-                Persona.npcReply(name, Json.str(who, "guild"), Json.bool(who, "female", false))));
-            msgs.add(Json.of("role", "user", "content", "Он говорит тебе: «" + said + "»"));
-            reply = Speech.clean(chat.chat(msgs, null, 600).text);
+            msgs.add(Json.of("role", "system", "content", Persona.npcReply(name, Json.str(who, "guild"),
+                Json.bool(who, "female", false), NpcLore.of(Json.str(who, "id")), topics, lines)));
+            for (String l : memory.talk(key)) {
+                if (l.startsWith(GERALT_LINE)) msgs.add(Json.of("role", "user", "content", l.substring(GERALT_LINE.length())));
+                else msgs.add(Json.of("role", "assistant", "content", l.substring(l.indexOf(": ") + 2)));
+            }
+            msgs.add(Json.of("role", "user", "content", said));
+            reply = Speech.clean(chat.chat(msgs, null, 700).text);
         } catch (IOException e) {
             showError("модель — " + e.getMessage());
             return "ты сказал «" + name + "»: «" + said + "», но ответа не расслышал";
         }
+        memory.addTalk(key, GERALT_LINE + said);
         if (reply.isEmpty()) return "ты сказал «" + name + "»: «" + said + "»; он промолчал";
+        memory.addTalk(key, name + ": " + reply);
         Tts.Voice v = new Tts.Voice(false, Json.bool(who, "female", false), (int) Json.num(who, "voice", 1), "");
         speak(ref, "self", reply, v);
-        return "ты сказал «" + name + "»: «" + said + "». «" + name + "» ответил: «" + reply + "»";
+        return "ты сказал «" + name + "»: «" + said + "». «" + name + "» ответил: «" + reply
+            + "». Можешь продолжить беседу (talk_to_npc с тем же ref) или закончить её.";
+    }
+
+    /** Сведения о жителе из движка (темы и реплики его диалогов в игре) — один раз за сеанс. */
+    private Map<String, Object> loreOf(String key, String ref) {
+        Map<String, Object> l = lore.get(key);
+        if (l != null) return l;
+        String req = "l" + (++seq);
+        engine.send(Json.of("cmd", "lore", "req", req, "target", ref));
+        l = waitFor(e -> "lore".equals(Json.str(e, "ev")) && req.equals(Json.str(e, "req")), 2500);
+        if (l == null) return Json.of();
+        AiLog.i("lore " + key + ": topics=" + Json.arr(l.get("topics")).size() + " lines=" + Json.arr(l.get("lines")).size());
+        lore.put(key, l);
+        return l;
     }
 
     /** Реплика по кускам: голос готовится заранее, следующий кусок — когда кончился предыдущий. */
