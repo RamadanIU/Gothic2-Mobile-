@@ -116,6 +116,21 @@ public class AiLogicTest {
     }
 
     @Test
+    public void requestsUseOwnUserAgent() {
+        // Ollama Cloud отвечает 403 на «Dalvik/…» - заголовок Android по умолчанию (LlmClient.open)
+        assertFalse(LlmClient.USER_AGENT.contains("Dalvik"));
+        assertFalse(LlmClient.USER_AGENT.isEmpty());
+    }
+
+    @Test
+    public void htmlErrorPageIsShortened() {
+        String e = LlmClient.shortError(403, "<!doctype html><meta charset=\"utf-8\"><title>403</title>403 Forbidden");
+        assertEquals("HTTP 403 — доступ запрещён: 403 Forbidden", e);
+        assertEquals("HTTP 401 — ключ не подходит: Unauthorized",
+            LlmClient.shortError(401, "{\"error\":{\"message\":\"Unauthorized\"}}"));
+    }
+
+    @Test
     public void endpointJoinsPaths() {
         assertEquals("https://ollama.com/v1/chat/completions", LlmClient.endpoint("https://ollama.com/v1/", "chat/completions"));
         assertEquals("https://x/v1/chat/completions", LlmClient.endpoint("https://x/v1/chat/completions", "chat/completions"));

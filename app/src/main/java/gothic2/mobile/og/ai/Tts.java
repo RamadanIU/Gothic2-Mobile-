@@ -5,7 +5,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -151,7 +150,7 @@ public interface Tts {
             byte[] resp = post("https://" + region + ".tts.speech.microsoft.com/cognitiveservices/v1",
                 ssml.getBytes(StandardCharsets.UTF_8), "application/ssml+xml",
                 new String[]{"Ocp-Apim-Subscription-Key", key,
-                    "X-Microsoft-OutputFormat", "riff-24khz-16bit-mono-pcm", "User-Agent", "Gothic2Mobile"});
+                    "X-Microsoft-OutputFormat", "riff-24khz-16bit-mono-pcm"});
             return Pcm.fromWav(resp);
         }
     }
@@ -221,7 +220,7 @@ public interface Tts {
     }
 
     static byte[] post(String url, byte[] body, String type, String[] headers) throws IOException {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        HttpURLConnection c = LlmClient.open(url);
         c.setConnectTimeout(15000);
         c.setReadTimeout(60000);
         c.setDoOutput(true);

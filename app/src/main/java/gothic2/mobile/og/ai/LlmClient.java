@@ -55,6 +55,18 @@ public final class LlmClient {
         }
     }
 
+    /**
+     * Свой User-Agent у всех запросов: Ollama Cloud отвечает 403 (HTML-страница) на заголовок, который Android
+     * ставит по умолчанию, — «Dalvik/2.1.0 (Linux; U; Android …)».
+     */
+    static final String USER_AGENT = "Gothic2Mobile/1.0";
+
+    static HttpURLConnection open(String url) throws IOException {
+        HttpURLConnection c = open(url);
+        c.setRequestProperty("User-Agent", USER_AGENT);
+        return c;
+    }
+
     /** HTTP — отдельно, чтобы подменить в тестах. */
     public interface Http {
         /** Тело ответа; код не 2xx — LlmException. */
@@ -142,7 +154,7 @@ public final class LlmClient {
 
     /** Список моделей адреса (/models) — для выбора в настройках. */
     public static List<String> models(String baseUrl, String key) throws IOException {
-        HttpURLConnection c = (HttpURLConnection) new URL(endpoint(baseUrl, "models")).openConnection();
+        HttpURLConnection c = open(endpoint(baseUrl, "models"));
         c.setConnectTimeout(15000);
         c.setReadTimeout(30000);
         if (!key.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + key);
@@ -191,8 +203,12 @@ public final class LlmClient {
         } catch (IllegalArgumentException ignored) {
             // не JSON - как есть
         }
+        // HTML-страница ошибки (403 сайта, прокси) - только текст
+        if (msg.trim().startsWith("<")) msg = msg.replaceAll("(?s)<title>.*?</title>", " ").replaceAll("<[^>]*>", " ");
+        msg = msg.replaceAll("\\s+", " ").trim();
         if (msg.length() > 300) msg = msg.substring(0, 300);
-        return "HTTP " + code + (msg.isEmpty() ? "" : ": " + msg);
+        String hint = code == 401 ? " — ключ не подходит" : code == 403 ? " — доступ запрещён" : code == 404 ? " — нет такого адреса или модели" : "";
+        return "HTTP " + code + hint + (msg.isEmpty() ? "" : ": " + msg);
     }
 
     static String read(InputStream in) throws IOException {
