@@ -7,6 +7,7 @@ import android.content.pm.PackageManager;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Связь с движком (common/game/ailink.cpp): команды — байтами UTF-8 в nativeCommand, события приходят в
@@ -136,20 +137,35 @@ public final class AiBridge {
                 // Сохранение пишется сразу после этого вызова: память - под той же меткой и сейчас же
                 memory.save(Json.num(ev, "story", 0), Json.num(ev, "token", 0));
                 return;
-            case "listen":
-                if (settings.voiceInput() && hasMic()) overlay.listen(this::said);
-                else overlay.type(this::said);
+            case "listen": {
+                // free - кнопка «Сказать» без диалога: ответ субтитрами над миром
+                boolean free = Json.bool(ev, "free", false);
+                Consumer<String> done = t -> said(t, free);
+                if (settings.voiceInput() && hasMic()) overlay.listen(done);
+                else overlay.type(done, voice(done));
                 return;
-            case "type":
-                overlay.type(this::said);
+            }
+            case "type": {
+                Consumer<String> done = t -> said(t, Json.bool(ev, "free", false));
+                overlay.type(done, voice(done));
                 return;
+            }
             default:
                 brain.post(ev);
         }
     }
 
-    private void said(String text) {
-        brain.post(Json.of("ev", "said", "text", text == null ? "" : text));
+    /** Кнопка «Голосом» в панели текста — если распознавание речи включено и микрофон разрешён. */
+    private Runnable voice(Consumer<String> done) {
+        if (!settings.voiceInput()) return null;
+        return () -> {
+            if (hasMic()) overlay.listen(done);
+            else overlay.type(done, voice(done));
+        };
+    }
+
+    private void said(String text, boolean free) {
+        brain.post(Json.of("ev", "said", "text", text == null ? "" : text, "free", free));
     }
 
     private boolean hasMic() {

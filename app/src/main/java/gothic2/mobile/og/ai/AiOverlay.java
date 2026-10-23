@@ -69,7 +69,13 @@ final class AiOverlay {
                 close();
                 onText.accept("");
             });
+            // Шумно или не хочется говорить вслух - тот же разговор текстом
+            Button write = button("Написать", v -> {
+                finished[0] = true;
+                type(onText, () -> listen(onText));
+            });
             row.addView(stop);
+            row.addView(write);
             row.addView(cancel);
             box.addView(row);
             show(box, false);
@@ -128,6 +134,11 @@ final class AiOverlay {
 
     /** Ввод текстом; итог — в onText (пустая строка — отмена). */
     void type(Consumer<String> onText) {
+        type(onText, null);
+    }
+
+    /** Ввод текстом с кнопкой «Голосом» (toVoice — переключиться на микрофон; null — без кнопки). */
+    void type(Consumer<String> onText, Runnable toVoice) {
         main.post(() -> {
             close();
             LinearLayout box = panel();
@@ -156,6 +167,15 @@ final class AiOverlay {
             });
             LinearLayout row = row();
             row.addView(button("Сказать", v -> send.run()));
+            if (toVoice != null) {
+                row.addView(button("Голосом", v -> {
+                    if (sent[0]) return;
+                    sent[0] = true;
+                    hideKeyboard(edit);
+                    close();
+                    toVoice.run();
+                }));
+            }
             row.addView(button("Отмена", v -> {
                 if (sent[0]) return;
                 sent[0] = true;

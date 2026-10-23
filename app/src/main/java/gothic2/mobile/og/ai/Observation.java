@@ -23,8 +23,11 @@ public final class Observation {
 
         Map<String, Object> me = Json.obj(s.get("self"));
         if (!me.isEmpty()) {
-            sb.append("\nТы: здоровье ").append(Json.num(me, "hp", 0)).append('/').append(Json.num(me, "hpMax", 0))
-                .append(", оружие: ").append(Json.str(me, "weapon"));
+            sb.append("\nТы: здоровье ").append(Json.num(me, "hp", 0)).append('/').append(Json.num(me, "hpMax", 0));
+            if (me.containsKey("str")) {
+                sb.append(", сила ").append(Json.num(me, "str", 0)).append(", ловкость ").append(Json.num(me, "dex", 0));
+            }
+            sb.append(", оружие: ").append(Json.str(me, "weapon"));
             if (Json.bool(me, "inParty", false)) sb.append(", идёшь с героем (в его отряде)");
             if (Json.bool(me, "fighting", false)) sb.append(", в бою");
             if (Json.bool(me, "down", false)) sb.append(", без сознания");
@@ -32,18 +35,19 @@ public final class Observation {
             if (!using.isEmpty()) sb.append(", используешь: ").append(using);
             sb.append('.');
             List<Object> items = Json.arr(me.get("items"));
-            if (!items.isEmpty()) {
-                sb.append("\nТвой инвентарь (id — для give_item/use_item): ");
-                int n = 0;
-                for (Object o : items) {
-                    Map<String, Object> it = Json.obj(o);
-                    if (n++ > 0) sb.append("; ");
-                    sb.append(Json.str(it, "name")).append(" [").append(Json.str(it, "id")).append(']');
-                    long c = Json.num(it, "n", 1);
-                    if (c > 1) sb.append(" x").append(c);
-                    if (Json.bool(it, "equipped", false)) sb.append(" (надето)");
-                }
-                sb.append('.');
+            // Надетое - отдельно: модель видит, что на ней, и что можно надеть вместо (equip_item)
+            StringBuilder worn = new StringBuilder();
+            StringBuilder bag = new StringBuilder();
+            for (Object o : items) {
+                Map<String, Object> it = Json.obj(o);
+                boolean on = Json.bool(it, "equipped", false);
+                StringBuilder out = on ? worn : bag;
+                if (out.length() > 0) out.append("; ");
+                out.append(item(it, !on));
+            }
+            sb.append("\nНадето на тебе: ").append(worn.length() > 0 ? worn : "ничего (без доспехов и оружия)").append('.');
+            if (bag.length() > 0) {
+                sb.append("\nТвой инвентарь (id — для give_item, use_item, equip_item): ").append(bag).append('.');
             }
         }
 
@@ -59,6 +63,8 @@ public final class Observation {
             sb.append(", одежда: ").append(ar.isEmpty() ? "простая" : ar);
             String mw = Json.str(hero, "melee");
             if (!mw.isEmpty()) sb.append(", оружие: ").append(mw);
+            String rw = Json.str(hero, "ranged");
+            if (!rw.isEmpty()) sb.append(", за спиной: ").append(rw);
             if (Json.bool(hero, "weaponDrawn", false)) sb.append(" (обнажено!)");
             sb.append(", твоё отношение к нему: ").append(Json.str(hero, "attitude")).append('.');
         }
@@ -130,6 +136,46 @@ public final class Observation {
             sb.append('.');
         }
         return sb.toString();
+    }
+
+    /** Предмет: «Имя [ID] — вид, урон 70 x2, нужно силы 120». withCount — сколько штук (надетое — одно). */
+    static String item(Map<String, Object> it, boolean withCount) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(Json.str(it, "name")).append(" [").append(Json.str(it, "id")).append(']');
+        StringBuilder d = new StringBuilder();
+        String kind = kindName(Json.str(it, "kind"));
+        if (!kind.isEmpty()) d.append(kind);
+        long dmg = Json.num(it, "dmg", 0);
+        if (dmg > 0) d.append(d.length() > 0 ? ", " : "").append("урон ").append(dmg);
+        if (it.containsKey("prot")) d.append(d.length() > 0 ? ", " : "").append("защита ").append(Json.num(it, "prot", 0));
+        String need = Json.str(it, "need");
+        if (!need.isEmpty()) d.append(d.length() > 0 ? ", " : "").append("не надеть — нужно ").append(need);
+        if (d.length() > 0) sb.append(" — ").append(d);
+        long c = Json.num(it, "n", 1);
+        if (withCount && c > 1) sb.append(" x").append(c);
+        return sb.toString();
+    }
+
+    /** Вид предмета из снимка (AiNpc::itemKind) по-русски; пусто — без пометки. */
+    static String kindName(String kind) {
+        switch (kind) {
+            case "armor": return "доспехи/одежда";
+            case "melee": return "одноручное оружие";
+            case "melee2h": return "двуручное оружие";
+            case "bow": return "лук";
+            case "crossbow": return "арбалет";
+            case "shield": return "щит";
+            case "ammo": return "стрелы/болты";
+            case "ring": return "кольцо";
+            case "amulet": return "амулет";
+            case "belt": return "пояс";
+            case "potion": return "зелье";
+            case "food": return "еда";
+            case "rune": return "руна";
+            case "scroll": return "свиток";
+            case "doc": return "письмо/книга";
+            default: return "";
+        }
     }
 
     /** Расстояние в метрах: «3,5 м». */

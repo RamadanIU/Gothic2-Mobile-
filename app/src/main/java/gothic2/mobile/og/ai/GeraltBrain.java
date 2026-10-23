@@ -124,8 +124,6 @@ final class GeraltBrain {
                     memory.load(Json.num(ev, "story", 0), Json.num(ev, "token", 0));
                     AiLog.i("ready: story=" + Json.num(ev, "story", 0) + " token=" + Json.num(ev, "token", 0)
                         + " journal=" + memory.journal.size());
-                    // Видно, что живой NPC включён и Геральт в мире
-                    ui.status("Живой NPC: Геральт — в пещере у водопада под башней Ксардаса («Путь» → «Пещера у водопада»)", 7000);
                 }
                 ready = true;
                 talking = false;
@@ -135,10 +133,10 @@ final class GeraltBrain {
                 snapshot = ev;
                 break;
             case "talk_start":
+                // Сам не заговаривает: ждёт, что скажет герой («Сказать», «Написать», торговля). Прежде здоровался
+                // моделью, не дожидаясь героя, - и отвечал так, будто герой уже что-то сказал
                 talking = true;
                 lastActivity = now();
-                turn("Герой подошёл и заговорил с тобой. Ответь ему коротко — поприветствуй или спроси, чего он хочет (или промолчи, если вы только что говорили).",
-                    true, chat);
                 break;
             case "talk_end":
                 talking = false;
@@ -151,13 +149,15 @@ final class GeraltBrain {
                     break;
                 }
                 lastActivity = now();
-                if (talking) {
-                    // Слова героя - его субтитром в диалоге, без голоса
+                boolean free = Json.bool(ev, "free", false) && !talking;
+                if (talking || free) {
+                    // Слова героя - его субтитром, без голоса: в диалоге - очередью реплик, без диалога - над миром
                     engine.send(Json.of("cmd", "say", "id", nextLine("H"), "who", "hero", "to", "self", "text", text,
                         "ms", Math.min(4000, Speech.estimateMs(text))));
                 }
                 memory.add(stamp() + " Герой: «" + text + "»");
-                turn("Герой говорит тебе: «" + text + "»", true, chat);
+                turn("Герой говорит тебе: «" + text + "»" + (free ? " (вы не в диалоге: он сказал это, стоя рядом)" : ""),
+                    talking, true, chat);
                 break;
             }
             case "bye":
@@ -194,7 +194,16 @@ final class GeraltBrain {
         switch (k) {
             case "hero_near":
                 heroNear = true;
-                if (a >= 1) autoTurn(text + " Можешь коротко заговорить с ним первым или продолжить своё дело (тогда промолчи).", false);
+                memory.add(stamp() + " " + text);
+                if (a >= 1) autoTurn(text + " Он пока ничего тебе не сказал. Можешь коротко окликнуть его первым или продолжить своё дело (тогда промолчи).", false);
+                break;
+            case "trade":
+                // Итог торговли или обмена: вещи уже у него - может надеть полученное
+                memory.add(stamp() + " " + text);
+                if (ready && !talking) {
+                    turn(text + " Если получил одежду или оружие получше надетого — можешь надеть (equip_item)."
+                        + " Скажи герою пару слов, если есть что, иначе промолчи.", false, false, act);
+                }
                 break;
             case "hero_left":
                 heroNear = false;
@@ -211,6 +220,12 @@ final class GeraltBrain {
                 memory.add(stamp() + " " + text);
                 if (a >= 1) autoTurn(text, true);
                 break;
+            case "death":
+                // Герой убил человека у тебя на глазах - повод сказать или сделать что-то сразу
+                memory.add(stamp() + " " + text);
+                if (text.contains("убил(а) герой") && a >= 1) autoTurn(text, true);
+                else if (a >= 2 && heroNear) autoTurn(text, false);
+                break;
             default:
                 memory.add(stamp() + " " + text);
                 if (a >= 2 && heroNear) autoTurn(text, false);
@@ -226,7 +241,7 @@ final class GeraltBrain {
         long t = now();
         if (t - lastAuto < gap) return;
         lastAuto = t;
-        turn(trigger, false, act);
+        turn(trigger, false, false, act);
     }
 
     private void idle() {
@@ -245,17 +260,21 @@ final class GeraltBrain {
 
     // ---------------- ход ----------------
 
-    private void turn(String trigger, boolean dialog, LlmClient llm) {
+    /**
+     * Ход модели. dialog — идёт диалог с героем (выбор реплик ждёт ответа), heroAsked — герой что-то сказал
+     * (видно «Геральт думает…»); иначе ход сам по себе, и его реплика не нужна, если герой тем временем открыл
+     * диалог: там Геральт ждёт слов героя.
+     */
+    private void turn(String trigger, boolean dialog, boolean heroAsked, LlmClient llm) {
         AiSettings.Role role = llm == chat ? settings.chat() : settings.act();
         if (!role.isSet()) {
             showError("в настройках ИИ не задан адрес или модель");
             if (dialog) engine.send(Json.of("cmd", "think", "on", false));
             return;
         }
-        if (dialog) {
-            engine.send(Json.of("cmd", "think", "on", true));
-            ui.status("Геральт думает…", 0);
-        }
+        if (dialog) engine.send(Json.of("cmd", "think", "on", true));
+        if (heroAsked) ui.status("Геральт думает…", 0);
+        boolean wasTalking = talking;
         AiLog.i("turn" + (dialog ? " (dialog)" : "") + ": " + AiLog.cut(trigger, 160));
         try {
             Map<String, Object> snap = requestSnapshot();
@@ -271,7 +290,11 @@ final class GeraltBrain {
                 StringBuilder calls = new StringBuilder();
                 for (LlmClient.ToolCall c : r.calls) calls.append(' ').append(c.name).append(c.rawArgs);
                 AiLog.i("model " + (now() - t0) + " ms: «" + AiLog.cut(speech, 200) + "»" + calls);
-                if (dialog && step == 0) ui.hideStatus();
+                if (heroAsked && step == 0) ui.hideStatus();
+                if (!heroAsked && talking && !wasTalking) {
+                    AiLog.i("turn dropped: hero opened a dialog");
+                    break;
+                }
                 if (!speech.isEmpty()) {
                     memory.add(stamp() + " Ты: «" + speech + "»");
                     speak("self", "hero", speech, Tts.Voice.geralt(""));
@@ -289,10 +312,8 @@ final class GeraltBrain {
         } catch (IOException e) {
             showError("модель — " + e.getMessage());
         } finally {
-            if (dialog) {
-                engine.send(Json.of("cmd", "think", "on", false));
-                ui.hideStatus();
-            }
+            if (dialog) engine.send(Json.of("cmd", "think", "on", false));
+            if (heroAsked) ui.hideStatus();
             lastActivity = now();
         }
     }

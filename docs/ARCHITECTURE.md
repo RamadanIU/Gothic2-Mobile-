@@ -66,8 +66,8 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
 | Камера в пути: ракурсы (свободная, издалека, с высоты, сбоку, первое лицо, кино с камерой у дороги), палец крутит только камеру, кнопка и колесо ракурсов | `common/game/travelcamera.*`, `Camera::setDirector/tickDirector`, `MainWindow::tickCamera/tickMouse`, `TouchInput` (`C_Camera`, `Wheel::Camera`) |
 | Папка игры из `gothic_path.txt`; имя сохранения по умолчанию — дата | `InstallDetect`, `GameMenu::SavNameDialog` |
 | Путь к заголовкам Vulkan параметром CMake | `Tempest Engine/CMakeLists.txt` (`TEMPEST_VULKAN_SDK`) |
-| Живой NPC Геральт (docs/AI_NPC.md): вставка в пещеру у водопада, снимок обстановки, действия, реплики модели в диалоге и вне его, метка памяти перед сохранением | `common/game/ainpc.*`, `common/game/ailink.*` (JNI), `GameScript::dialogChoices/exec/messageByName/messageTime/aiOutput`, `DialogMenu::aiOutput/onStart/close/haveToWaitOutput/skipPhrase`, `Npc::onNoHealth/canFinish/takeDamage`, `MainWindow::saveGame/paintEvent` |
-| Место «Пещера у водопада» в «Пути» | `common/game/travelpoints.cpp` |
+| Живой NPC Геральт (docs/AI_NPC.md): вставка в кабак Корагона (и переход туда из пещеры в старых сохранениях), снимок обстановки, действия (и надеть/снять), реплики модели в диалоге и вне его, кнопка «Сказать», итог торговли, метка памяти перед сохранением | `common/game/ainpc.*`, `common/game/ailink.*` (JNI), `GameScript::dialogChoices/exec/messageByName/messageTime/aiOutput`, `DialogMenu::aiOutput/onStart/close/haveToWaitOutput/skipPhrase`, `Npc::onNoHealth/canFinish/takeDamage/resetPositionToTA` и `AI_Equip*` (своё снаряжение), `TouchInput` (`C_Say`), `MainWindow::saveGame/paintEvent` |
+| Места «Кабак Корагона» и «Пещера у водопада» в «Пути» | `common/game/travelpoints.cpp` |
 
 ## Живой NPC: приложение
 
