@@ -116,10 +116,12 @@ public class AiLogicTest {
     }
 
     @Test
-    public void requestsUseOwnUserAgent() {
-        // Ollama Cloud отвечает 403 на «Dalvik/…» - заголовок Android по умолчанию (LlmClient.open)
+    public void requestsUseOwnUserAgent() throws IOException {
+        // Ollama Cloud отвечает 403 на «Dalvik/…» - заголовок Android по умолчанию. Соединение не открывается:
+        // openConnection только создаёт объект запроса
+        java.net.HttpURLConnection c = LlmClient.open("https://ollama.com/v1/models");
+        assertEquals(LlmClient.USER_AGENT, c.getRequestProperty("User-Agent"));
         assertFalse(LlmClient.USER_AGENT.contains("Dalvik"));
-        assertFalse(LlmClient.USER_AGENT.isEmpty());
     }
 
     @Test
