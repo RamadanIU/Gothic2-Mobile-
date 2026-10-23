@@ -139,15 +139,18 @@ public final class AiBridge {
                 return;
             case "listen": {
                 // free - кнопка «Сказать» без диалога: ответ субтитрами над миром
+                // target - кому: self (Геральт) или житель nN, на которого смотрит герой
                 boolean free = Json.bool(ev, "free", false);
-                Consumer<String> done = t -> said(t, free);
-                if (settings.voiceInput() && hasMic()) overlay.listen(done);
-                else overlay.type(done, voice(done));
+                String target = Json.str(ev, "target");
+                String who = target.isEmpty() || "self".equals(target) ? null : Json.str(ev, "name");
+                Consumer<String> done = t -> said(t, free, target, Json.str(ev, "name"));
+                if (settings.voiceInput() && hasMic()) overlay.listen(who, done);
+                else overlay.type(who, done, voice(who, done));
                 return;
             }
             case "type": {
-                Consumer<String> done = t -> said(t, Json.bool(ev, "free", false));
-                overlay.type(done, voice(done));
+                Consumer<String> done = t -> said(t, Json.bool(ev, "free", false), "", "");
+                overlay.type(null, done, voice(null, done));
                 return;
             }
             default:
@@ -156,16 +159,16 @@ public final class AiBridge {
     }
 
     /** Кнопка «Голосом» в панели текста — если распознавание речи включено и микрофон разрешён. */
-    private Runnable voice(Consumer<String> done) {
+    private Runnable voice(String who, Consumer<String> done) {
         if (!settings.voiceInput()) return null;
         return () -> {
-            if (hasMic()) overlay.listen(done);
-            else overlay.type(done, voice(done));
+            if (hasMic()) overlay.listen(who, done);
+            else overlay.type(who, done, voice(who, done));
         };
     }
 
-    private void said(String text, boolean free) {
-        brain.post(Json.of("ev", "said", "text", text == null ? "" : text, "free", free));
+    private void said(String text, boolean free, String target, String name) {
+        brain.post(Json.of("ev", "said", "text", text == null ? "" : text, "free", free, "target", target, "name", name));
     }
 
     private boolean hasMic() {

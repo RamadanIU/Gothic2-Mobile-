@@ -6,7 +6,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Инструменты модели: что Геральт умеет делать в мире. Большая часть — действия движка (AiNpc::cmdAct),
+ * Инструменты модели: что Геральт и живые жители умеют делать в мире (набор один на всех; кто делает — поле who
+ * команды, GeraltBrain). Большая часть — действия движка (AiNpc::cmdAct),
  * talk_to_npc и remember ведёт сам мозг (GeraltBrain).
  */
 public final class Tools {
@@ -30,6 +31,7 @@ public final class Tools {
         t.add(tool("follow_hero", "Пойти с героем: идёшь за ним, защищаешь его в бою (вступаешь в его отряд).",
             props()));
         t.add(tool("wait_here", "Остаться на месте / перестать идти за героем.", props()));
+        t.add(tool("go_home", "Вернуться к своим делам, на своё место (Геральт — за стол в кабаке Корагона).", props()));
         t.add(tool("attack", "Напасть: на чудовище — насмерть, на человека — сбить с ног. target — ref из «Рядом» или hero.",
             props("target", str("ref")), "target"));
         t.add(tool("stop_fight", "Прекратить бой и убрать оружие.", props()));
@@ -104,6 +106,7 @@ public final class Tools {
                 break;
             case "follow_hero":
             case "wait_here":
+            case "go_home":
             case "stop_fight":
                 break;
             case "weapon":
