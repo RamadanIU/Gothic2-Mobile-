@@ -124,6 +124,8 @@ final class GeraltBrain {
                     memory.load(Json.num(ev, "story", 0), Json.num(ev, "token", 0));
                     AiLog.i("ready: story=" + Json.num(ev, "story", 0) + " token=" + Json.num(ev, "token", 0)
                         + " journal=" + memory.journal.size());
+                    // Видно, что живой NPC включён и Геральт в мире
+                    ui.status("Живой NPC: Геральт — в пещере у водопада под башней Ксардаса («Путь» → «Пещера у водопада»)", 7000);
                 }
                 ready = true;
                 talking = false;
