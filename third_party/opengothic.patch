@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..b16c8f6
+index 0000000..560e728
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,1511 @@
+@@ -0,0 +1,1530 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -411,16 +411,23 @@ index 0000000..b16c8f6
 +    geraltWorld = nullptr;
 +    return nullptr;
 +    }
-+  if(geralt!=nullptr && geraltWorld==w)
-+    return geralt;
-+
-+  geralt      = nullptr;
-+  geraltWorld = w;
-+  readySent   = false;
-+  talking     = false;
-+  busy        = false;
-+  acts.clear();
-+  known.clear();
++  if(geraltWorld==w) {
++    if(geralt!=nullptr)
++      return geralt;
++    // Ещё не вставлен: искать не каждый кадр
++    if(owner.tickCount()<searchAt)
++      return nullptr;
++    } else {
++    // Другой мир (загрузка, смена мира): всё заново
++    geraltWorld = w;
++    readySent   = false;
++    talking     = false;
++    busy        = false;
++    acts.clear();
++    known.clear();
++    }
++  searchAt = owner.tickCount()+2000;
++  geralt   = nullptr;
 +  if(thorusSym==size_t(-1))
 +    thorusSym = owner.findSymbolIndex("VLK_2000_THORUS");
 +  if(thorusSym==size_t(-1) || !isTargetWorld(*w))
@@ -432,17 +439,22 @@ index 0000000..b16c8f6
 +  }
 +
 +void AiNpc::insert(World& w) {
++  // Сразу при загрузке мира, где бы ни был герой: прежде ждал, пока герой отойдёт от пещеры на 20 м, и при
++  // «Пути» прямо к пещере (или игре у башни) не появлялся вовсе
 +  auto* wp = w.findPoint(SpawnPoint,false);
 +  if(wp==nullptr) {
-+    Log::e("[g2m] ai: no spawn point ",SpawnPoint);
++    if(!insertFailLogged)
++      Log::e("[g2m] ai: no spawn point ",SpawnPoint);
++    insertFailLogged = true;
 +    return;
 +    }
-+  // Не на глазах у героя: появится, когда тот отойдёт
-+  if(auto pl = w.player(); pl!=nullptr && pl->qDistTo(wp)<2000.f*2000.f)
-+    return;
 +  Npc* npc = w.addNpc(thorusSym,SpawnPoint);
-+  if(npc==nullptr)
++  if(npc==nullptr) {
++    if(!insertFailLogged)
++      Log::e("[g2m] ai: unable to insert Geralt");
++    insertFailLogged = true;
 +    return;
++    }
 +  setup(*npc,true);
 +  geralt      = npc;
 +  geraltWorld = &w;
@@ -567,6 +579,13 @@ index 0000000..b16c8f6
 +  const uint64_t now = owner.tickCount();
 +
 +  Npc* npc = resolve();
++  if(w!=loggedWorld) {
++    loggedWorld = w;
++    Log::i("[g2m] ai: on, world \"",w->name(),"\", target=",isTargetWorld(*w) ? 1 : 0,
++           ", base npc=",thorusSym!=size_t(-1) ? 1 : 0,", geralt=",npc!=nullptr ? "found" : "absent");
++    if(thorusSym==size_t(-1) && isTargetWorld(*w))
++      Log::e("[g2m] ai: no VLK_2000_THORUS in scripts - Geralt can not be created");
++    }
 +  if(npc==nullptr && isTargetWorld(*w) && thorusSym!=size_t(-1) && now>=insertTry) {
 +    insertTry = now+5000;
 +    insert(*w);
@@ -1751,10 +1770,10 @@ index 0000000..b16c8f6
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..17ece40
+index 0000000..625f19a
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,178 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -1906,6 +1925,9 @@ index 0000000..17ece40
 +    bool                           sessionReady = false;
 +    bool                           wasEnabled  = false;
 +    uint64_t                       insertTry   = 0;
++    uint64_t                       searchAt    = 0;
++    bool                           insertFailLogged = false;
++    const World*                   loggedWorld = nullptr;
 +
 +    bool                           talking     = false;
 +    bool                           busy        = false;

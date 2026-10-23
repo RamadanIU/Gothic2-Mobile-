@@ -71,8 +71,14 @@ public final class AiBridge {
             }
             nativeAttach(on);
         } catch (UnsatisfiedLinkError e) {
-            // движок без живого NPC (старая сборка) - игра идёт как обычно
+            // движок не связан с приложением - игра идёт как обычно, но Геральта не будет: сказать об этом
+            AiLog.i("start: no engine link - " + e);
+            if (inst != null) inst.brain.stop();
             inst = null;
+            if (on) {
+                android.widget.Toast.makeText(activity, "Живой NPC: движок не подключился — Геральта не будет. "
+                    + "Пришли журнал (экран запуска → «Сохранить журнал»).", android.widget.Toast.LENGTH_LONG).show();
+            }
         }
     }
 
