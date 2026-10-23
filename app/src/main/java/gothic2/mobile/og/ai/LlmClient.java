@@ -87,9 +87,18 @@ public final class LlmClient {
 
     public Reply chat(List<Map<String, Object>> messages, List<Map<String, Object>> tools, int maxTokens)
         throws IOException {
+        return chat(messages, tools, maxTokens, false);
+    }
+
+    /** wordsOnly — ответ только словами: инструменты описаны (история с их вызовами остаётся верной), но вызывать нельзя. */
+    public Reply chat(List<Map<String, Object>> messages, List<Map<String, Object>> tools, int maxTokens, boolean wordsOnly)
+        throws IOException {
         Map<String, Object> req = Json.of("model", role.model, "messages", messages,
             "max_tokens", maxTokens, "temperature", 0.8);
-        if (tools != null && !tools.isEmpty()) req.put("tools", tools);
+        if (tools != null && !tools.isEmpty()) {
+            req.put("tools", tools);
+            if (wordsOnly) req.put("tool_choice", "none");
+        }
         String body = Json.write(req);
         String url = endpoint(role.url, "chat/completions");
         String resp;

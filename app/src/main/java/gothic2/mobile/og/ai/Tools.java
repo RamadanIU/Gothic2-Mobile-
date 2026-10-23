@@ -17,6 +17,16 @@ public final class Tools {
     /** Долгие действия: ход тела, о конце которого движок сообщит позже (act_done). */
     static final List<String> LONG = Arrays.asList("go_to_place", "go_to_npc", "attack", "take_item", "use_mob", "loot");
 
+    /**
+     * Жест, взгляд, занятие — только вместе со словами, когда к говорящему обратился герой: модели отвечали
+     * одними анимациями вместо слов, и это выглядело издёвкой (GeraltBrain не исполняет их без реплики).
+     */
+    static final List<String> NEEDS_WORDS = Arrays.asList("gesture", "look_at", "activity");
+
+    static boolean needsWords(String tool) {
+        return NEEDS_WORDS.contains(tool);
+    }
+
     static final String[] GESTURES = {"nod", "no", "shrug", "come_here", "greet", "dismiss", "get_lost", "salute",
         "look_around", "cheer", "angry"};
     static final String[] ACTIVITIES = {"stand", "guard", "sit", "sit_chair", "sit_bench", "practice_sword", "eat", "drink",
