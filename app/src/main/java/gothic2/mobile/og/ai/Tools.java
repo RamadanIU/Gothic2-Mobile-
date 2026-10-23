@@ -58,9 +58,11 @@ public final class Tools {
             props("target", str("ref")), "target"));
         t.add(tool("set_attitude", "Изменить отношение к герою. hostile — он враг, ты нападёшь, если увидишь повод.",
             props("value", en(new String[]{"friendly", "neutral", "angry", "hostile"})), "value"));
-        t.add(tool("talk_to_npc", "Подойти к человеку и сказать ему фразу; он ответит. Для расспросов местных.",
+        // Закончить разговор с героем модели нельзя: она закрывала диалог сразу после своей реплики, и разговор не
+        // складывался. Диалог закрывает герой («Пока.»)
+        t.add(tool("talk_to_npc", "Подойти к человеку и сказать ему фразу; он ответит. Беседу можно продолжать: снова "
+                + "talk_to_npc с тем же ref — он помнит, о чём вы говорили. Для расспросов местных.",
             props("target", str("ref человека из «Рядом»"), "text", str("что сказать")), "target", "text"));
-        t.add(tool("end_conversation", "Закончить разговор с героем (после своей реплики).", props()));
         t.add(tool("remember", "Запомнить важное надолго: уговор, имя, долг, обещание.",
             props("note", str("коротко, от себя")), "note"));
         return t;
@@ -103,7 +105,6 @@ public final class Tools {
             case "follow_hero":
             case "wait_here":
             case "stop_fight":
-            case "end_conversation":
                 break;
             case "weapon":
                 name = Json.bool(args, "draw", true) ? "draw_weapon" : "holster_weapon";

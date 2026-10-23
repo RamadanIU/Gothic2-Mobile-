@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..70725f1
+index 0000000..c04385b
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,1875 @@
+@@ -0,0 +1,1972 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -814,6 +814,10 @@ index 0000000..70725f1
 +      sendSnapshot(str(d,"req"));
 +    return;
 +    }
++  if(cmd=="lore") {
++    sendLore(str(d,"req"),str(d,"target"));
++    return;
++    }
 +  if(geralt==nullptr)
 +    return;
 +
@@ -1354,6 +1358,98 @@ index 0000000..70725f1
 +  return owner.findSymbolIndex(upper(name));
 +  }
 +
++std::string AiNpc::npcId(Npc& npc) {
++  auto* sym = owner.findSymbol(npc.handle().symbol_index());
++  return sym!=nullptr ? std::string(sym->name()) : std::string();
++  }
++
++void AiNpc::sendLore(std::string_view req, std::string_view ref) {
++  // Кто такой житель - из игры самого игрока: темы его диалогов (выбор реплик героя) и его собственные реплики
++  // из библиотеки озвучки (OU), по порядку диалогов. Реплики героя (голос 15) не берутся. Текста игры в
++  // приложении нет - только то, что есть в копии игрока
++  rapidjson::StringBuffer buf;
++  JsonOut j(buf);
++  j.StartObject();
++  put(j,"ev","lore");
++  std::string r;
++  for(char c:req)
++    if(std::isalnum(uint8_t(c)) || c=='_')
++      r.push_back(c);
++  put(j,"req",r);
++  Npc* npc = npcByRef(ref);
++  if(npc!=nullptr && npc!=geralt && !npc->isPlayer()) {
++    put(j,"id",npcId(*npc));
++    put(j,"name",fromCp1251(npc->displayName()));
++    put(j,"guild",guildName(int32_t(npc->guild())));
++
++    const int32_t inst = int32_t(npc->handle().symbol_index());
++    std::vector<const zenkit::IInfo*> infos;
++    for(auto& i:owner.dialogsInfo)
++      if(i!=nullptr && i->npc==inst)
++        infos.push_back(i.get());
++    std::stable_sort(infos.begin(),infos.end(),[](auto* a, auto* b){ return a->nr<b->nr; });
++
++    j.Key("topics");
++    j.StartArray();
++    size_t topics = 0;
++    std::vector<std::string> prefix;
++    for(auto* i:infos) {
++      if(!i->description.empty() && topics<20) {
++        std::string t = fromCp1251(i->description);
++        j.String(t.c_str(),rapidjson::SizeType(t.size()));
++        ++topics;
++        }
++      auto* fn = owner.findSymbol(size_t(i->information));
++      if(fn==nullptr)
++        continue;
++      std::string p = upper(fn->name());
++      if(p.size()>5 && p.compare(p.size()-5,5,"_INFO")==0)
++        p.resize(p.size()-5);
++      prefix.push_back(p+"_");
++      }
++    j.EndArray();
++
++    // Реплики: имя блока - <функция диалога>_<голос>_<номер>; голос 15 - герой
++    std::vector<std::vector<std::pair<std::string,std::string>>> byInfo(prefix.size());
++    for(auto& blk:owner.dialogs.blocks) {
++      if(blk==nullptr || blk->name.size()<8)
++        continue;
++      const std::string name = upper(blk->name);
++      if(name.compare(0,4,"DIA_")!=0)
++        continue;
++      for(size_t k=0; k<prefix.size(); ++k) {
++        if(name.compare(0,prefix[k].size(),prefix[k])!=0)
++          continue;
++        const size_t last = name.rfind('_');
++        const size_t prev = last==std::string::npos || last==0 ? std::string::npos : name.rfind('_',last-1);
++        if(prev==std::string::npos || name.compare(prev+1,last-prev-1,"15")==0)
++          break;
++        auto msg = blk->get_message();
++        if(msg!=nullptr && !msg->text.empty())
++          byInfo[k].emplace_back(name,fromCp1251(msg->text));
++        break;
++        }
++      }
++    j.Key("lines");
++    j.StartArray();
++    size_t total = 0;
++    for(auto& lines:byInfo) {
++      std::sort(lines.begin(),lines.end());
++      for(auto& [n,t]:lines) {
++        if(total+t.size()>3000)
++          break;
++        total += t.size();
++        j.String(t.c_str(),rapidjson::SizeType(t.size()));
++        }
++      if(total>=3000)
++        break;
++      }
++    j.EndArray();
++    }
++  j.EndObject();
++  AiLink::send(buf.GetString());
++  }
++
 +std::string AiNpc::itemId(const Item& it) {
 +  auto* sym = owner.findSymbol(it.clsId());
 +  return sym!=nullptr ? std::string(sym->name()) : std::string();
@@ -1473,8 +1569,8 @@ index 0000000..70725f1
 +  if(isBodyAct(name)) {
 +    cancelBody("новое действие");
 +    if(talking || npc.isTalk()) {
-+      // Сначала договорить: начнётся, когда разговор закроется
-+      endDialog();
++      // Сначала договорить: начнётся, когда герой закроет разговор. Сам разговор не обрывает (прежде
++      // закрывал диалог сразу после реплики - разговор не складывался)
 +      if(isInstantBody(name)) {
 +        done("сделаешь, как только закончится разговор");
 +        a.report = false;
@@ -2022,6 +2118,7 @@ index 0000000..70725f1
 +    Npc& n = *npcs[i].second;
 +    j.StartObject();
 +    put(j,"ref",refOf(n));
++    put(j,"id",npcId(n));
 +    put(j,"name",fromCp1251(n.displayName()));
 +    if(!n.isMonster()) {
 +      put(j,"guild",guildName(int32_t(n.guild())));
@@ -2115,10 +2212,10 @@ index 0000000..70725f1
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..169af56
+index 0000000..011167b
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,200 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -2259,6 +2356,7 @@ index 0000000..169af56
 +    void   rememberInventory();
 +    void   reportTrade();
 +    void   sendSnapshot(std::string_view reason);
++    void   sendLore(std::string_view req, std::string_view ref);
 +    void   sendEvent(std::string_view kind, std::string_view text, Npc* who);
 +    std::string snapshot();
 +
@@ -2273,6 +2371,7 @@ index 0000000..169af56
 +    size_t      itemSymbol(std::string_view name);
 +    std::string itemNameUtf8(size_t symbol);
 +    std::string itemId(const Item& it);
++    std::string npcId(Npc& npc);
 +    const WayPoint* placeByName(std::string_view name);
 +    void        setParty(Npc& npc, bool on);
 +    void        setActivity(Npc& npc, std::string_view zs);

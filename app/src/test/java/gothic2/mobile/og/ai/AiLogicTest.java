@@ -220,6 +220,49 @@ public class AiLogicTest {
     }
 
     @Test
+    public void npcsAreNotRudeAndKnowWhoTheyAre() {
+        String p = Persona.npcReply("Корагон", "Горожанин", false, NpcLore.of("vlk_420_coragon"),
+            java.util.Arrays.asList("Что ты продаёшь?"), java.util.Arrays.asList("Пиво или вино?"));
+        assertFalse(p, p.contains("грубовато"));
+        assertTrue(p, p.contains("Хозяин кабака"));
+        assertTrue(p, p.contains("Что ты продаёшь?"));
+        assertTrue(p, p.contains("- Пиво или вино?"));
+        assertTrue(p, p.contains("Не обрывай разговор"));
+        assertTrue(p, p.contains(NpcLore.WORLD));
+        // нет в справочнике - без раздела «Кто ты»
+        assertFalse(Persona.npcReply("Горожанин", "", false, NpcLore.of("VLK_450_BUERGER"),
+            new ArrayList<>(), new ArrayList<>()).contains("Кто ты:"));
+    }
+
+    @Test
+    public void geraltCannotEndDialogHimself() {
+        for (Map<String, Object> t : Tools.all()) {
+            assertFalse("end_conversation".equals(Json.str(Json.obj(t.get("function")), "name")));
+        }
+        assertNull(Tools.engineAct("A1", "end_conversation", Json.of()));
+        assertTrue(Persona.system().contains("Разговор заканчивает герой"));
+    }
+
+    @Test
+    public void memoryKeepsTalksWithNpcs() throws IOException {
+        File dir = tmp.newFolder("talks");
+        Memory m = new Memory(dir);
+        m.load(3, 0);
+        for (int i = 0; i < Memory.TALK_LINES + 4; i++) m.addTalk("VLK_420_CORAGON", "Геральт: реплика " + i);
+        m.addTalk("VLK_425_REGIS", "Регис: Слыхал новости?");
+        m.save(3, 5);
+        Memory back = new Memory(dir);
+        back.load(3, 5);
+        List<String> t = back.talk("VLK_420_CORAGON");
+        assertEquals(Memory.TALK_LINES, t.size());
+        assertEquals("Геральт: реплика " + (Memory.TALK_LINES + 3), t.get(t.size() - 1));
+        assertEquals("Регис: Слыхал новости?", back.talk("VLK_425_REGIS").get(0));
+        for (int i = 0; i < Memory.TALKS_NPCS + 5; i++) back.addTalk("N" + i, "x");
+        assertEquals(Memory.TALKS_NPCS, back.talks.size());
+        assertTrue(back.talk("VLK_420_CORAGON").isEmpty());
+    }
+
+    @Test
     public void memorySummaryDropsOldEntries() {
         Memory m = new Memory(new File(tmp.getRoot(), "x"));
         for (int i = 0; i < Memory.JOURNAL_MAX + 5; i++) m.add("запись " + i);

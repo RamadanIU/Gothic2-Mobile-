@@ -9,6 +9,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -21,6 +22,9 @@ import java.util.Map;
 public final class Memory {
     public static final int JOURNAL_MAX = 80;
     public static final int JOURNAL_KEEP = 30;
+    /** Беседы с жителями: последние реплики с каждым (житель помнит, о чём говорили), не больше TALKS_NPCS жителей. */
+    public static final int TALK_LINES = 16;
+    public static final int TALKS_NPCS = 40;
     private static final int FILES_MAX = 60;
 
     private final File dir;
@@ -28,6 +32,8 @@ public final class Memory {
     public String summary = "";
     public final List<String> notes = new ArrayList<>();
     public final List<String> journal = new ArrayList<>();
+    /** id жителя (экземпляр скрипта) → реплики «Геральт: …» / «Имя: …»; порядок — по последней беседе. */
+    public final Map<String, List<String>> talks = new LinkedHashMap<>();
 
     public Memory(File dir) {
         this.dir = dir;
@@ -43,6 +49,7 @@ public final class Memory {
         summary = "";
         notes.clear();
         journal.clear();
+        talks.clear();
         if (token == 0) return;
         File f = file(story, token);
         if (!f.isFile()) return;
@@ -51,6 +58,11 @@ public final class Memory {
             summary = Json.str(m, "summary");
             for (Object o : Json.arr(m.get("notes"))) notes.add(String.valueOf(o));
             for (Object o : Json.arr(m.get("journal"))) journal.add(String.valueOf(o));
+            for (Map.Entry<String, Object> e : Json.obj(m.get("talks")).entrySet()) {
+                List<String> lines = new ArrayList<>();
+                for (Object o : Json.arr(e.getValue())) lines.add(String.valueOf(o));
+                talks.put(e.getKey(), lines);
+            }
         } catch (IOException | IllegalArgumentException e) {
             // повреждённый файл - пустая память, игра идёт
         }
@@ -63,7 +75,10 @@ public final class Memory {
         if (!dir.isDirectory() && !dir.mkdirs()) return;
         List<Object> n = new ArrayList<>(notes);
         List<Object> j = new ArrayList<>(journal);
-        String text = Json.write(Json.of("story", story, "token", token, "summary", summary, "notes", n, "journal", j));
+        Map<String, Object> t = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> e : talks.entrySet()) t.put(e.getKey(), new ArrayList<Object>(e.getValue()));
+        String text = Json.write(Json.of("story", story, "token", token, "summary", summary, "notes", n, "journal", j,
+            "talks", t));
         File f = file(story, token);
         File tmp = new File(dir, f.getName() + ".tmp");
         try (OutputStream os = new FileOutputStream(tmp)) {
@@ -85,6 +100,23 @@ public final class Memory {
         if (n.isEmpty() || notes.contains(n)) return;
         notes.add(n);
         while (notes.size() > 40) notes.remove(0);
+    }
+
+    /** Беседа с жителем: прежние реплики (копия). */
+    public synchronized List<String> talk(String id) {
+        List<String> l = talks.get(id);
+        return l == null ? new ArrayList<>() : new ArrayList<>(l);
+    }
+
+    /** Реплика в беседу с жителем; старые реплики и давно забытые жители вытесняются. */
+    public synchronized void addTalk(String id, String line) {
+        if (id.isEmpty()) return;
+        List<String> l = talks.remove(id);
+        if (l == null) l = new ArrayList<>();
+        l.add(line);
+        while (l.size() > TALK_LINES) l.remove(0);
+        talks.put(id, l);
+        while (talks.size() > TALKS_NPCS) talks.remove(talks.keySet().iterator().next());
     }
 
     /** Нужно ли сжать журнал: старые записи — в сводку. */
