@@ -62,7 +62,7 @@ public final class LlmClient {
     static final String USER_AGENT = "Gothic2Mobile/1.0";
 
     static HttpURLConnection open(String url) throws IOException {
-        HttpURLConnection c = open(url);
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setRequestProperty("User-Agent", USER_AGENT);
         return c;
     }
@@ -177,7 +177,7 @@ public final class LlmClient {
     }
 
     static String httpPost(String url, String key, String body, int timeoutMs) throws IOException {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        HttpURLConnection c = open(url);
         c.setConnectTimeout(15000);
         c.setReadTimeout(timeoutMs);
         c.setDoOutput(true);

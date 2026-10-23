@@ -223,7 +223,8 @@ public class AiSettingsActivity extends Activity {
                         })
                         .show();
                 });
-            } catch (Exception e) {
+            } catch (Throwable e) {
+                // любая ошибка в фоне - строкой на экране, а не вылетом приложения
                 runOnUiThread(() -> result.setText("Не вышло: " + e.getMessage()));
             }
         }).start();
@@ -242,7 +243,8 @@ public class AiSettingsActivity extends Activity {
                 LlmClient.Reply r = new LlmClient(role).chat(msgs, null, 400);
                 long ms = System.currentTimeMillis() - t0;
                 runOnUiThread(() -> result.setText("Работает (" + ms + " мс): " + r.text.trim()));
-            } catch (Exception e) {
+            } catch (Throwable e) {
+                // любая ошибка в фоне - строкой на экране, а не вылетом приложения
                 runOnUiThread(() -> result.setText("Не вышло: " + e.getMessage()));
             }
         }).start();
@@ -251,17 +253,25 @@ public class AiSettingsActivity extends Activity {
     private void testVoice() {
         saveFields();
         result.setText("Озвучиваю…");
+        // Голос телефона (TextToSpeech) создаётся в главном потоке, синтез - в фоне
+        final Tts tts;
+        try {
+            tts = Tts.create(ai, this);
+        } catch (RuntimeException e) {
+            result.setText("Голос не вышел: " + e.getMessage());
+            return;
+        }
+        if (tts == null) {
+            result.setText("Голос выключен — только субтитры.");
+            return;
+        }
         new Thread(() -> {
             try {
-                Tts tts = Tts.create(ai, this);
-                if (tts == null) {
-                    runOnUiThread(() -> result.setText("Голос выключен — только субтитры."));
-                    return;
-                }
                 Pcm pcm = tts.synth("Ведьмак. Монстров убиваю за плату. Тебе что-то нужно?", Tts.Voice.geralt(""));
                 play(pcm);
                 runOnUiThread(() -> result.setText("Голос работает (" + pcm.ms() + " мс)."));
-            } catch (Exception e) {
+            } catch (Throwable e) {
+                // любая ошибка в фоне - строкой на экране, а не вылетом приложения
                 runOnUiThread(() -> result.setText("Голос не вышел: " + e.getMessage()));
             }
         }).start();

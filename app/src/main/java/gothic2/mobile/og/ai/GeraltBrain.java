@@ -107,8 +107,9 @@ final class GeraltBrain {
             try {
                 if (ev == null) idle();
                 else handle(ev);
-            } catch (RuntimeException e) {
-                // ошибка одного хода не останавливает мозг
+            } catch (Throwable e) {
+                // ошибка одного хода не останавливает мозг и не роняет приложение (необработанная ошибка
+                // в любом потоке Android завершает процесс)
                 showError("сбой — " + e);
             }
         }
