@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..8cf72ee
+index 0000000..f331006
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2128 @@
+@@ -0,0 +1,2162 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -487,6 +487,16 @@ index 0000000..8cf72ee
 +  return isAiNpc(npc) && AiLink::enabled();
 +  }
 +
++bool AiNpc::isAiFollower(Npc& npc) const {
++  // Житель - по метке «ушёл от распорядка по просьбе» (сохраняется вместе с NPC); сюжетные напарники из скриптов
++  // её не имеют и идут по своим скриптам
++  return &npc==geralt || npc.handle().aivar[AivRoutine]!=0;
++  }
++
++void AiNpc::releaseFollower(Npc& npc) {
++  goHome(npc);
++  }
++
 +Npc* AiNpc::addressee(const Npc& player, Npc* candidate) const {
 +  if(!AiLink::enabled())
 +    return nullptr;
@@ -537,7 +547,9 @@ index 0000000..8cf72ee
 +void AiNpc::leaveRoutine(Npc& npc) {
 +  if(&npc==geralt || npc.isPlayer())
 +    return;
-+  npc.saveRoutines();
++  // Уже в отряде (нанят в диалоге) - его распорядок сейчас «за героем», не свой: домой - по daily_routine
++  if(!owner.isPartyMember(npc))
++    npc.saveRoutines();
 +  npc.handle().aivar[AivRoutine] = 1;
 +  for(auto& r:residents)
 +    if(r.npc==&npc)
@@ -547,8 +559,10 @@ index 0000000..8cf72ee
 +
 +void AiNpc::goHome(Npc& npc) {
 +  if(&npc==geralt) {
-+    // Геральт - обратно за стол в кабаке, пешком (распорядок сам ведёт к точке)
++    // Геральт - обратно за стол в кабаке, пешком (распорядок сам ведёт к точке); из отряда - уходит
 +    setParty(npc,false);
++    npc.companionIdle = Npc::CompanionIdle();
++    owner.setStance(npc,false);
 +    if(auto* w = world())
 +      if(auto* wp = spawnPoint(*w)) {
 +        const size_t fn = owner.findSymbolIndex("ZS_SIT_CHAIR");
@@ -562,6 +576,7 @@ index 0000000..8cf72ee
 +  if(aiv>=0 && uint32_t(aiv)<zenkit::INpc::aivar_count)
 +    npc.handle().aivar[size_t(aiv)] = 0;
 +  npc.companionIdle = Npc::CompanionIdle();
++  owner.setStance(npc,false);
 +  if(!npc.restoreRoutines()) {
 +    if(npc.handle().daily_routine>0)
 +      npc.excRoutine(size_t(npc.handle().daily_routine));
@@ -830,11 +845,15 @@ index 0000000..8cf72ee
 +  if(aiv>=0 && uint32_t(aiv)<zenkit::INpc::aivar_count)
 +    npc.handle().aivar[size_t(aiv)] = on ? 1 : 0;
 +  if(on) {
++    // Как найм в диалоге (companions.cpp): ZS_Follow_Player весь день, приказ отряда, привал с начала - дальше им
++    // ведёт отряд (GameScript::tickSquad: строй, след героя, телепорт отставших, зелья, без смерти)
 +    const size_t zs = owner.findSymbolIndex("ZS_FOLLOW_PLAYER");
 +    if(zs!=size_t(-1)) {
 +      auto* wp = npc.currentWayPoint();
 +      npc.setRoutineAllDay(zs,wp!=nullptr ? std::string_view(wp->name) : std::string_view(SpawnPoints[0]));
 +      }
++    npc.companionIdle = Npc::CompanionIdle();
++    owner.setStance(npc,owner.squadPassive());
 +    } else {
 +    setActivity(npc,"ZS_STAND_ARMSCROSSED");
 +    }
@@ -1634,6 +1653,11 @@ index 0000000..8cf72ee
 +    }
 +
 +  // Сначала - проверка и разбор: ошибку модель получит сразу
++  if(name=="follow_hero" && !owner.isPartyMember(npc) && owner.squadFull()) {
++    // Как у найма: в отряде героя не больше шести
++    fail("с героем и так идут шестеро - седьмого отряд не возьмёт");
++    return;
++    }
 +  if(name=="go_to_place") {
 +    a.wp = placeByName(str(args,"place"));
 +    if(a.wp==nullptr) {
@@ -1922,8 +1946,16 @@ index 0000000..8cf72ee
 +    finish(a,true,"идёшь за героем и защищаешь его (ты в его отряде)");
 +    }
 +  else if(a.name=="wait_here" || a.name=="stop_following") {
-+    restart(false);
-+    finish(a,true,"стоишь на месте");
++    if(owner.isHired(npc)) {
++      // В отряде - как приказ «Ждать»: лагерь на месте, остаётся в отряде (полоска слева вверху, «Ко мне»)
++      npc.companionIdle = Npc::CompanionIdle();
++      owner.squadCamp(npc);
++      npc.resumeAiRoutine();
++      finish(a,true,"ждёшь героя здесь (ты в его отряде; позовёт - follow_hero)");
++      } else {
++      restart(false);
++      finish(a,true,"стоишь на месте");
++      }
 +    }
 +  else if(a.name=="stop_fight") {
 +    npc.setTarget(nullptr);
@@ -2210,6 +2242,8 @@ index 0000000..8cf72ee
 +  put(j,"hp",me.attribute(ATR_HITPOINTS));
 +  put(j,"hpMax",me.attribute(ATR_HITPOINTSMAX));
 +  put(j,"inParty",owner.isPartyMember(me) ? 1 : 0);
++  if(owner.isPartyMember(me) && owner.squadIsWaiting(me))
++    put(j,"waiting",1);
 +  put(j,"down",me.isUnconscious() ? 1 : 0);
 +  {
 +  const char* ws = "убрано";
@@ -2368,10 +2402,10 @@ index 0000000..8cf72ee
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..77f6f1b
+index 0000000..07e738f
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,220 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -2412,6 +2446,10 @@ index 0000000..77f6f1b
 +    bool isBusy (const Npc& npc) const;
 +    // Свои доспехи и оружие: скрипты (ZS_Attack, ...) и вставка не меняют их на «лучшие» - надевает он сам
 +    bool keepsOwnGear(const Npc& npc) const;
++    // Пошёл с героем по своей воле (follow_hero: Геральт или живой житель) - напарник, как нанятый
++    // (GameScript::isHired); отпустить - к своим делам
++    bool isAiFollower(Npc& npc) const;
++    void releaseFollower(Npc& npc);
 +
 +    // Кнопка «Сказать» (TouchInput): кому герой скажет - выбранному или тому, на кого смотрит (живые жители), иначе
 +    // Геральту рядом; nullptr - некому. Сказать без диалога: слова - модели этого жителя
@@ -2590,11 +2628,12 @@ index 0000000..77f6f1b
 +  };
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
-index 0000000..3fcd5aa
+index 0000000..23fccf5
 --- /dev/null
 +++ b/common/game/companions.cpp
-@@ -0,0 +1,1489 @@
+@@ -0,0 +1,1503 @@
 +#include "gamescript.h"
++#include "ainpc.h"
 +
 +#include <Tempest/Log>
 +
@@ -2678,7 +2717,15 @@ index 0000000..3fcd5aa
 +bool GameScript::isHired(Npc& npc) {
 +  // Призванные монстры и сюжетные напарники - тоже AIV_PARTYMEMBER, но у них свои скрипты
 +  auto& h = npc.handle();
-+  return Gothic::inst().version().game==2 && isAmbient(h) && h.guild<GIL_SEPERATOR_HUM && isPartyMember(npc);
++  if(Gothic::inst().version().game!=2 || h.guild>=GIL_SEPERATOR_HUM || !isPartyMember(npc))
++    return false;
++  // Пошедшие с героем по своей воле (живые жители и Геральт, ainpc.cpp) - такие же напарники: строй, след
++  // героя, телепорт отставших, без смерти, зелья, привал, приказы отряда
++  return isAmbient(h) || aiNpcPtr->isAiFollower(npc);
++  }
++
++bool GameScript::squadFull() {
++  return hiredCount()>=MaxHired;
 +  }
 +
 +size_t GameScript::hiredCount() {
@@ -2710,8 +2757,6 @@ index 0000000..3fcd5aa
 +  if(Gothic::inst().version().game!=2 || &player==&npc || npc.isDown())
 +    return;
 +  auto& h = npc.handle();
-+  if(!isAmbient(h) || h.guild>=GIL_SEPERATOR_HUM)
-+    return;
 +
 +  // Перед «Конец» (nr 999), в этом порядке
 +  auto add = [&out](uint32_t id, const std::string& title, int32_t sort) {
@@ -2738,6 +2783,10 @@ index 0000000..3fcd5aa
 +    add(CompanionDismiss, toCp1251("Дальше я сам. Спасибо за помощь!"), 997);
 +    return;
 +    }
++
++  // Нанять можно только безымянного; именной житель идёт с героем, если сам согласится (кнопка «Сказать»)
++  if(!isAmbient(h) || h.guild>=GIL_SEPERATOR_HUM)
++    return;
 +
 +  if(isPartyMember(npc))
 +    return;
@@ -2816,7 +2865,10 @@ index 0000000..3fcd5aa
 +      setParty(false);
 +      h.aivar[AivStance] = 0;
 +      npc.companionIdle  = Npc::CompanionIdle();
-+      if(h.daily_routine>0)
++      // Пошедший по своей воле - к своим делам (свой распорядок, Геральт - в кабак)
++      if(aiNpcPtr->isAiFollower(npc))
++        aiNpcPtr->releaseFollower(npc);
++      else if(h.daily_routine>0)
 +        npc.excRoutine(size_t(h.daily_routine));
 +      companionSay(npc,player,"$ABS_GOOD");
 +      Tempest::Log::i("[g2m] companion: dismissed \"",npc.displayName(),"\"");
@@ -4247,7 +4299,7 @@ index 4b32af2..1d07293 100644
  
  uint32_t GameScript::rand(uint32_t max) {
 diff --git a/common/game/gamescript.h b/common/game/gamescript.h
-index 2cccb63..d6ecd59 100644
+index 2cccb63..f405b43 100644
 --- a/common/game/gamescript.h
 +++ b/common/game/gamescript.h
 @@ -25,8 +25,10 @@ class Npc;
@@ -4319,7 +4371,7 @@ index 2cccb63..d6ecd59 100644
      void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
      void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
      void  printCannotBuyError         (Npc &npc);
-@@ -445,6 +484,57 @@ class GameScript final {
+@@ -445,6 +484,58 @@ class GameScript final {
      void exitsession         ();
  
      void sort(std::vector<DlgChoice>& dlg);
@@ -4338,6 +4390,7 @@ index 2cccb63..d6ecd59 100644
 +    int32_t scriptConst  (std::string_view name, int32_t def);
 +    bool    isPartyMember(Npc& npc);
 +    size_t  hiredCount   ();
++    bool    squadFull    ();
 +    int32_t hirePrice    (Npc& npc) const;
 +    void    companionSay (Npc& npc, Npc& player, std::string_view svm);
 +    void    tickSquad    ();
@@ -4377,7 +4430,7 @@ index 2cccb63..d6ecd59 100644
      void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
      bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
  
-@@ -460,6 +550,7 @@ class GameScript final {
+@@ -460,6 +551,7 @@ class GameScript final {
      NpcProcessPolicy                                            aiProcessPolicy = NpcProcessPolicy::AiNormal;
  
      std::unique_ptr<DirectMemory>                               dma;
@@ -4385,7 +4438,7 @@ index 2cccb63..d6ecd59 100644
  
      std::unique_ptr<SpellDefinitions>                           spells;
      std::unique_ptr<SvmDefinitions>                             svm;
-@@ -486,6 +577,16 @@ class GameScript final {
+@@ -486,6 +578,16 @@ class GameScript final {
      size_t                                                      gilCount=0;
      std::vector<int32_t>                                        gilAttitudes;
      int                                                         aiOutOrderId=0;
