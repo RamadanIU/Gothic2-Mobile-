@@ -185,6 +185,9 @@ public class AiLogicTest {
             Map<String, Object> fn = Json.obj(t.get("function"));
             assertFalse(Json.str(fn, "name").isEmpty());
             assertEquals("object", Json.str(Json.obj(fn.get("parameters")), "type"));
+            // hostile - злость, а не вражда насмерть: модель не должна ждать, что драка с человеком его убьёт
+            if ("set_attitude".equals(Json.str(fn, "name")))
+                assertTrue(Json.str(fn, "description").contains("не насмерть"));
         }
     }
 
