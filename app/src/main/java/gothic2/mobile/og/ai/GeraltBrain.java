@@ -73,6 +73,10 @@ final class GeraltBrain {
         + "только то, что произносишь, без жестов и инструментов.";
     /** Беседа с жителем: ход модели продлевается, пока Геральт продолжает её (talk_to_npc), но не дальше. */
     private static final int MAX_TALK_STEPS = 8;
+    /** Беседа с жителем: сколько ещё реплик говорящий скажет после первой (во вложенной беседе — одну). */
+    private static final int TALK_ROUNDS = 2;
+    /** Слушающий может заговорить с третьим (передать, разобраться), но третий — уже нет. */
+    private static final int MAX_TALK_DEPTH = 2;
     /** Геральт в скриптах игры (ainpc.cpp): житель может заговорить и с ним. */
     private static final String GERALT_ID = "VLK_2000_THORUS";
 
@@ -88,7 +92,14 @@ final class GeraltBrain {
     /** У живых жителей — ещё сюжетные темы их диалогов из игры (story_topic). */
     private final List<Map<String, Object>> residentTools = Tools.resident();
     /** У того, к кому обратился другой NPC (talk_to_npc), — ответ делом, без своих бесед. */
-    private final List<Map<String, Object>> listenerTools = Tools.listener();
+    private final List<Map<String, Object>> listenerTools = Tools.listener(false);
+    /** Слушающий, который может заговорить с третьим (не глубже MAX_TALK_DEPTH). */
+    private final List<Map<String, Object>> listenerTalkTools = Tools.listener(true);
+    /** Кто сейчас в беседе (talkKey): с ними вложенная беседа не начинается — они и так слышат. */
+    private final java.util.Set<String> inTalk = new java.util.HashSet<>();
+    private int talkDepth;
+    /** Зачем говорящий начал беседу (слова героя или того, кто к нему обратился) — для его следующих реплик. */
+    private String purpose = "";
 
     private final LinkedBlockingQueue<Map<String, Object>> queue = new LinkedBlockingQueue<>();
     private final ArrayDeque<Map<String, Object>> deferred = new ArrayDeque<>();
@@ -329,6 +340,7 @@ final class GeraltBrain {
         if (heroAsked) ui.status("Геральт думает…", 0);
         boolean wasTalking = talking;
         AiLog.i("turn" + (dialog ? " (dialog)" : "") + ": " + AiLog.cut(trigger, 160));
+        purpose = trigger;
         try {
             Map<String, Object> snap = requestSnapshot();
             List<Map<String, Object>> msgs = new ArrayList<>();
@@ -420,6 +432,11 @@ final class GeraltBrain {
             default:
                 break;
         }
+        // Отдать самому себе - так модели пытались «взять» деньги, которые герой только пообещал
+        if ("give_item".equals(c.name) && "self".equals(Json.str(c.args, "target"))) {
+            return new String[]{"не вышло: себе отдать нельзя. Вещи и деньги героя станут твоими, только когда он сам "
+                + "их отдаст", ""};
+        }
         String id = nextLine("A");
         Map<String, Object> cmd = Tools.engineAct(id, c.name, c.args);
         if (cmd == null) return new String[]{"нет такого инструмента", "again"};
@@ -484,6 +501,7 @@ final class GeraltBrain {
             "ms", Math.min(4000, Speech.estimateMs(text))));
         ui.status(who + " думает…", 0);
         AiLog.i("resident " + ref + " «" + who + "»: " + AiLog.cut(text, 160));
+        purpose = "герой сказал тебе: «" + text + "»";
         try {
             Map<String, Object> snap = requestSnapshot(ref);
             Map<String, Object> me = Json.obj(snap.get("self"));
@@ -600,8 +618,9 @@ final class GeraltBrain {
     }
 
     /**
-     * Подойти к NPC, сказать ему фразу и озвучить его ответ (ответ — та же модель в его характере). Говорит
-     * Геральт или живой житель (speaker), ref — из его снимка обстановки.
+     * Беседа с NPC (talk_to_npc): подойти, сказать фразу, выслушать ответ (та же модель в его характере, может ответить
+     * и делом) — и так несколько реплик подряд (converse). Говорит Геральт или живой житель (speaker), ref — из его
+     * снимка обстановки. Итог — запись беседы для модели говорящего.
      */
     private String talkToNpc(Actor speaker, Map<String, Object> snap, String ref, String text) {
         Map<String, Object> who = null;
@@ -613,41 +632,104 @@ final class GeraltBrain {
             return "поговорить не вышло: нет такого человека рядом";
         }
         String name = Json.str(who, "name");
+        String npcId = Json.str(who, "id");
+        String key = npcId.isEmpty() ? name : npcId;
+        String listenerKey = talkKey(key);
+        // Тот, с кем уже идёт беседа, и так слышит: вложенная беседа с ним путала бы, кто кому отвечает
+        if (inTalk.contains(listenerKey)) return "ты и так говоришь с «" + name + "»: он тебя слышит, отвечай ему словами";
+        if (talkDepth >= MAX_TALK_DEPTH) return "не сейчас: ты уже в беседе — скажешь «" + name + "» потом";
         String id = nextLine("A");
         engine.send(Json.of("cmd", "act", "id", id, "name", "approach", "who", speaker.ref, "args", Json.of("target", ref)));
         Map<String, Object> done = waitFor(e -> "act_done".equals(Json.str(e, "ev")) && id.equals(Json.str(e, "id")), 70000);
         if (done == null || !Json.bool(done, "ok", false)) {
             return "не подошёл к «" + name + "»: " + (done == null ? "долго" : Json.str(done, "note"));
         }
-        String said = Speech.clean(text);
-        speak(speaker.ref, ref, said, speaker.tts());
-        // Слушающий помнит прежние беседы (память сохранения), знает, кто он такой (справочник и его реплики из
-        // игры игрока). Слушает Геральт (житель заговорил с ним) - отвечает в своём характере
+        String speakerKey = talkKey(speaker.geralt() ? GERALT_ID : speaker.key);
+        boolean addSpeaker = inTalk.add(speakerKey);
+        inTalk.add(listenerKey);
+        talkDepth++;
+        try {
+            return converse(speaker, snap, who, ref, key, Speech.clean(text));
+        } finally {
+            talkDepth--;
+            inTalk.remove(listenerKey);
+            if (addSpeaker) inTalk.remove(speakerKey);
+        }
+    }
+
+    /**
+     * Сама беседа: реплика говорящего — ответ слушающего (слова и дела) — следующая реплика говорящего, пока он не
+     * добьётся своего или не кончатся реплики. Текст говорящего здесь слышит собеседник, а не герой: прежде вся
+     * беседа шла через ход модели, и после первого ответа она продолжала её текстом, который слышал только герой.
+     */
+    private String converse(Actor speaker, Map<String, Object> snap, Map<String, Object> who, String ref, String key,
+                            String said) {
+        String name = Json.str(who, "name");
         String npcId = Json.str(who, "id");
         boolean toGeralt = GERALT_ID.equalsIgnoreCase(npcId);
-        String key = npcId.isEmpty() ? name : npcId;
-        String line = speaker.name + ": " + said;
-        // Кто говорит - глазами слушающего: имя, гильдия, одежда, оружие, его отношение (движок, describe)
-        String looks = speakerSeenBy(speaker, ref);
-        // Слушающий отвечает и делом (Tools.listener): видит обстановку своими глазами, ref - из его снимка
-        Map<String, Object> lsnap = toGeralt ? requestSnapshot() : requestSnapshot(ref);
         Actor listener = toGeralt ? GERALT : new Actor(ref, key, name, Json.str(who, "guild"),
             Json.bool(who, "female", false), (int) Json.num(who, "voice", 1));
+        // Кто говорит - глазами слушающего: имя, гильдия, одежда, оружие, его отношение (движок, describe)
+        String looks = seenBy(speaker.ref, speaker.geralt(), speaker.name, speaker.guild, ref);
+        String partner = null;
+        List<String> transcript = new ArrayList<>();
+        int rounds = talkDepth > 1 ? 1 : TALK_ROUNDS;
+        for (int round = 0; ; round++) {
+            speak(speaker.ref, ref, said, speaker.tts());
+            String line = speaker.name + ": " + said;
+            transcript.add(line);
+            String[] heard = listen(speaker, listener, toGeralt, who, ref, key, said, looks, transcript);
+            if (heard == null) {
+                transcript.add("(«" + name + "» не ответил)");
+                break;
+            }
+            if (!heard[0].isEmpty()) transcript.add(name + ": " + heard[0]);
+            if (!heard[1].isEmpty()) transcript.add("(" + name + " сделал: " + heard[1] + ")");
+            if (round >= rounds || (heard[0].isEmpty() && heard[1].isEmpty())) break;
+            if (partner == null) partner = seenBy(ref, toGeralt, name, Json.str(who, "guild"), speaker.ref);
+            String[] next = speakerNext(speaker, snap, name, partner, transcript);
+            if (!next[1].isEmpty()) transcript.add("(" + speaker.name + " сделал: " + next[1] + ")");
+            said = next[0];
+            if (said.isEmpty()) break;
+        }
+        return "Беседа с «" + name + "» (" + ref + "):\n" + String.join("\n", transcript) + "\nБеседа окончена. Теперь "
+            + "твой текст снова слышит только герой; сказать что-то ещё «" + name + "» — снова talk_to_npc.";
+    }
+
+    /**
+     * Слушающий: ответ словами (его характер, память бесед, его снимок обстановки) и делом (Tools.listener, после слов).
+     * Итог — {слова, что сделал}; null — модель не ответила.
+     */
+    private String[] listen(Actor speaker, Actor listener, boolean toGeralt, Map<String, Object> who, String ref,
+                            String key, String said, String looks, List<String> transcript) {
+        String name = listener.name;
+        String line = speaker.name + ": " + said;
+        // Слушающий видит обстановку своими глазами, ref - из его снимка
+        Map<String, Object> lsnap = toGeralt ? requestSnapshot() : requestSnapshot(ref);
+        // Слушающий может заговорить и с третьим (передать, разобраться), но не глубже MAX_TALK_DEPTH
+        boolean canTalk = talkDepth < MAX_TALK_DEPTH;
         String reply;
         List<LlmClient.ToolCall> acts = new ArrayList<>();
         try {
             List<Map<String, Object>> msgs = new ArrayList<>();
+            String heard = line;
             if (toGeralt) {
                 StringBuilder sys = new StringBuilder(Persona.system())
                     .append("\n\nСейчас с тобой заговорил житель. Кто он: ").append(looks)
-                    .append("\nОтветь ему вслух, с оглядкой на то, кто он (talk_to_npc не нужен — он рядом и слышит тебя).");
-                Persona.reactions(sys);
+                    .append("\nОтветь ему вслух, с оглядкой на то, кто он: он рядом и слышит тебя.");
+                Persona.reactions(sys, canTalk);
                 msgs.add(Json.of("role", "system", "content", sys.toString()));
+                if (transcript.size() > 1) {
+                    heard = "Беседа до этого:\n" + String.join("\n", transcript.subList(0, transcript.size() - 1))
+                        + "\n\n" + said;
+                } else {
+                    heard = said;
+                }
             } else {
                 Map<String, Object> info = loreOf(key, ref);
                 msgs.add(Json.of("role", "system", "content", Persona.npcReply(name, Json.str(who, "guild"),
-                    Json.bool(who, "female", false), NpcLore.of(npcId), strings(info.get("topics")),
-                    strings(info.get("lines")), looks)));
+                    Json.bool(who, "female", false), NpcLore.of(Json.str(who, "id")), strings(info.get("topics")),
+                    strings(info.get("lines")), looks, canTalk)));
                 // Свои реплики - ответы модели, чужие (Геральт, герой, другие жители) - с именем говорящего
                 String own = name + ": ";
                 for (String l : memory.talk(key)) {
@@ -655,25 +737,25 @@ final class GeraltBrain {
                     else msgs.add(Json.of("role", "user", "content", l));
                 }
             }
-            String heard = toGeralt ? said : line;
             msgs.add(Json.of("role", "user", "content", lsnap.isEmpty() ? heard : Observation.describe(lsnap) + "\n\n" + heard));
-            LlmClient.Reply r = chat.chat(msgs, lsnap.isEmpty() ? null : listenerTools, 700);
+            LlmClient.Reply r = chat.chat(msgs, lsnap.isEmpty() ? null : canTalk ? listenerTalkTools : listenerTools, 700);
             reply = Speech.clean(r.text);
             StringBuilder calls = new StringBuilder();
             for (LlmClient.ToolCall c : r.calls) {
-                if (!Tools.forListener(c.name)) continue;
+                if (!Tools.forListener(c.name) && !(canTalk && "talk_to_npc".equals(c.name))) continue;
                 acts.add(c);
                 calls.append(' ').append(c.name).append(c.rawArgs);
             }
             AiLog.i("npc " + key + " to " + speaker.name + ": «" + AiLog.cut(reply, 200) + "»" + calls);
-            if (reply.isEmpty()) {
+            if (reply.isEmpty() && !hasTalk(acts)) {
                 // Промолчал на обращённые к нему слова - ещё раз: ответ словами обязателен
                 msgs.add(Json.of("role", "user", "content", "Ответь ему вслух: 1–3 предложения, только то, что произносишь."));
                 reply = Speech.clean(chat.chat(msgs, null, 700).text);
+                AiLog.i("npc " + key + " words: «" + AiLog.cut(reply, 200) + "»");
             }
         } catch (IOException e) {
             showError("модель — " + e.getMessage());
-            return "ты сказал «" + name + "»: «" + said + "», но ответа не расслышал";
+            return null;
         }
         if (toGeralt) {
             memory.add(stamp() + " " + speaker.name + " сказал тебе: «" + said + "»"
@@ -687,35 +769,91 @@ final class GeraltBrain {
             if (!reply.isEmpty()) memory.addTalk(speaker.key, name + ": " + reply);
         }
         if (!reply.isEmpty()) speak(ref, speaker.ref, reply, listener.tts());
-        // Ответ делом - после слов: «Ладно, ухожу» - и уходит
+        // Ответ делом - после слов: «Ладно, ухожу» - и уходит. Беседа с третьим - ради сказанного говорящим
+        String old = purpose;
+        purpose = "«" + speaker.name + "» сказал тебе: «" + said + "»";
         List<String> did = new ArrayList<>();
-        for (LlmClient.ToolCall c : acts) {
-            did.add(c.name + (c.args.isEmpty() ? "" : " " + Json.write(c.args)) + " — " + runTool(c, listener, lsnap)[0]);
+        try {
+            for (LlmClient.ToolCall c : acts) did.add(deed(c, runTool(c, listener, lsnap)[0]));
+        } finally {
+            purpose = old;
         }
-        String deeds = did.isEmpty() ? "" : " Что «" + name + "» сделал в ответ: " + String.join("; ", did) + ".";
-        if (!speaker.geralt() && !did.isEmpty()) memory.addTalk(speaker.key, name + ": (" + String.join("; ", did) + ")");
-        if (reply.isEmpty()) return "ты сказал «" + name + "»: «" + said + "»; он промолчал." + deeds;
-        return "ты сказал «" + name + "»: «" + said + "». «" + name + "» ответил: «" + reply + "»." + deeds
-            + " Можешь продолжить беседу (talk_to_npc с тем же ref) или закончить её.";
+        String deeds = String.join("; ", did);
+        if (!speaker.geralt() && !did.isEmpty()) memory.addTalk(speaker.key, name + ": (" + deeds + ")");
+        return new String[]{reply, deeds};
     }
 
     /**
-     * Как говорящий (Геральт или житель) выглядит для слушающего listenerRef: описание из движка (describe) и его
-     * известность в округе. Нет ответа движка — по имени и гильдии.
+     * Следующая реплика говорящего в беседе: его характер, зачем он заговорил (purpose), беседа до сих пор. Его текст
+     * слышит собеседник; пустой — беседа окончена. Может и сделать что-то (Tools.listener). Итог — {слова, что сделал}.
      */
-    private String speakerSeenBy(Actor speaker, String listenerRef) {
+    private String[] speakerNext(Actor speaker, Map<String, Object> snap, String partnerName, String partner,
+                                 List<String> transcript) {
+        StringBuilder sys;
+        if (speaker.geralt()) {
+            sys = new StringBuilder(Persona.system());
+        } else {
+            Map<String, Object> info = loreOf(speaker.key, speaker.ref);
+            sys = new StringBuilder(Persona.npcIdentity(speaker.name, speaker.guild, speaker.female, NpcLore.of(speaker.key),
+                strings(info.get("topics")), strings(info.get("lines"))));
+        }
+        Persona.converse(sys, partnerName, partner, purpose);
+        List<Map<String, Object>> msgs = new ArrayList<>();
+        msgs.add(Json.of("role", "system", "content", sys.toString()));
+        // Беседа одним сообщением: история не может начинаться с ответа модели (его реплики)
+        msgs.add(Json.of("role", "user", "content", (snap.isEmpty() ? "" : Observation.describe(snap) + "\n\n")
+            + "Беседа до сих пор (ты — " + speaker.name + "):\n" + String.join("\n", transcript)
+            + "\n\nТвоя следующая реплика «" + partnerName + "» (или ничего, если беседа окончена):"));
+        LlmClient.Reply r;
+        try {
+            r = chat.chat(msgs, snap.isEmpty() ? null : listenerTools, 500);
+        } catch (IOException e) {
+            showError("модель — " + e.getMessage());
+            return new String[]{"", ""};
+        }
+        String said = Speech.clean(r.text);
+        StringBuilder calls = new StringBuilder();
+        List<String> did = new ArrayList<>();
+        for (LlmClient.ToolCall c : r.calls) calls.append(' ').append(c.name).append(c.rawArgs);
+        AiLog.i("talk " + (speaker.geralt() ? "geralt" : speaker.key) + " to " + partnerName + ": «"
+            + AiLog.cut(said, 200) + "»" + calls);
+        for (LlmClient.ToolCall c : r.calls) {
+            if (Tools.forListener(c.name)) did.add(deed(c, runTool(c, speaker, snap)[0]));
+        }
+        return new String[]{said, String.join("; ", did)};
+    }
+
+    private static String deed(LlmClient.ToolCall c, String result) {
+        return c.name + (c.args.isEmpty() ? "" : " " + Json.write(c.args)) + " — " + result;
+    }
+
+    private static boolean hasTalk(List<LlmClient.ToolCall> calls) {
+        for (LlmClient.ToolCall c : calls) if ("talk_to_npc".equals(c.name)) return true;
+        return false;
+    }
+
+    /** Ключ участника беседы: id экземпляра (или имя) заглавными — одинаково, кто бы его ни назвал. */
+    private static String talkKey(String key) {
+        return key.toUpperCase(java.util.Locale.ROOT);
+    }
+
+    /**
+     * Как targetRef (Геральт или житель) выглядит для viewerRef: описание из движка (describe) и его известность в
+     * округе. Нет ответа движка — по имени и гильдии.
+     */
+    private String seenBy(String targetRef, boolean geralt, String name, String guild, String viewerRef) {
         String req = "d" + (++seq);
-        engine.send(Json.of("cmd", "describe", "req", req, "target", speaker.ref, "viewer", listenerRef));
+        engine.send(Json.of("cmd", "describe", "req", req, "target", targetRef, "viewer", viewerRef));
         Map<String, Object> d = waitFor(e -> "describe".equals(Json.str(e, "ev")) && req.equals(Json.str(e, "req")), 2500);
-        String known = speaker.geralt()
+        String known = geralt
             ? "чужак, назвавшийся Геральтом; несколько дней сидит в кабаке Корагона; седой, со шрамом, жёлтые кошачьи "
                 + "глаза, два меча."
             : NpcLore.reputation(d == null ? "" : Json.str(d, "id"));
         if (d == null || Json.str(d, "name").isEmpty()) {
-            return speaker.name + (speaker.guild.isEmpty() ? "" : " — гильдия: " + speaker.guild)
+            return name + (guild.isEmpty() ? "" : " — гильдия: " + guild)
                 + (known.isEmpty() ? "" : ". Что о нём известно в округе: " + known);
         }
-        return Observation.speaker(d, speaker.name, known);
+        return Observation.speaker(d, name, known);
     }
 
     /** Сведения о жителе из движка (темы и реплики его диалогов в игре) — один раз за сеанс. */
