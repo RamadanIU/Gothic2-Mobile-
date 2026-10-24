@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..1e9cbce
+index 0000000..6c455d4
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2804 @@
+@@ -0,0 +1,2828 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -611,6 +611,20 @@ index 0000000..1e9cbce
 +  Log::i("[g2m] ai: resident \"",npc.displayName(),"\" back to routine");
 +  }
 +
++void AiNpc::calmHostility(Npc& npc, Npc& pl) {
++  // Прежде set_attitude hostile ставил постоянное ATT_HOSTILE: житель и герой бились насмерть. Скрипты игры ставят
++  // его человеку только перед AR_KILL (B_Attack) - такие и враги по гильдии (бандиты) остаются как есть
++  if(npc.guild()>=GIL_SEPERATOR_HUM || npc.attitude()!=ATT_HOSTILE || owner.guildAttitude(npc,pl)==ATT_HOSTILE)
++    return;
++  const int32_t aivReason = owner.scriptConst("AIV_ATTACKREASON",9);
++  if(aivReason>=0 && uint32_t(aivReason)<zenkit::INpc::aivar_count &&
++     npc.handle().aivar[size_t(aivReason)]==owner.scriptConst("AR_KILL",19))
++    return;
++  npc.setAttitude(ATT_ANGRY);
++  npc.setTempAttitude(ATT_HOSTILE);
++  Log::i("[g2m] ai: \"",npc.displayName(),"\" hostile -> angry (fights to knockout)");
++  }
++
 +void AiNpc::tickResidents(uint64_t now) {
 +  // Житель, оставленный ждать или ушедший по делу, возвращается к своей жизни, когда герой минуту далеко
 +  // (идущие с героем - нет); после загрузки сохранения - сразу к daily_routine
@@ -909,7 +923,10 @@ index 0000000..1e9cbce
 +    residents.clear();
 +    for(uint32_t i=0; i<w->npcCount(); ++i) {
 +      Npc* n = w->npcById(i);
-+      if(n==nullptr || n==npc || n->isPlayer() || n->isDead())
++      if(n==nullptr || n->isPlayer() || n->isDead())
++        continue;
++      calmHostility(*n,*w->player());
++      if(n==npc)
 +        continue;
 +      if(n->handle().aivar[AivRoutine]!=0 && !owner.isPartyMember(*n))
 +        goHome(*n);
@@ -1907,7 +1924,11 @@ index 0000000..1e9cbce
 +      att = ATT_ANGRY;
 +    else if(v=="hostile")
 +      att = ATT_HOSTILE;
-+    npc.setAttitude(att);
++    // «Враждебно» - злость, как у обиженного в скриптах игры (временное ATT_HOSTILE поверх постоянного «сердито»),
++    // а не постоянная вражда: постоянное ATT_HOSTILE у человека - бой насмерть (Npc::checkHealth: упавший умирает, а
++    // не теряет сознание; attackReason - AR_GuildEnemy с добиванием). Так герой убил Рауля, а жители - героя.
++    // Скрипты ставят его только перед AR_KILL (B_Attack)
++    npc.setAttitude(att==ATT_HOSTILE ? ATT_ANGRY : att);
 +    npc.setTempAttitude(att);
 +    done("отношение к герою: "+v);
 +    return;
@@ -2389,8 +2410,11 @@ index 0000000..1e9cbce
 +  put(j,"weaponDrawn",pl->weaponState()!=WeaponState::NoWeapon ? 1 : 0);
 +  put(j,"sees",me.canSeeNpc(*pl,false) ? 1 : 0);
 +  {
-+  const auto att = owner.personAttitude(me,*pl);
-+  put(j,"attitude",att==ATT_HOSTILE ? "враждебно" : att==ATT_ANGRY ? "сердито" : att==ATT_FRIENDLY ? "дружески" : "нейтрально");
++  // Злость «враждебно» (set_attitude hostile) - временное отношение поверх постоянного «сердито»
++  auto att = owner.personAttitude(me,*pl);
++  if(att==ATT_ANGRY && me.tempAttitude()==ATT_HOSTILE)
++    att = ATT_HOSTILE;
++  put(j,"attitude",attitudeName(att));
 +  }
 +  j.EndObject();
 +
@@ -3044,10 +3068,10 @@ index 0000000..1e9cbce
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..19b3d3d
+index 0000000..c1479ca
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,247 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -3184,6 +3208,8 @@ index 0000000..19b3d3d
 +    // домой - когда попросят (go_home) или когда герой давно далеко (tickResidents)
 +    void   leaveRoutine(Npc& npc);
 +    void   goHome(Npc& npc);
++    // Постоянная вражда к герою от прежнего set_attitude hostile (бой насмерть) - в злость (сохранения до 2026-10-24)
++    void   calmHostility(Npc& npc, Npc& pl);
 +    void   tickResidents(uint64_t now);
 +    std::string equip  (Npc& npc, size_t sym, bool& ok);
 +    std::string unequip(Npc& npc, size_t sym, bool& ok);
