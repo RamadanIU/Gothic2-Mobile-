@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..e0e81fd
+index 0000000..1e9cbce
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2803 @@
+@@ -0,0 +1,2804 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -1867,7 +1867,8 @@ index 0000000..e0e81fd
 +    static const struct { const char* name; const char* ani; } gestures[] = {
 +      {"nod","T_YES"}, {"no","T_NO"}, {"shrug","T_DONTKNOW"}, {"come_here","T_COMEOVERHERE"},
 +      {"greet","T_GREETNOV"}, {"dismiss","T_FORGETIT"}, {"get_lost","T_GETLOST"}, {"salute","T_GREETRIGHT"},
-+      {"look_around","T_SEARCH"}, {"cheer","T_WATCHFIGHT_YEAH"}, {"angry","T_WATCHFIGHT_OHNO"},
++      // Gothic II Mobile: T_WATCHFIGHT_* - зевака у драки (прыгает и машет кулаками): житель «плясал» вместо удара
++      {"look_around","T_SEARCH"}, {"cheer","T_YES"}, {"angry","T_GETLOST"},
 +      };
 +    const std::string g = str(args,"name");
 +    for(auto& i:gestures)
