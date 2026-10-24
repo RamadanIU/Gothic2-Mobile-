@@ -82,6 +82,8 @@ final class GeraltBrain {
     private final LlmClient chat;
     private final LlmClient act;
     private final List<Map<String, Object>> tools = Tools.all();
+    /** У живых жителей — ещё сюжетные темы их диалогов из игры (story_topic). */
+    private final List<Map<String, Object>> residentTools = Tools.resident();
 
     private final LinkedBlockingQueue<Map<String, Object>> queue = new LinkedBlockingQueue<>();
     private final ArrayDeque<Map<String, Object>> deferred = new ArrayDeque<>();
@@ -398,6 +400,8 @@ final class GeraltBrain {
                 if (a.geralt()) memory.add(stamp() + " " + r);
                 return new String[]{r, "again"};
             }
+            case "story_topic":
+                return storyTopic(c, a);
             default:
                 break;
         }
@@ -430,6 +434,27 @@ final class GeraltBrain {
     }
 
     /**
+     * Сюжетная тема жителя (story_topic): движок исполняет её скриптом игры сразу (AiNpc::cmdStory) и присылает итог —
+     * его слова в игре, дневник, вещи, опыт, варианты ответа. Модель затем пересказывает это своими словами.
+     */
+    private String[] storyTopic(LlmClient.ToolCall c, Actor a) {
+        if (a.geralt()) return new String[]{"у тебя нет сюжетных тем", ""};
+        String id = nextLine("A");
+        Map<String, Object> cmd = Tools.engineAct(id, c.name, c.args);
+        cmd.put("who", a.ref);
+        engine.send(cmd);
+        Map<String, Object> done = waitFor(e -> "act_done".equals(Json.str(e, "ev")) && id.equals(Json.str(e, "id")), 5000);
+        if (done == null) return new String[]{"нет ответа от игры — тема не сыграна; ответь герою своими словами", "again"};
+        boolean ok = Json.bool(done, "ok", false);
+        AiLog.i("story " + a.key + " " + Json.str(c.args, "topic") + (ok ? " ok: " : " fail: ")
+            + AiLog.cut(Json.write(done.containsKey("story") ? done.get("story") : Json.str(done, "note")), 300));
+        String memo = Story.memo(done);
+        // Без имени жителя: в беседах с ним это не его реплика, а пометка о том, что случилось
+        if (!memo.isEmpty()) memory.addTalk(a.key, memo);
+        return new String[]{Story.result(done), "again"};
+    }
+
+    /**
      * Живой житель: герой сказал ему что-то кнопкой «Сказать». Ход — как у Геральта (те же инструменты), но
      * глазами жителя (снимок с who), с его характером (NpcLore, его реплики из игры), памятью бесед и голосом.
      */
@@ -459,8 +484,10 @@ final class GeraltBrain {
             msgs.add(Json.of("role", "system", "content", Persona.resident(a.name, a.guild, a.female, NpcLore.of(id),
                 strings(info.get("topics")), strings(info.get("lines")))));
             String mem = memory.npcContext(a.key);
+            String topics = Story.describe(snap);
             msgs.add(Json.of("role", "user", "content",
                 (mem.isEmpty() ? "" : mem + "\n\n") + Observation.describe(snap)
+                    + (topics.isEmpty() ? "" : "\n\n" + topics)
                     + "\n\nКто с тобой говорит: " + Observation.speaker(Json.obj(snap.get("hero")), "Герой (безымянный странник)", "")
                     + "\n\nГерой говорит тебе: «" + text + "»"));
             memory.addTalk(a.key, "Герой: " + text);
@@ -468,12 +495,22 @@ final class GeraltBrain {
             boolean spoke = false;
             for (int step = 0; step < steps; step++) {
                 long t0 = now();
-                LlmClient.Reply r = chat.chat(msgs, tools, 1200);
+                LlmClient.Reply r = chat.chat(msgs, residentTools, 1200);
                 String speech = Speech.clean(r.text);
                 StringBuilder calls = new StringBuilder();
-                for (LlmClient.ToolCall c : r.calls) calls.append(' ').append(c.name).append(c.rawArgs);
+                boolean story = false;
+                for (LlmClient.ToolCall c : r.calls) {
+                    calls.append(' ').append(c.name).append(c.rawArgs);
+                    if (Tools.isStory(c.name)) story = true;
+                }
                 AiLog.i("resident model " + (now() - t0) + " ms: «" + AiLog.cut(speech, 200) + "»" + calls);
                 if (step == 0) ui.hideStatus();
+                // Слова до сюжетной темы - догадка о том, что в ней: настоящие слова придут с итогом темы, и
+                // модель скажет их следующим шагом (иначе житель говорил бы одно и то же дважды)
+                if (story && !speech.isEmpty()) {
+                    AiLog.i("speech before story dropped");
+                    speech = "";
+                }
                 if (!speech.isEmpty()) {
                     spoke = true;
                     memory.addTalk(a.key, a.name + ": " + speech);
@@ -487,6 +524,8 @@ final class GeraltBrain {
                     msgs.add(Json.of("role", "tool", "tool_call_id", c.id, "content", res[0]));
                     if ("again".equals(res[1])) again = true;
                     if ("talk_to_npc".equals(c.name)) steps = Math.min(MAX_TALK_STEPS, Math.max(steps, step + 2));
+                    // После темы - ещё шаг, чтобы пересказать её герою (и, если нужно, выбрать вариант ответа)
+                    if (Tools.isStory(c.name)) steps = Math.min(MAX_TALK_STEPS, Math.max(steps, step + 2));
                 }
                 if (!again) break;
             }
@@ -509,9 +548,21 @@ final class GeraltBrain {
     /** Ответ модели без слов на слова героя: ещё раз, только речью (вызывать инструменты нельзя). */
     private String forceWords(List<Map<String, Object>> msgs, LlmClient llm) throws IOException {
         msgs.add(Json.of("role", "user", "content", WORDS_PLEASE));
-        String speech = Speech.clean(llm.chat(msgs, tools, 600, true).text);
+        // Тот же набор инструментов, что в ходе: в истории есть их вызовы (у жителя - и story_topic)
+        String speech = Speech.clean(llm.chat(msgs, toolsOf(msgs), 600, true).text);
         AiLog.i("words forced: «" + AiLog.cut(speech, 200) + "»");
         return speech;
+    }
+
+    /** Набор инструментов хода: у жителя — с сюжетными темами, если модель их вызывала. */
+    private List<Map<String, Object>> toolsOf(List<Map<String, Object>> msgs) {
+        for (Map<String, Object> m : msgs) {
+            for (Object o : Json.arr(m.get("tool_calls"))) {
+                Map<String, Object> f = Json.obj(Json.obj(o).get("function"));
+                if (Tools.isStory(Json.str(f, "name"))) return residentTools;
+            }
+        }
+        return tools;
     }
 
     private static List<String> strings(Object arr) {

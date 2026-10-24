@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..1a36425
+index 0000000..e0e81fd
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2254 @@
+@@ -0,0 +1,2803 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -255,6 +255,7 @@ index 0000000..1a36425
 +#include <cmath>
 +#include <cstdio>
 +#include <cstdlib>
++#include <iterator>
 +#include <random>
 +
 +#include "game/ailink.h"
@@ -1477,7 +1478,7 @@ index 0000000..1a36425
 +  acts.erase(std::remove_if(acts.begin(),acts.end(),[](const Action& a){ return a.closed; }),acts.end());
 +  }
 +
-+void AiNpc::finish(Action& a, bool ok, std::string_view note) {
++void AiNpc::finish(Action& a, bool ok, std::string_view note, std::string_view story) {
 +  if(a.closed)
 +    return;
 +  a.closed = true;
@@ -1498,6 +1499,11 @@ index 0000000..1a36425
 +  w.Key("ok");
 +  w.Bool(ok);
 +  put(w,"note",note);
++  if(!story.empty()) {
++    // Итог сюжетной темы (cmdStory) - готовый объект JSON
++    w.Key("story");
++    w.RawValue(story.data(),story.size(),rapidjson::kObjectType);
++    }
 +  w.EndObject();
 +  AiLink::send(buf.GetString());
 +  }
@@ -1778,6 +1784,12 @@ index 0000000..1a36425
 +      return;
 +      }
 +    a.mood = fromCp1251(mob->displayName());
++    }
++
++  if(name=="story") {
++    // Сюжетная тема его диалогов (story_topic): скрипт игры исполняется сразу, итог - модели
++    cmdStory(npc,a,str(args,"topic"));
++    return;
 +    }
 +
 +  if(isBodyAct(name)) {
@@ -2489,15 +2501,552 @@ index 0000000..1a36425
 +  }
 +  j.EndArray();
 +
++  // Сюжет игры: темы диалогов жителя, которые герою доступны сейчас, начатый выбор, задания героя (story_topic)
++  if(&me!=geralt && !me.isMonster() && !me.isDead() && dist(*pl,me)<2000.f) {
++    const std::string story = storyJson(*pl,me);
++    j.Key("story");
++    j.RawValue(story.c_str(),story.size(),rapidjson::kObjectType);
++    }
++
 +  j.EndObject();
 +  return buf.GetString();
 +  }
++
++// ---------------- Сюжет игры в разговоре ----------------
++
++namespace {
++  // Слов жителя в подсказке темы (до того, как её сыграли) - не больше; итог темы - целиком
++  const size_t StoryPreviewMax = 420;
++  const size_t StoryTopicsMax  = 16;
++
++  std::string cutUtf8(std::string s, size_t max) {
++    if(s.size()<=max)
++      return s;
++    size_t n = max;
++    while(n>0 && (uint8_t(s[n]) & 0xC0)==0x80)
++      --n;
++    s.resize(n);
++    return s+"…";
++    }
++  }
++
++void AiNpc::storyInfos(Npc& npc, std::vector<zenkit::IInfo*>& out) {
++  out.clear();
++  const int32_t inst = int32_t(npc.handle().symbol_index());
++  for(auto& i:owner.dialogsInfo)
++    if(i!=nullptr && i->npc==inst)
++      out.push_back(i.get());
++  std::stable_sort(out.begin(),out.end(),[](auto* a, auto* b){ return a->nr<b->nr; });
++  }
++
++bool AiNpc::storyListed(Npc& player, Npc& npc, zenkit::IInfo& info) {
++  // Что из тем жителя можно сыграть через модель - как в родном меню реплик, кроме торговли (окно торговли - в диалоге
++  // игры), карманной кражи (это дело героя, а не беседа) и «КОНЕЦ» (просто закрыть диалог). Постоянную тему, которую
++  // житель говорит сам (стража: «Стой!»), - не чаще раза в 3 минуты
++  if(info.trade)
++    return false;
++  if(!info.important && info.description.empty())
++    return false;
++  auto* isym = owner.vm.find_symbol_by_instance(info);
++  if(isym==nullptr || isym->name().find("PICKPOCKET")!=std::string::npos)
++    return false;
++  if(auto* ende = owner.findSymbol("DIALOG_ENDE");
++     ende!=nullptr && ende->type()==zenkit::DaedalusDataType::STRING && !info.description.empty() &&
++     info.description==ende->get_string())
++    return false;
++  if(info.important && info.permanent) {
++    const uint64_t now = owner.tickCount();
++    for(auto& r:storyRecent)
++      if(r.npc==&npc && r.info==isym->index() && now<r.at+180000)
++        return false;
++    }
++  return owner.storyAvailable(player,npc,info);
++  }
++
++const AiNpc::StoryPreview& AiNpc::storyPreview(size_t fnSym) {
++  // Подсказка модели, о чём тема: по байт-коду её функции - слова жителя (AI_Output(self, …)), задание
++  // (Log_CreateTopic), его сдача (Log_SetTopicStatus … LOG_SUCCESS) и запись в дневник (B_LogEntry) с аргументами-
++  // константами перед вызовом. Вложенные функции не разбираются: для подсказки хватает, итог темы - по факту
++  auto found = storyPreviews.find(fnSym);
++  if(found!=storyPreviews.end())
++    return found->second;
++  StoryPreview& pv = storyPreviews[fnSym];
++  auto& vm = owner.vm;
++  auto* fn = vm.find_symbol_by_index(uint32_t(fnSym));
++  if(fn==nullptr || fn->type()!=zenkit::DaedalusDataType::FUNCTION || fn->is_external())
++    return pv;
++
++  struct Arg {
++    const zenkit::DaedalusSymbol* sym   = nullptr;
++    int32_t                       imm   = 0;
++    bool                          isImm = false;
++    };
++  auto strOf = [](const Arg& a) -> std::string {
++    if(a.sym==nullptr || a.sym->is_member() || a.sym->type()!=zenkit::DaedalusDataType::STRING)
++      return {};
++    return a.sym->get_string();
++    };
++  auto intOf = [](const Arg& a) -> int32_t {
++    if(a.isImm)
++      return a.imm;
++    if(a.sym!=nullptr && !a.sym->is_member() && a.sym->is_const() && a.sym->type()==zenkit::DaedalusDataType::INT)
++      return a.sym->get_int();
++    return -1;
++    };
++  const int32_t logMission = owner.scriptConst("LOG_MISSION",0);
++  const int32_t logSuccess = owner.scriptConst("LOG_SUCCESS",2);
++
++  try {
++    std::vector<Arg> stack;
++    uint32_t       pc  = fn->address();
++    const uint32_t end = vm.size();
++    for(size_t step=0; pc<end && step<6000; ++step) {
++      // Конец функции - начало следующего кода (функции, экземпляра)
++      if(step>0)
++        if(auto* next = vm.find_symbol_by_address(pc); next!=nullptr && next!=fn && !next->is_external())
++          break;
++      const auto ins = vm.instruction_at(pc);
++      pc += ins.size;
++      switch(ins.op) {
++        case zenkit::DaedalusOpcode::PUSHV:
++        case zenkit::DaedalusOpcode::PUSHVI:
++        case zenkit::DaedalusOpcode::PUSHVV: {
++          Arg a;
++          a.sym = vm.find_symbol_by_index(ins.symbol);
++          stack.push_back(a);
++          break;
++          }
++        case zenkit::DaedalusOpcode::PUSHI: {
++          Arg a;
++          a.imm   = ins.immediate;
++          a.isImm = true;
++          stack.push_back(a);
++          break;
++          }
++        case zenkit::DaedalusOpcode::BE:
++        case zenkit::DaedalusOpcode::BL: {
++          const zenkit::DaedalusSymbol* callee = ins.op==zenkit::DaedalusOpcode::BE ? vm.find_symbol_by_index(ins.symbol)
++                                                                                     : vm.find_symbol_by_address(ins.address);
++          const std::string_view name = callee!=nullptr ? std::string_view(callee->name()) : std::string_view();
++          const size_t           n    = stack.size();
++          if(name=="AI_OUTPUT" && n>=3) {
++            const Arg& who = stack[n-3];
++            if(who.sym!=nullptr && who.sym->name()=="SELF" && pv.says.size()<StoryPreviewMax) {
++              const auto txt = owner.messageByName(strOf(stack[n-1]));
++              if(!txt.empty())
++                pv.says += (pv.says.empty() ? "" : " ")+fromCp1251(txt);
++              }
++            }
++          else if(name=="LOG_CREATETOPIC" && n>=2) {
++            if(pv.quest.empty() && intOf(stack[n-1])==logMission)
++              pv.quest = fromCp1251(strOf(stack[n-2]));
++            }
++          else if((name=="B_LOGENTRY" || name=="LOG_ADDENTRY") && n>=2) {
++            if(pv.log.empty())
++              pv.log = fromCp1251(strOf(stack[n-1]));
++            }
++          else if(name=="LOG_SETTOPICSTATUS" && n>=2) {
++            if(pv.done.empty() && intOf(stack[n-1])==logSuccess)
++              pv.done = fromCp1251(strOf(stack[n-2]));
++            }
++          stack.clear();
++          break;
++          }
++        default:
++          stack.clear();
++          break;
++        }
++      }
++    }
++  catch(...) {
++    Log::e("[g2m] ai: unable to read dialog function \"",fn->name(),"\"");
++    }
++  pv.says = cutUtf8(pv.says,StoryPreviewMax);
++  return pv;
++  }
++
++std::string AiNpc::storyJson(Npc& player, Npc& npc) {
++  rapidjson::StringBuffer buf;
++  JsonOut j(buf);
++  j.StartObject();
++
++  std::vector<zenkit::IInfo*> infos;
++  owner.storyPrepare(player,npc);
++  storyInfos(npc,infos);
++  j.Key("topics");
++  j.StartArray();
++  size_t n = 0;
++  for(auto* info:infos) {
++    if(n>=StoryTopicsMax)
++      break;
++    if(!storyListed(player,npc,*info))
++      continue;
++    auto*       isym = owner.vm.find_symbol_by_instance(*info);
++    const auto& pv   = storyPreview(size_t(info->information));
++    j.StartObject();
++    put(j,"id","t"+std::to_string(isym->index()));
++    if(!info->description.empty())
++      put(j,"hero",fromCp1251(info->description));
++    if(info->important)
++      put(j,"imp",1);
++    if(info->permanent)
++      put(j,"perm",1);
++    if(!pv.says.empty())
++      put(j,"says",pv.says);
++    if(!pv.quest.empty())
++      put(j,"quest",pv.quest);
++    if(!pv.done.empty())
++      put(j,"done",pv.done);
++    if(!pv.log.empty())
++      put(j,"log",pv.log);
++    j.EndObject();
++    ++n;
++    }
++  j.EndArray();
++
++  // Начатая через модель тема ждёт выбора героя (Info_AddChoice)
++  j.Key("choices");
++  j.StartArray();
++  for(auto* info:infos) {
++    auto* isym = owner.vm.find_symbol_by_instance(*info);
++    if(isym==nullptr || info->choices.empty() ||
++       std::find(storyOpen.begin(),storyOpen.end(),isym->index())==storyOpen.end())
++      continue;
++    for(auto& c:info->choices) {
++      j.StartObject();
++      put(j,"id","c"+std::to_string(c.function));
++      put(j,"text",fromCp1251(c.text));
++      put(j,"of","t"+std::to_string(isym->index()));
++      j.EndObject();
++      }
++    }
++  j.EndArray();
++
++  // Задания героя в работе - самые свежие
++  j.Key("quests");
++  j.StartArray();
++  const auto& log = owner.questLog();
++  size_t q = 0;
++  for(size_t i=log.questCount(); i>0 && q<8; --i) {
++    const auto& qu = log.quest(i-1);
++    if(qu.section!=QuestLog::Mission || qu.status!=QuestLog::Status::Running)
++      continue;
++    j.StartObject();
++    put(j,"name",fromCp1251(qu.name));
++    if(!qu.entry.empty())
++      put(j,"entry",cutUtf8(fromCp1251(qu.entry.back()),300));
++    j.EndObject();
++    ++q;
++    }
++  j.EndArray();
++
++  j.EndObject();
++  return buf.GetString();
++  }
++
++void AiNpc::cmdStory(Npc& npc, Action& a, std::string_view topic) {
++  auto* w  = world();
++  Npc*  pl = w->player();
++  if(&npc==geralt) {
++    finish(a,false,"у тебя нет сюжетных тем: ты здесь чужак");
++    return;
++    }
++  if(pl->qDistTo(npc)>SayDist*SayDist*2.25f) {
++    finish(a,false,"герой отошёл - сюжетную тему можно сыграть, только когда он рядом");
++    return;
++    }
++  if(w->isInDialog()) {
++    finish(a,false,"герой сейчас в диалоге игры");
++    return;
++    }
++
++  // Тема (t<экземпляр C_INFO>) или вариант ответа в начатой теме (c<функция>); модель могла передать и слова героя
++  std::vector<zenkit::IInfo*> infos;
++  owner.storyPrepare(*pl,npc);
++  storyInfos(npc,infos);
++  zenkit::IInfo* info = nullptr;
++  uint32_t       fn   = 0;
++  std::string    t;
++  for(char c:topic)
++    if(c!=' ' && c!='"' && c!='\'')
++      t.push_back(c);
++  const bool digits = t.size()>1 && std::all_of(t.begin()+1,t.end(),[](char c){ return std::isdigit(uint8_t(c))!=0; });
++  if(digits && (t[0]=='t' || t[0]=='T')) {
++    const size_t id = size_t(std::strtoull(t.c_str()+1,nullptr,10));
++    for(auto* i:infos)
++      if(auto* isym = owner.vm.find_symbol_by_instance(*i); isym!=nullptr && isym->index()==id) {
++        info = i;
++        fn   = uint32_t(i->information);
++        }
++    }
++  else if(digits && (t[0]=='c' || t[0]=='C')) {
++    const uint32_t id = uint32_t(std::strtoul(t.c_str()+1,nullptr,10));
++    for(auto* i:infos)
++      for(auto& c:i->choices)
++        if(uint32_t(c.function)==id) {
++          info = i;
++          fn   = id;
++          }
++    }
++  else {
++    const std::string want = toCp1251(topic);
++    for(auto* i:infos) {
++      if(!i->description.empty() && equalsNoCase(i->description,want)) {
++        info = i;
++        fn   = uint32_t(i->information);
++        }
++      for(auto& c:i->choices)
++        if(equalsNoCase(c.text,want)) {
++          info = i;
++          fn   = uint32_t(c.function);
++          }
++      }
++    }
++  if(info==nullptr) {
++    finish(a,false,"нет такой темы или варианта; id - из «Темы разговора» в обстановке");
++    return;
++    }
++  auto* isym = owner.vm.find_symbol_by_instance(*info);
++  if(isym==nullptr) {
++    finish(a,false,"тема не найдена в скриптах");
++    return;
++    }
++  const bool choice = fn!=uint32_t(info->information);
++  if(!choice) {
++    if(info->trade) {
++      finish(a,false,"торговля - в диалоге игры: пусть герой заговорит с тобой и выберет торговлю");
++      return;
++      }
++    if(!storyListed(*pl,npc,*info)) {
++      finish(a,false,"эта тема сейчас недоступна: условия игры не выполнены или она уже сыграна");
++      return;
++      }
++    }
++
++  // Что было до темы: вещи и золото героя, опыт, умения, гильдия, дневник, доступные темы
++  const size_t gold = owner.findSymbolIndex("ITMI_GOLD");
++  auto items = [&]() {
++    std::vector<std::pair<size_t,size_t>> v;
++    for(auto it=pl->inventory().iterator(Inventory::T_Inventory); it.isValid(); ++it)
++      v.emplace_back(it->clsId(),it.count());
++    return v;
++    };
++  struct QuestState {
++    std::string       name;
++    QuestLog::Section section;
++    QuestLog::Status  status;
++    size_t            entries;
++    };
++  auto quests = [&]() {
++    std::vector<QuestState> v;
++    const auto& log = owner.questLog();
++    for(size_t i=0; i<log.questCount(); ++i) {
++      const auto& qu = log.quest(i);
++      v.push_back(QuestState{qu.name,qu.section,qu.status,qu.entry.size()});
++      }
++    return v;
++    };
++  auto topics = [&]() {
++    std::vector<size_t> v;
++    for(auto* i:infos)
++      if(storyListed(*pl,npc,*i))
++        if(auto* s = owner.vm.find_symbol_by_instance(*i))
++          v.push_back(s->index());
++    return v;
++    };
++  static const struct { Attribute atr; const char* name; } attrs[] = {
++    {ATR_STRENGTH,"сила"}, {ATR_DEXTERITY,"ловкость"}, {ATR_MANAMAX,"мана"}, {ATR_HITPOINTSMAX,"здоровье"},
++    };
++  const auto    itemsBefore  = items();
++  const auto    questsBefore = quests();
++  const auto    topicsBefore = topics();
++  const int32_t xpBefore     = pl->experience();
++  const uint32_t guildBefore = pl->guild();
++  int32_t       atrBefore[std::size(attrs)] = {};
++  for(size_t i=0; i<std::size(attrs); ++i)
++    atrBefore[i] = pl->attribute(attrs[i].atr);
++
++  // Вариант ответа исполнение убирает из списка - его слова запомнить заранее
++  std::string title = info->description;
++  for(auto& c:info->choices)
++    if(choice && uint32_t(c.function)==fn)
++      title = c.text;
++
++  GameScript::StoryCapture cap;
++  owner.storyExec(*pl,npc,*info,fn,cap);
++  // Герой с ним поговорил - как после родного диалога (ZS_Talk_Loop): скрипты не встречают его как незнакомца
++  const int32_t talked = owner.scriptConst("AIV_TALKEDTOPLAYER",-1);
++  if(talked>=0 && uint32_t(talked)<zenkit::INpc::aivar_count)
++    npc.handle().aivar[size_t(talked)] = 1;
++
++  if(info->choices.empty())
++    storyOpen.erase(std::remove(storyOpen.begin(),storyOpen.end(),isym->index()),storyOpen.end());
++  else if(std::find(storyOpen.begin(),storyOpen.end(),isym->index())==storyOpen.end())
++    storyOpen.push_back(isym->index());
++  const uint64_t now = owner.tickCount();
++  storyRecent.erase(std::remove_if(storyRecent.begin(),storyRecent.end(),[now](const StoryRecent& r){
++    return now>r.at+300000;
++    }),storyRecent.end());
++  storyRecent.push_back(StoryRecent{&npc,isym->index(),now});
++
++  rapidjson::StringBuffer buf;
++  JsonOut j(buf);
++  j.StartObject();
++  put(j,"title",fromCp1251(title));
++  j.Key("lines");
++  j.StartArray();
++  size_t total = 0;
++  for(auto& [hero,text]:cap.lines) {
++    if(text.empty() || total>5000)
++      continue;
++    const std::string u = fromCp1251(text);
++    total += u.size();
++    j.StartObject();
++    if(hero)
++      put(j,"hero",1);
++    put(j,"text",u);
++    j.EndObject();
++    }
++  j.EndArray();
++
++  // Дневник: новые задания, смена состояния, новые записи
++  j.Key("quests");
++  j.StartArray();
++  {
++  const auto& log = owner.questLog();
++  for(size_t i=0; i<log.questCount(); ++i) {
++    const auto& qu  = log.quest(i);
++    const QuestState* was = nullptr;
++    for(auto& b:questsBefore)
++      if(b.name==qu.name)
++        was = &b;
++    const char* status = nullptr;
++    if(was==nullptr)
++      status = qu.section==QuestLog::Note ? "note" : "new";
++    else if(was->status!=qu.status)
++      status = qu.status==QuestLog::Status::Success  ? "success"  :
++               qu.status==QuestLog::Status::Failed   ? "failed"   :
++               qu.status==QuestLog::Status::Obsolete ? "obsolete" : "running";
++    else if(qu.entry.size()>was->entries)
++      status = qu.section==QuestLog::Note ? "note" : "running";
++    if(status==nullptr)
++      continue;
++    j.StartObject();
++    put(j,"name",fromCp1251(qu.name));
++    put(j,"status",status);
++    if(!qu.entry.empty() && (was==nullptr || qu.entry.size()>was->entries))
++      put(j,"entry",cutUtf8(fromCp1251(qu.entry.back()),400));
++    j.EndObject();
++    }
++  }
++  j.EndArray();
++
++  // Вещи и золото героя
++  {
++  const auto itemsAfter = items();
++  auto countIn = [](const std::vector<std::pair<size_t,size_t>>& v, size_t cls) {
++    size_t c = 0;
++    for(auto& [k,m]:v)
++      if(k==cls)
++        c += m;
++    return c;
++    };
++  auto name = [&](size_t cls) -> std::string {
++    const Item* it = pl->getItem(cls);
++    if(it==nullptr)
++      it = npc.getItem(cls);
++    if(it!=nullptr)
++      return fromCp1251(it->displayName());
++    auto* sym = owner.findSymbol(cls);
++    return sym!=nullptr ? std::string(sym->name()) : std::string("?");
++    };
++  std::vector<size_t> all;
++  for(auto& [c,k]:itemsBefore)
++    all.push_back(c);
++  for(auto& [c,k]:itemsAfter)
++    all.push_back(c);
++  std::sort(all.begin(),all.end());
++  all.erase(std::unique(all.begin(),all.end()),all.end());
++  std::vector<std::string> got, gave;
++  int64_t goldDiff = 0;
++  for(auto cls:all) {
++    const int64_t b = int64_t(countIn(itemsBefore,cls)), e = int64_t(countIn(itemsAfter,cls));
++    if(b==e)
++      continue;
++    if(cls==gold) {
++      goldDiff = e-b;
++      continue;
++      }
++    const int64_t d = std::abs(e-b);
++    (e>b ? got : gave).push_back(name(cls)+(d>1 ? " x"+std::to_string(d) : std::string()));
++    }
++  j.Key("got");
++  j.StartArray();
++  for(auto& g:got)
++    j.String(g.c_str(),rapidjson::SizeType(g.size()));
++  j.EndArray();
++  j.Key("gave");
++  j.StartArray();
++  for(auto& g:gave)
++    j.String(g.c_str(),rapidjson::SizeType(g.size()));
++  j.EndArray();
++  if(goldDiff!=0)
++    put(j,"gold",goldDiff);
++  }
++
++  if(pl->experience()>xpBefore)
++    put(j,"xp",pl->experience()-xpBefore);
++  j.Key("attrs");
++  j.StartArray();
++  for(size_t i=0; i<std::size(attrs); ++i) {
++    const int32_t d = pl->attribute(attrs[i].atr)-atrBefore[i];
++    if(d==0)
++      continue;
++    const std::string s = std::string(attrs[i].name)+(d>0 ? " +" : " ")+std::to_string(d);
++    j.String(s.c_str(),rapidjson::SizeType(s.size()));
++    }
++  j.EndArray();
++  if(pl->guild()!=guildBefore)
++    put(j,"guild",guildName(int32_t(pl->guild())));
++  if(cap.ended)
++    put(j,"ended",1);
++
++  // Что дальше: варианты ответа героя в этой теме и темы, которые открылись
++  j.Key("choices");
++  j.StartArray();
++  for(auto& c:info->choices) {
++    j.StartObject();
++    put(j,"id","c"+std::to_string(c.function));
++    put(j,"text",fromCp1251(c.text));
++    j.EndObject();
++    }
++  j.EndArray();
++  j.Key("next");
++  j.StartArray();
++  for(auto* i:infos) {
++    auto* s = owner.vm.find_symbol_by_instance(*i);
++    if(s==nullptr || i==info || std::find(topicsBefore.begin(),topicsBefore.end(),s->index())!=topicsBefore.end())
++      continue;
++    if(!storyListed(*pl,npc,*i))
++      continue;
++    j.StartObject();
++    put(j,"id","t"+std::to_string(s->index()));
++    put(j,"hero",i->description.empty() ? std::string("(сам хочешь сказать)") : fromCp1251(i->description));
++    j.EndObject();
++    }
++  j.EndArray();
++  j.EndObject();
++
++  Log::i("[g2m] ai: story ",isym->name(),choice ? " (choice)" : ""," with \"",npc.displayName(),"\": lines=",
++         cap.lines.size()," choices=",info->choices.size(),cap.ended ? " ended" : "");
++  finish(a,true,"тема сыграна",buf.GetString());
++  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..c75b221
+index 0000000..19b3d3d
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,245 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -2637,7 +3186,7 @@ index 0000000..c75b221
 +    void   tickResidents(uint64_t now);
 +    std::string equip  (Npc& npc, size_t sym, bool& ok);
 +    std::string unequip(Npc& npc, size_t sym, bool& ok);
-+    void   finish(Action& a, bool ok, std::string_view note);
++    void   finish(Action& a, bool ok, std::string_view note, std::string_view story = {});
 +    void   beginBody(Action& a);
 +    void   tickActions(uint64_t now);
 +    void   tickLines(uint64_t now);
@@ -2654,6 +3203,21 @@ index 0000000..c75b221
 +    void   sendDescribe(std::string_view req, std::string_view ref, std::string_view viewer);
 +    void   sendEvent(std::string_view kind, std::string_view text, Npc* who);
 +    std::string snapshot(Npc& me);
++
++    // Сюжет игры в разговоре (docs/AI_NPC.md): темы диалогов жителя из скриптов игры (C_INFO), которые герою доступны
++    // сейчас, - в снимке; story_topic модели исполняет тему скриптом игры (GameScript::storyExec), как выбор реплики
++    // в родном диалоге: задания, дневник, вещи, опыт - настоящие, реплики пересказывает модель
++    struct StoryPreview {
++      std::string says;  // его слова в теме (UTF-8)
++      std::string quest; // задание, которое тема заводит (Log_CreateTopic)
++      std::string done;  // задание, которое тема сдаёт (Log_SetTopicStatus ... LOG_SUCCESS)
++      std::string log;   // запись в дневник (B_LogEntry)
++      };
++    const StoryPreview& storyPreview(size_t fn);
++    void        storyInfos (Npc& npc, std::vector<zenkit::IInfo*>& out);
++    bool        storyListed(Npc& player, Npc& npc, zenkit::IInfo& info);
++    std::string storyJson  (Npc& player, Npc& npc);
++    void        cmdStory   (Npc& npc, Action& a, std::string_view topic);
 +
 +    // Ссылки на NPC и предметы для модели: n17, i42 - живут, пока живёт объект
 +    std::string refOf(Npc& npc);
@@ -2703,6 +3267,15 @@ index 0000000..c75b221
 +    std::vector<Resident>          residents;
 +    uint64_t                       residentTick = 0;
 +    std::vector<std::string>       inbox;
++
++    std::unordered_map<size_t,StoryPreview> storyPreviews; // по функции темы: байт-код не меняется
++    std::vector<size_t>            storyOpen;   // темы с начатым выбором (Info_AddChoice), сыгранные через модель
++    struct StoryRecent {
++      const Npc* npc  = nullptr;
++      size_t     info = 0;
++      uint64_t   at   = 0;
++      };
++    std::vector<StoryRecent>       storyRecent;
 +
 +    std::unordered_map<const Npc*,uint32_t>  npcRefs;
 +    std::unordered_map<uint32_t,const Npc*>  npcByNum;
@@ -4287,7 +4860,7 @@ index b1d951f..8d5f5cd 100644
  
    if(hitFlg) {
 diff --git a/common/game/gamescript.cpp b/common/game/gamescript.cpp
-index 4b32af2..1d07293 100644
+index 4b32af2..8500e62 100644
 --- a/common/game/gamescript.cpp
 +++ b/common/game/gamescript.cpp
 @@ -6,6 +6,7 @@
@@ -4348,7 +4921,91 @@ index 4b32af2..1d07293 100644
    ScopeVar self (*vm.global_self(), npc.handlePtr());
    ScopeVar other(*vm.global_other(), player.handlePtr());
  
-@@ -1118,6 +1141,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
+@@ -975,6 +998,83 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
+   vm.call_function(vm.find_symbol_by_index(dlg.scriptFn));
+   }
+ 
++void GameScript::storyPrepare(Npc& player, Npc& npc) {
++  // Gothic II Mobile: общие темы безымянных жителей (стража, горожане, крестьяне: «Что нового?», «Как вступить в
++  // ополчение?», «Где найти…?») скрипты привязывают к жителю в начале ZS_Talk - то же, что делает ZS_Talk, без
++  // поворотов и анимаций: с жителем говорят через модель, ZS_Talk у него нет
++  if(int32_t(npc.guild())>=scriptConst("GIL_SEPERATOR_HUM",16))
++    return;
++  ScopeVar self (*vm.global_self(),  npc.handlePtr());
++  ScopeVar other(*vm.global_other(), player.handlePtr());
++  const Npc* prev = storyTalker;
++  storyTalker = &npc;
++  auto call = [&](std::string_view name) {
++    auto* fn = vm.find_symbol_by_name(name);
++    if(fn!=nullptr && fn->type()==zenkit::DaedalusDataType::FUNCTION)
++      vm.call_function<void>(fn,npc.handlePtr());
++    };
++  auto test = [&](std::string_view name) {
++    auto* fn = vm.find_symbol_by_name(name);
++    if(fn==nullptr || fn->type()!=zenkit::DaedalusDataType::FUNCTION)
++      return false;
++    return vm.call_function<int>(fn,npc.handlePtr())!=0;
++    };
++  const int32_t type = int32_t(npc.handle().type);
++  // Нет константы (другая версия скриптов) - нет и такого вида жителей
++  if(type==scriptConst("NPCTYPE_AMBIENT",0)       || type==scriptConst("NPCTYPE_OCAMBIENT",-100) ||
++     type==scriptConst("NPCTYPE_BL_AMBIENT",-100) || type==scriptConst("NPCTYPE_TAL_AMBIENT",-100)) {
++    call("B_ASSIGNAMBIENTINFOS");
++    if(test("C_NPCBELONGSTOCITY"))
++      call("B_ASSIGNCITYGUIDE");
++    }
++  const int32_t tough = scriptConst("AIV_TOUGHGUYNEWSOVERRIDE",-1);
++  if(test("C_NPCISTOUGHGUY") && (tough<0 || uint32_t(tough)>=zenkit::INpc::aivar_count ||
++                                 npc.handle().aivar[size_t(tough)]==0))
++    call("B_ASSIGNTOUGHGUYNEWS");
++  if(test("C_NPCHASAMBIENTNEWS"))
++    call("B_ASSIGNAMBIENTNEWS");
++  storyTalker = prev;
++  }
++
++bool GameScript::storyAvailable(Npc& player, Npc& npc, zenkit::IInfo& info) {
++  // Gothic II Mobile: как в dialogChoices - тема этого жителя, не сказана (или постоянная), условие скрипта выполнено.
++  // Житель для условий - в разговоре (ZS_Talk): с ним говорят через модель
++  if(info.npc!=int32_t(npc.handle().symbol_index()))
++    return false;
++  auto* isym = vm.find_symbol_by_instance(info);
++  if(isym==nullptr)
++    return false;
++  if(doesNpcKnowInfo(player.handle(),isym->index()) && !info.permanent)
++    return false;
++  if(!info.condition)
++    return true;
++  auto* cond = vm.find_symbol_by_index(uint32_t(info.condition));
++  if(cond==nullptr)
++    return true;
++  ScopeVar self (*vm.global_self(),  npc.handlePtr());
++  ScopeVar other(*vm.global_other(), player.handlePtr());
++  const Npc* prev = storyTalker;
++  storyTalker = &npc;
++  const bool ok = vm.call_function<int>(cond)!=0;
++  storyTalker = prev;
++  return ok;
++  }
++
++void GameScript::storyExec(Npc& player, Npc& npc, zenkit::IInfo& info, uint32_t fn, StoryCapture& cap) {
++  // Gothic II Mobile: тот же exec, что у выбора реплики в диалоге (знание темы, выбор варианта, скрипт), но реплики
++  // пишутся в cap, а не в очередь ИИ
++  DlgChoice ch;
++  ch.scriptFn = fn;
++  ch.handle   = &info;
++  StoryCapture* prevCap    = storyCapture;
++  const Npc*    prevTalker = storyTalker;
++  storyCapture = &cap;
++  storyTalker  = &npc;
++  exec(ch,player,npc);
++  storyCapture = prevCap;
++  storyTalker  = prevTalker;
++  }
++
+ void GameScript::printCannotUseError(Npc& npc, int32_t atr, int32_t nValue) {
+   auto id = vm.find_symbol_by_name("G_CanNotUse");
+   if(id==nullptr)
+@@ -1118,6 +1218,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
    return ret;
    }
  
@@ -4378,7 +5035,7 @@ index 4b32af2..1d07293 100644
  void GameScript::invokeItem(Npc *npc, ScriptFn fn) {
    if(fn==size_t(-1) || fn == 0)
      return;
-@@ -1281,6 +1327,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
+@@ -1281,6 +1404,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
    }
  
  bool GameScript::aiOutput(Npc &npc, std::string_view outputname, bool overlay) {
@@ -4390,7 +5047,7 @@ index 4b32af2..1d07293 100644
    string_frm name(outputname,".WAV");
    uint64_t   dt = 0;
  
-@@ -1323,6 +1374,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
+@@ -1323,6 +1451,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
    }
  
  std::string_view GameScript::messageByName(std::string_view id) const {
@@ -4401,7 +5058,7 @@ index 4b32af2..1d07293 100644
    auto blk = dialogs.block_by_name(id);
    if(blk == nullptr)
      return "";
-@@ -1333,6 +1388,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
+@@ -1333,6 +1465,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
    }
  
  uint32_t GameScript::messageTime(std::string_view id) const {
@@ -4412,7 +5069,7 @@ index 4b32af2..1d07293 100644
    static std::string tmp;
    tmp.assign(id);
  
-@@ -1472,6 +1531,10 @@ uint64_t GameScript::tickCount() const {
+@@ -1472,6 +1608,10 @@ uint64_t GameScript::tickCount() const {
  void GameScript::tick(uint64_t dt) {
    if(dma!=nullptr)
      dma->tick(dt);
@@ -4423,8 +5080,82 @@ index 4b32af2..1d07293 100644
    }
  
  uint32_t GameScript::rand(uint32_t max) {
+@@ -2022,6 +2162,9 @@ void GameScript::npc_settofistmode(std::shared_ptr<zenkit::INpc> npcRef) {
+ 
+ bool GameScript::npc_isinstate(std::shared_ptr<zenkit::INpc> npcRef, int stateFn) {
+   auto npc = findNpc(npcRef);
++  // Gothic II Mobile: с жителем говорят через модель - для условий и скриптов его сюжетных тем он в разговоре
++  if(npc!=nullptr && npc==storyTalker && size_t(stateFn)==ZS_Talk)
++    return true;
+   if(npc!=nullptr)
+     return npc->isInState(uint32_t(stateFn));
+   return false;
+@@ -2876,6 +3019,9 @@ int GameScript::npc_getactivespelllevel(std::shared_ptr<zenkit::INpc> npcRef) {
+ void GameScript::ai_processinfos(std::shared_ptr<zenkit::INpc> npcRef) {
+   auto npc = findNpc(npcRef);
+   auto pl  = owner.player();
++  // Gothic II Mobile: сюжетная тема через разговор с моделью - родной диалог посреди неё не открывать
++  if(storyCapture!=nullptr)
++    return;
+   if(pl!=nullptr && npc!=nullptr) {
+     aiOutOrderId=0;
+     npc->aiPush(AiQueue::aiProcessInfo(*pl));
+@@ -2889,6 +3035,13 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
+   if(target==nullptr && owner.version().game==1)
+     target = findNpc(vm.global_other());
+ 
++  // Gothic II Mobile: сюжетная тема через разговор с моделью - реплика не звучит, её текст - модели
++  if(storyCapture!=nullptr) {
++    if(self!=nullptr)
++      storyCapture->lines.emplace_back(self->isPlayer(),std::string(messageByName(outputname)));
++    return;
++    }
++
+   if(self!=nullptr && target!=nullptr) {
+     self->aiPush(AiQueue::aiOutput(*target,outputname,aiOutOrderId));
+     ++aiOutOrderId;
+@@ -2897,6 +3050,11 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
+ 
+ void GameScript::ai_stopprocessinfos(std::shared_ptr<zenkit::INpc> selfRef) {
+   auto self = findNpc(selfRef);
++  // Gothic II Mobile: сюжетная тема через разговор с моделью - родного диалога нет, закрывать нечего
++  if(storyCapture!=nullptr) {
++    storyCapture->ended = true;
++    return;
++    }
+   if(self) {
+     self->aiPush(AiQueue::aiStopProcessInfo(aiOutOrderId));
+     ++aiOutOrderId;
+@@ -2981,6 +3139,13 @@ void GameScript::ai_outputsvm(std::shared_ptr<zenkit::INpc> selfRef, std::shared
+   if(target==nullptr && owner.version().game==1)
+     target = findNpc(vm.global_other());
+ 
++  // Gothic II Mobile: сюжетная тема через разговор с моделью - реплика набора SVM тоже только текстом
++  if(storyCapture!=nullptr) {
++    if(self!=nullptr)
++      storyCapture->lines.emplace_back(self->isPlayer(),std::string(messageByName(messageFromSvm(name,self->handle().voice))));
++    return;
++    }
++
+   if(self!=nullptr && target!=nullptr) {
+     self->aiPush(AiQueue::aiOutputSvm(*target,name,aiOutOrderId));
+     ++aiOutOrderId;
+@@ -2994,6 +3159,13 @@ void GameScript::ai_outputsvm_overlay(std::shared_ptr<zenkit::INpc> selfRef, std
+   if(target==nullptr && owner.version().game==1)
+     target = findNpc(vm.global_other());
+ 
++  // Gothic II Mobile: сюжетная тема через разговор с моделью - реплика набора SVM тоже только текстом
++  if(storyCapture!=nullptr) {
++    if(self!=nullptr)
++      storyCapture->lines.emplace_back(self->isPlayer(),std::string(messageByName(messageFromSvm(name,self->handle().voice))));
++    return;
++    }
++
+   if(self!=nullptr && target!=nullptr) {
+     self->aiPush(AiQueue::aiOutputSvmOverlay(*target,name,aiOutOrderId));
+     ++aiOutOrderId;
 diff --git a/common/game/gamescript.h b/common/game/gamescript.h
-index 2cccb63..20777b4 100644
+index 2cccb63..8e42353 100644
 --- a/common/game/gamescript.h
 +++ b/common/game/gamescript.h
 @@ -25,8 +25,10 @@ class Npc;
@@ -4456,7 +5187,7 @@ index 2cccb63..20777b4 100644
        zenkit::IInfo*   handle   = nullptr;
        };
  
-@@ -121,6 +127,39 @@ class GameScript final {
+@@ -121,6 +127,49 @@ class GameScript final {
      auto updateDialog (const GameScript::DlgChoice &dlg, Npc &player, Npc &npc) -> std::vector<GameScript::DlgChoice>;
      void exec(const DlgChoice &dlg, Npc &player, Npc &npc);
  
@@ -4483,6 +5214,16 @@ index 2cccb63..20777b4 100644
 +    void   squadNoteHit(Npc& attacker, Npc& victim);
 +    // Gothic II Mobile: живой NPC под управлением языковой модели (ainpc.cpp, docs/AI_NPC.md)
 +    AiNpc& aiNpc() { return *aiNpcPtr; }
++    // Сюжетная тема диалога живого жителя (C_INFO), сыгранная через разговор с моделью: скрипт игры исполняется, как
++    // при выборе реплики в родном диалоге, но реплики (AI_Output, B_Say) не звучат - их текст получает модель и
++    // пересказывает своими словами; AI_StopProcessInfos только отмечается (docs/AI_NPC.md, «Сюжет игры в разговоре»)
++    struct StoryCapture {
++      std::vector<std::pair<bool,std::string>> lines; // герой ли говорит, текст (Windows-1251)
++      bool                                     ended = false;
++      };
++    void   storyPrepare  (Npc& player, Npc& npc);
++    bool   storyAvailable(Npc& player, Npc& npc, zenkit::IInfo& info);
++    void   storyExec     (Npc& player, Npc& npc, zenkit::IInfo& info, uint32_t fn, StoryCapture& cap);
 +    // Герой перенёсся («Путь», мгновенно): кто идёт следом - рядом с ним в строю; ждущие - в лагере
 +    void   squadArrive ();
 +    // Нанятый напарник: не погибает, только теряет сознание; его не добить и не обобрать
@@ -4496,7 +5237,7 @@ index 2cccb63..20777b4 100644
      void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
      void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
      void  printCannotBuyError         (Npc &npc);
-@@ -445,6 +484,60 @@ class GameScript final {
+@@ -445,6 +494,60 @@ class GameScript final {
      void exitsession         ();
  
      void sort(std::vector<DlgChoice>& dlg);
@@ -4557,7 +5298,7 @@ index 2cccb63..20777b4 100644
      void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
      bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
  
-@@ -460,6 +553,7 @@ class GameScript final {
+@@ -460,6 +563,7 @@ class GameScript final {
      NpcProcessPolicy                                            aiProcessPolicy = NpcProcessPolicy::AiNormal;
  
      std::unique_ptr<DirectMemory>                               dma;
@@ -4565,10 +5306,14 @@ index 2cccb63..20777b4 100644
  
      std::unique_ptr<SpellDefinitions>                           spells;
      std::unique_ptr<SvmDefinitions>                             svm;
-@@ -486,6 +580,17 @@ class GameScript final {
+@@ -486,6 +590,21 @@ class GameScript final {
      size_t                                                      gilCount=0;
      std::vector<int32_t>                                        gilAttitudes;
      int                                                         aiOutOrderId=0;
++    // Gothic II Mobile: сюжетная тема через разговор с моделью - куда писать реплики и кто «в разговоре» (ZS_Talk
++    // для условий тем: «Npc_IsInState(self, ZS_Talk)» у тем, которые житель говорит сам)
++    StoryCapture*                                               storyCapture = nullptr;
++    const Npc*                                                  storyTalker  = nullptr;
 +    uint64_t                                                    squadTickTime=0;
 +    size_t                                                      squadLogged=0;
 +    std::vector<Npc*>                                           squadTmp;
@@ -4584,7 +5329,7 @@ index 2cccb63..20777b4 100644
      PerDist                                                     perceptionRanges;
  
 diff --git a/common/game/playercontrol.cpp b/common/game/playercontrol.cpp
-index aa16509..2b1bad4 100644
+index aa16509..0d0e348 100644
 --- a/common/game/playercontrol.cpp
 +++ b/common/game/playercontrol.cpp
 @@ -1,13 +1,22 @@
@@ -4640,7 +5385,7 @@ index aa16509..2b1bad4 100644
    setTarget(currentFocus.npc);
  
    if(!ctrl[Action::ActionGeneric])
-@@ -444,6 +462,1193 @@ void PlayerControl::clearInput() {
+@@ -444,6 +462,1335 @@ void PlayerControl::clearInput() {
    std::memset(ctrl, 0,sizeof(ctrl));
    std::memset(actrl,0,sizeof(actrl));
    std::memset(wctrl,0,sizeof(wctrl));
@@ -5218,6 +5963,9 @@ index aa16509..2b1bad4 100644
 +  travelTalk     = nullptr;
 +  travelTalks    = 0;
 +  travelHealAt   = 0;
++  travelHealing  = false;
++  travelHealIdle = 0;
++  travelHealMiss = 0;
 +  travelWide     = false;
 +  travelIgnore.clear();
 +  travelSkip.clear();
@@ -5463,19 +6211,16 @@ index aa16509..2b1bad4 100644
 +    stopTravel("На тебя напали - путь прерван");
 +    return;
 +    }
++  const bool threat = (foe!=nullptr);
 +  if(!travelOpt.fight) {
 +    foe = nullptr;
-+    // Не дерётся - и не погибает молча: здоровья меньше четверти - остановиться и выпить зелье (ниже), зелий
-+    // нет - решает игрок
-+    if(pl.attribute(ATR_HITPOINTS)*4<pl.attribute(ATR_HITPOINTSMAX)) {
-+      if(potionCount(false)==0) {
-+        stopTravel("Мало здоровья и нет зелий - путь прерван");
-+        return;
-+        }
-+      if(travelPushed && now>=travelHealAt) {
-+        pl.clearAiQueue();
-+        travelPushed = false;
-+        }
++    // Не дерётся - и не погибает молча: за ним гонятся, а здоровья меньше четверти - остановиться и выпить зелье
++    // (travelHeal ниже: в погоне - только зелья, еда и травы - долго), зелий нет - решает игрок
++    HealKind kind = HealKind::Potion;
++    if(threat && pl.attribute(ATR_HITPOINTS)*4<pl.attribute(ATR_HITPOINTSMAX) &&
++       travelHealItem(pl,true,1,kind)==size_t(-1)) {
++      stopTravel("Мало здоровья и нет зелий - путь прерван");
++      return;
 +      }
 +    }
 +  if(foe!=nullptr) {
@@ -5535,22 +6280,10 @@ index aa16509..2b1bad4 100644
 +    return;
 +    }
 +
-+  // Подлечиться, пока стоит (до начала пути): меньше 40 % - зелье, сначала слабые; зелий нет, а здоровья
-+  // меньше четверти - дальше не идти
-+  const int hp    = pl.attribute(ATR_HITPOINTS);
-+  const int hpMax = std::max(1, pl.attribute(ATR_HITPOINTSMAX));
-+  if(!travelPushed && hp*10<hpMax*4 && now>=travelHealAt) {
-+    travelHealAt = now+2500;
-+    if(drinkHealPotion()) {
-+      travelPushAt = now+1500;
-+      travelMoveAt = now+1500;
-+      return;
-+      }
-+    if(hp*4<hpMax) {
-+      stopTravel("Мало здоровья и нет зелий - путь прерван");
-+      return;
-+      }
-+    }
++  // Подлечиться: здоровья меньше 70 % - привал, лечиться до 85 %: зелья, нет зелий - лечебные травы, нет трав -
++  // еда. Нечем, а здоровья меньше четверти - дальше не идти (travelHeal)
++  if(travelHeal(pl,now,threat))
++    return;
 +
 +  // Добыча у дороги: по пути - в 12 м, после боя - в 20 м (тела побеждённых). Без «Собирать лут» - мимо
 +  if(travelOpt.loot && now>=travelLootAt && !pl.isSwim() && !pl.isDive()) {
@@ -5573,6 +6306,160 @@ index aa16509..2b1bad4 100644
 +    }
 +
 +  travelGo(pl,now);
++  }
++
++size_t PlayerControl::travelHealItem(Npc& pl, bool potionsOnly, int need, HealKind& kind) const {
++  // Чем лечиться: зелья, нет зелий - лечебные травы (и другие лечащие растения: грибы, ягоды), нет трав - еда.
++  // Зелья - сначала слабые: сильные остаются на крайний случай (как в автобое); травы и еда - то, чего хватит до
++  // цели (need), нет такого - самое сытное. Не трогать: предметы заданий, всё, что даёт постоянную прибавку или
++  // особое свойство (королевский щавель, похлёбка Теклы, пиво Корагона) - у таких есть другие строки описания
++  auto w = Gothic::inst().world();
++  if(w==nullptr)
++    return size_t(-1);
++  auto& sc    = w->script();
++  auto* hpTxt = sc.findSymbol("NAME_BONUS_HP");
++  if(hpTxt==nullptr)
++    return size_t(-1);
++  std::string_view allowed[3] = {hpTxt->get_string()};
++  if(auto* s = sc.findSymbol("NAME_BONUS_MANA"))
++    allowed[1] = s->get_string();
++  if(auto* s = sc.findSymbol("NAME_VALUE"))
++    allowed[2] = s->get_string();
++  const size_t fullHeal = sc.findSymbolIndex("ITPO_HEALTH_ADDON_04"); // «Чистое здоровье» - полное лечение
++  const int    hpMax    = std::max(1, pl.attribute(ATR_HITPOINTSMAX));
++
++  size_t best     = size_t(-1);
++  int    bestHeal = 0;
++  int    bestRank = 3;
++  for(auto it=pl.inventory().iterator(Inventory::T_Inventory); it.isValid(); ++it) {
++    const Item&    itm  = *it;
++    const auto&    h    = itm.handle();
++    const uint32_t main = uint32_t(itm.mainFlag());
++    if((uint32_t(itm.itemFlag()) & ITM_MISSION) || !(main & (ITM_CAT_POTION | ITM_CAT_FOOD)) || itm.isEquipped())
++      continue;
++    int  heal = 0;
++    bool odd  = false;
++    for(size_t k=0; k<zenkit::IItem::text_count; ++k) {
++      const auto& t = h.text[k];
++      if(t.empty())
++        continue;
++      if(t==allowed[0])
++        heal = std::max(heal,h.count[k]);
++      else if(t!=allowed[1] && t!=allowed[2])
++        odd = true;
++      }
++    if(itm.clsId()==fullHeal) {
++      heal = hpMax;
++      odd  = false;
++      }
++    if(heal<=0 || odd)
++      continue;
++    auto* sym = sc.findSymbol(itm.clsId());
++    const bool plant = sym!=nullptr && sym->name().size()>5 &&
++                       (sym->name().compare(0,5,"ITPL_")==0 || sym->name().compare(0,5,"ItPl_")==0);
++    const HealKind k    = (main & ITM_CAT_POTION) ? HealKind::Potion : plant ? HealKind::Herb : HealKind::Food;
++    const int      rank = int(k);
++    if(potionsOnly && k!=HealKind::Potion)
++      continue;
++    bool better = false;
++    if(best==size_t(-1) || rank<bestRank)
++      better = true;
++    else if(rank==bestRank) {
++      if(k==HealKind::Potion)
++        better = heal<bestHeal; // слабое - раньше
++      else if(heal>=need)
++        better = bestHeal<need || heal<bestHeal; // хватит до цели - самое скромное из таких
++      else
++        better = bestHeal<need && heal>bestHeal;  // не хватит ничего - самое сытное
++      }
++    if(better) {
++      best     = itm.clsId();
++      bestHeal = heal;
++      bestRank = rank;
++      kind     = k;
++      }
++    }
++  return best;
++  }
++
++bool PlayerControl::travelHeal(Npc& pl, uint64_t now, bool threat) {
++  // Привал на лечение: здоровья меньше 70 % - остановиться и лечиться до 85 %, по предмету за раз (каждый ждёт
++  // конца своей анимации). В погоне (без «Сражаться») - только зелья и только когда здоровья меньше четверти, до 40 %
++  const int hp     = pl.attribute(ATR_HITPOINTS);
++  const int hpMax  = std::max(1, pl.attribute(ATR_HITPOINTSMAX));
++  const int lowPct = threat ? 25 : 70;
++  const int topPct = threat ? 40 : 85;
++  if(travelHealing && now<travelHealAt)
++    return true; // ест или пьёт
++  if(travelHealing && pl.bodyStateMasked()!=BS_STAND && now<travelHealAt+4000)
++    return true; // анимация предмета ещё идёт (еда - дольше зелья)
++  if(!travelHealing && hp*100>=hpMax*lowPct)
++    return false;
++  if(travelHealing && hp*100>=hpMax*topPct) {
++    travelHealing = false;
++    Tempest::Log::i("[g2m] travel: healed ", hp, "/", hpMax);
++    return false;
++    }
++  if(!travelHealing && now<travelHealIdle)
++    return false;
++  if(pl.isInAir() || pl.isFalling() || pl.isSwim() || pl.isDive() || pl.interactive()!=nullptr)
++    return false;
++
++  HealKind     kind = HealKind::Potion;
++  const size_t cls  = travelHealItem(pl,threat,hpMax*topPct/100-hp,kind);
++  if(cls==size_t(-1)) {
++    if(travelHealing)
++      Tempest::Log::i("[g2m] travel: nothing more to heal with, hp ", hp, "/", hpMax);
++    travelHealing  = false;
++    travelHealIdle = now+5000;
++    if(hp*4<hpMax) {
++      stopTravel(threat ? "Мало здоровья и нет зелий - путь прерван" : "Мало здоровья и нечем лечиться - путь прерван");
++      return true;
++      }
++    return false; // нечем, но здоровья хватает - дальше
++    }
++
++  // Остановиться: предмет берётся только стоя
++  if(travelPushed || !pl.isAiQueueEmpty()) {
++    if(gatherOn)
++      stopGather(false);
++    pl.clearAiQueue();
++    pl.clearGoTo();
++    travelPushed = false;
++    }
++  if(!travelHealing) {
++    travelHealing  = true;
++    travelHealMiss = 0;
++    Tempest::Log::i("[g2m] travel: heal start, hp ", hp, "/", hpMax);
++    }
++  travelPushAt = now+800; // постоять мгновение после еды
++  travelMoveAt = now+800;
++  if(pl.bodyStateMasked()!=BS_STAND) {
++    travelHealAt = now+150; // ещё бежит или встаёт
++    if(++travelHealMiss>40) {
++      travelHealing  = false;
++      travelHealIdle = now+5000;
++      }
++    return true;
++    }
++  // Действие предмета - сразу (скрипт предмета), сам предмет исчезает из сумки по ходу анимации: взялся ли - по
++  // здоровью или начатой анимации, а не по числу в сумке (иначе второй вызов оборвал бы анимацию)
++  pl.useItem(cls);
++  if(pl.attribute(ATR_HITPOINTS)<=hp && pl.bodyStateMasked()==BS_STAND) {
++    travelHealAt = now+300; // не взялся - чуть позже ещё раз
++    if(++travelHealMiss>20) {
++      travelHealing  = false;
++      travelHealIdle = now+5000;
++      }
++    return true;
++    }
++  travelHealMiss = 0;
++  travelHealAt   = now+(kind==HealKind::Potion ? 900 : 1500);
++  auto* sym = Gothic::inst().world()->script().findSymbol(cls);
++  Tempest::Log::i("[g2m] travel: heal with ", sym!=nullptr ? sym->name() : std::string_view("?"),
++                  kind==HealKind::Potion ? " (potion)" : kind==HealKind::Herb ? " (herb)" : " (food)",
++                  ", hp ", hp, "/", hpMax);
++  return true;
 +  }
 +
 +void PlayerControl::travelGo(Npc& pl, uint64_t now) {
@@ -5820,9 +6707,9 @@ index aa16509..2b1bad4 100644
 +  pl.setTarget(tg);
 +  pl.setAutoFight(true);
 +
-+  // Здоровья меньше четверти - зелье, не чаще раза в 4 с
++  // Здоровья меньше четверти (в пути - меньше трети: бой там не выбирали) - зелье, не чаще раза в 4 с
 +  const uint64_t now = Gothic::inst().world()->tickCount();
-+  if(pl.attribute(ATR_HITPOINTS)*4<pl.attribute(ATR_HITPOINTSMAX) && now>autoHealTime) {
++  if(pl.attribute(ATR_HITPOINTS)*(travel ? 3 : 4)<pl.attribute(ATR_HITPOINTSMAX) && now>autoHealTime) {
 +    autoHealTime = now+4000;
 +    drinkHealPotion();
 +    }
@@ -5834,7 +6721,7 @@ index aa16509..2b1bad4 100644
    }
  
  void PlayerControl::marvinF8(uint64_t dt) {
-@@ -579,6 +1784,10 @@ bool PlayerControl::tickMove(uint64_t dt) {
+@@ -579,6 +1926,10 @@ bool PlayerControl::tickMove(uint64_t dt) {
    if(pl==nullptr)
      return true;
  
@@ -5845,7 +6732,7 @@ index aa16509..2b1bad4 100644
    implMove(dt);
  
    float runAngle = pl->runAngle();
-@@ -675,6 +1884,12 @@ void PlayerControl::implMove(uint64_t dt) {
+@@ -675,6 +2026,12 @@ void PlayerControl::implMove(uint64_t dt) {
        }
      }
  
@@ -5859,7 +6746,7 @@ index aa16509..2b1bad4 100644
      runAngleDest = 0;
      return;
 diff --git a/common/game/playercontrol.h b/common/game/playercontrol.h
-index fb8d625..22f11cf 100644
+index fb8d625..ac74f4d 100644
 --- a/common/game/playercontrol.h
 +++ b/common/game/playercontrol.h
 @@ -5,6 +5,9 @@
@@ -5951,7 +6838,7 @@ index fb8d625..22f11cf 100644
    private:
      enum WeaponAction : uint8_t {
        WeaponClose,
-@@ -153,6 +221,63 @@ class PlayerControl final {
+@@ -153,6 +221,66 @@ class PlayerControl final {
      int            rotationAni    = 0;
      bool           g2Ctrl         = false;
  
@@ -6010,12 +6897,15 @@ index fb8d625..22f11cf 100644
 +    uint64_t       travelTalkAt   = 0;
 +    uint8_t        travelTalks    = 0;
 +    uint64_t       travelHealAt   = 0;
++    bool           travelHealing  = false;  // привал на лечение: здоровья было меньше 70 %, лечится до 85 %
++    uint64_t       travelHealIdle = 0;      // лечиться нечем - до этого времени не искать снова
++    uint8_t        travelHealMiss = 0;      // предмет не взялся (герой не стоял) - сколько раз подряд
 +    bool           travelWide     = false;  // после боя - собрать шире (тела побеждённых)
 +
      DialogMenu&    dlg;
      InventoryMenu& inv;
  
-@@ -177,6 +302,31 @@ class PlayerControl final {
+@@ -177,6 +305,35 @@ class PlayerControl final {
      void           setAnimRotate (Npc& pl, float rotation, int anim, bool force, uint64_t dt);
      void           processAutoRotate(Npc& pl, float& rot, uint64_t dt);
  
@@ -6043,6 +6933,10 @@ index fb8d625..22f11cf 100644
 +    Npc*           travelEnemy(Npc& pl, bool& guard) const;
 +    bool           travelIgnored(const Npc& npc, uint64_t now) const;
 +    bool           drinkPotion(const char* const* names, size_t count);
++    // Лечение в пути: зелья -> лечебные травы -> еда (docs/CONTROLS.md, «Путь»)
++    enum class HealKind : uint8_t { Potion, Herb, Food };
++    size_t         travelHealItem(Npc& pl, bool potionsOnly, int need, HealKind& kind) const;
++    bool           travelHeal(Npc& pl, uint64_t now, bool threat);
 +
  
      //////////////////////////////////
