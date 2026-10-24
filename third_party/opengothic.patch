@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..0830727
+index 0000000..1a36425
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2223 @@
+@@ -0,0 +1,2254 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -428,6 +428,11 @@ index 0000000..0830727
 +      case ATR_HITPOINTSMAX: return "здоровья";
 +      default:               return "умения";
 +      }
++    }
++
++  // Дела по пути: идущий с героем делает их и возвращается в строй (отряд ждёт, пока дело не кончится)
++  bool isErrand(std::string_view n) {
++    return n=="go_to_place" || n=="go_to_npc" || n=="approach" || n=="loot" || n=="take_item" || n=="use_mob";
 +    }
 +
 +  const char* attitudeName(Attitude a) {
@@ -858,22 +863,16 @@ index 0000000..0830727
 +  }
 +
 +void AiNpc::setParty(Npc& npc, bool on) {
++  if(on) {
++    // Тем же кодом, что найм в диалоге (GameScript::squadJoin): дальше им ведёт отряд (tickSquad: строй, след
++    // героя, телепорт отставших, зелья, без смерти)
++    owner.squadJoin(npc);
++    return;
++    }
 +  const int32_t aiv = owner.scriptConst("AIV_PARTYMEMBER",15);
 +  if(aiv>=0 && uint32_t(aiv)<zenkit::INpc::aivar_count)
-+    npc.handle().aivar[size_t(aiv)] = on ? 1 : 0;
-+  if(on) {
-+    // Как найм в диалоге (companions.cpp): ZS_Follow_Player весь день, приказ отряда, привал с начала - дальше им
-+    // ведёт отряд (GameScript::tickSquad: строй, след героя, телепорт отставших, зелья, без смерти)
-+    const size_t zs = owner.findSymbolIndex("ZS_FOLLOW_PLAYER");
-+    if(zs!=size_t(-1)) {
-+      auto* wp = npc.currentWayPoint();
-+      npc.setRoutineAllDay(zs,wp!=nullptr ? std::string_view(wp->name) : std::string_view(SpawnPoints[0]));
-+      }
-+    npc.companionIdle = Npc::CompanionIdle();
-+    owner.setStance(npc,owner.squadPassive());
-+    } else {
-+    setActivity(npc,"ZS_STAND_ARMSCROSSED");
-+    }
++    npc.handle().aivar[size_t(aiv)] = 0;
++  setActivity(npc,"ZS_STAND_ARMSCROSSED");
 +  }
 +
 +bool AiNpc::inDialogWithHero() const {
@@ -1483,6 +1482,10 @@ index 0000000..0830727
 +    return;
 +  a.closed = true;
 +  Log::i("[g2m] ai: act ",a.name,ok ? " ok: " : " fail: ",note);
++  // Дело в отряде кончилось - отряд снова ведёт его строем (GameScript::tickSquadFollow). Подошёл поговорить
++  // (talk_to_npc) - ещё 15 с на беседу, не уходить посреди фразы
++  if(a.begun && a.actor!=nullptr && isErrand(a.name) && npcAlive(a.actor))
++    a.actor->companionFollow.holdTo = (a.name=="approach" && ok) ? owner.tickCount()+15000 : 0;
 +  if(!a.report || a.id.empty())
 +    return;
 +  a.report = false;
@@ -1744,6 +1747,11 @@ index 0000000..0830727
 +      }
 +    a.text = fromCp1251(a.item->displayName());
 +    }
++  else if(name=="activity" && owner.isHired(npc)) {
++    // В отряде занятия - на привале, сами (GameScript::tickSquadIdle): занятие вывело бы из отряда
++    fail("ты в отряде героя: на привале займёшься делом сам; остаться здесь - wait_here, уйти к своим делам - go_home");
++    return;
++    }
 +  else if(name=="activity") {
 +    static const struct { const char* name; const char* zs; } list[] = {
 +      {"stand","ZS_STAND_ARMSCROSSED"}, {"guard","ZS_STAND_GUARDING"}, {"sit","ZS_SIT_CAMPFIRE"},
@@ -1966,32 +1974,46 @@ index 0000000..0830727
 +    setParty(npc,party);
 +    npc.resumeAiRoutine();
 +    };
++  // Дело по пути (подойти, подобрать, обыскать, сесть): идущий с героем из отряда не выходит - прежде любое такое
++  // дело (и подход к жителю перед talk_to_npc) выводило его из отряда, и он переставал идти строем. Отряд не ведёт
++  // его, пока дело не кончится (holdTo, снимается в finish), потом - снова в строй
++  const bool inSquad = owner.isHired(npc);
++  auto errand = [&](uint64_t ms) {
++    if(!inSquad) {
++      restart(false);
++      return;
++      }
++    npc.clearAiQueue();
++    npc.companionIdle            = Npc::CompanionIdle();
++    npc.companionFollow.holdTo   = now+ms;
++    npc.companionFollow.driving  = false;
++    };
 +
 +  if(a.name=="go_to_place") {
-+    restart(false);
-+    npc.aiPush(AiQueue::aiGoToPoint(*a.wp));
 +    a.deadline = now+180000;
++    errand(180000);
++    npc.aiPush(AiQueue::aiGoToPoint(*a.wp));
 +    }
 +  else if(a.name=="go_to_npc" || a.name=="approach") {
-+    restart(false);
-+    npc.aiPush(AiQueue::aiGoToNpc(a.target));
 +    a.deadline = now+90000;
++    errand(90000);
++    npc.aiPush(AiQueue::aiGoToNpc(a.target));
 +    }
 +  else if(a.name=="loot") {
-+    restart(false);
-+    npc.aiPush(AiQueue::aiGoToNpc(a.target));
 +    a.deadline = now+40000;
++    errand(40000);
++    npc.aiPush(AiQueue::aiGoToNpc(a.target));
 +    }
 +  else if(a.name=="take_item") {
-+    restart(false);
++    a.deadline = now+40000;
++    errand(40000);
 +    npc.aiPush(AiQueue::aiGotoItem(*a.item));
 +    npc.aiPush(AiQueue::aiTakeItem(*a.item));
-+    a.deadline = now+40000;
 +    }
 +  else if(a.name=="use_mob") {
-+    restart(false);
-+    npc.aiPush(AiQueue::aiUseMob(a.text,1));
 +    a.deadline = now+30000;
++    errand(30000);
++    npc.aiPush(AiQueue::aiUseMob(a.text,1));
 +    }
 +  else if(a.name=="attack") {
 +    owner.invokeAttack(npc,*a.target,owner.attackReason(npc,*a.target));
@@ -1999,6 +2021,8 @@ index 0000000..0830727
 +    }
 +  else if(a.name=="follow_hero") {
 +    restart(true);
++    Log::i("[g2m] ai: follow_hero \"",npc.displayName(),"\" squad=",owner.isHired(npc) ? 1 : 0,
++           " state=",npc.stateName());
 +    finish(a,true,"идёшь за героем и защищаешь его (ты в его отряде)");
 +    }
 +  else if(a.name=="wait_here" || a.name=="stop_following") {
@@ -2012,6 +2036,13 @@ index 0000000..0830727
 +      restart(false);
 +      finish(a,true,"стоишь на месте");
 +      }
++    }
++  else if(a.name=="stop_fight" && inSquad) {
++    // В отряде - к тому, что было: идти следом или ждать в лагере (распорядок отряда не трогаем)
++    npc.setTarget(nullptr);
++    npc.resumeAiRoutine();
++    npc.aiPush(AiQueue::aiRemoveWeapon());
++    finish(a,true,"ты прекратил бой");
 +    }
 +  else if(a.name=="stop_fight") {
 +    npc.setTarget(nullptr);
@@ -2690,10 +2721,10 @@ index 0000000..c75b221
 +  };
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
-index 0000000..23fccf5
+index 0000000..532bb2e
 --- /dev/null
 +++ b/common/game/companions.cpp
-@@ -0,0 +1,1503 @@
+@@ -0,0 +1,1535 @@
 +#include "gamescript.h"
 +#include "ainpc.h"
 +
@@ -2788,6 +2819,23 @@ index 0000000..23fccf5
 +
 +bool GameScript::squadFull() {
 +  return hiredCount()>=MaxHired;
++  }
++
++void GameScript::squadJoin(Npc& npc) {
++  // AIV_PARTYMEMBER, приказ отряда (новичок слушает тот же), ZS_Follow_Player на весь день; ход в строю и привал -
++  // с чистого листа. Дальше им ведёт отряд (tickSquad): строй, след героя, телепорт отставших, зелья
++  auto&         h        = npc.handle();
++  const int32_t aivParty = scriptConst("AIV_PARTYMEMBER",15);
++  if(aivParty>=0 && uint32_t(aivParty)<zenkit::INpc::aivar_count)
++    h.aivar[size_t(aivParty)] = 1;
++  setStance(npc,squadPassive());
++  npc.companionIdle   = Npc::CompanionIdle();
++  npc.companionFollow = Npc::CompanionFollow();
++  const size_t zsFollow = findSymbolIndex("ZS_FOLLOW_PLAYER");
++  if(zsFollow==size_t(-1))
++    return;
++  auto wp = npc.currentTaPoint();
++  npc.setRoutineAllDay(zsFollow, wp!=nullptr ? std::string_view(wp->name) : std::string_view(h.wp));
 +  }
 +
 +size_t GameScript::hiredCount() {
@@ -2899,10 +2947,7 @@ index 0000000..23fccf5
 +        }
 +      npc.addItem(gold,player,size_t(price));
 +      companionSay(npc,player,"$ITookYourGold");
-+      setParty(true);
-+      // Новичок слушает тот же приказ, что и остальной отряд
-+      setStance(npc,squadPassive());
-+      follow();
++      squadJoin(npc);
 +      Tempest::Log::i("[g2m] companion: hired \"",npc.displayName(),"\" level=",h.level," price=",price);
 +      endTalk();
 +      break;
@@ -3399,6 +3444,13 @@ index 0000000..23fccf5
 +  size_t k = 0;
 +  for(auto npc:squadTmp) {
 +    auto& fs = npc->companionFollow;
++    // Почему отряд его сейчас не ведёт - в журнал, не чаще раза в 10 с на каждого
++    auto notLed = [&](const char* why) {
++      if(now<fs.logAt)
++        return;
++      fs.logAt = now+10000;
++      Tempest::Log::i("[g2m] squad: \"",npc->displayName(),"\" not led: ",why," (state ",npc->stateName(),")");
++      };
 +    if(!npc->hasRoutineState(zsFollow))
 +      continue; // ждёт
 +    const size_t slot = std::min<size_t>(k++, std::size(SlotBack)-1);
@@ -3409,6 +3461,8 @@ index 0000000..23fccf5
 +      }
 +    // Свой ход - только в состоянии следования: бой, разговор, лечение, без сознания, дело на привале - не трогаем
 +    if(npc->isDown() || !npc->isInState(zsFollow) || npc->companionIdle.act!=0 || now<fs.holdTo) {
++      notLed(npc->isDown() ? "down" : !npc->isInState(zsFollow) ? "not in ZS_FOLLOW_PLAYER" :
++             npc->companionIdle.act!=0 ? "rest activity" : "busy with an errand");
 +      fs.driving  = false;
 +      fs.movedAt  = now;
 +      fs.hiddenAt = 0;
@@ -3513,6 +3567,15 @@ index 0000000..23fccf5
 +  squadTickTime = now+400;
 +
 +  squadMembers(squadTmp);
++  if(squadTmp.size()!=squadLogged) {
++    // Кто в отряде - в журнал при каждой перемене: видно, признал ли отряд пошедшего с героем
++    squadLogged = squadTmp.size();
++    std::string names;
++    for(auto npc:squadTmp)
++      names += std::string(names.empty() ? "" : ", ")+"\""+std::string(npc->displayName())+"\""+
++               (isAmbient(npc->handle()) ? "" : " (по своей воле)");
++    Tempest::Log::i("[g2m] squad: members=",int(squadTmp.size())," ",names);
++    }
 +  squadMarks.erase(std::remove_if(squadMarks.begin(),squadMarks.end(),[now](const SquadMark& m){ return m.until<=now; }),
 +                   squadMarks.end());
 +  const size_t zsFollow = findSymbolIndex("ZS_FOLLOW_PLAYER");
@@ -4361,7 +4424,7 @@ index 4b32af2..1d07293 100644
  
  uint32_t GameScript::rand(uint32_t max) {
 diff --git a/common/game/gamescript.h b/common/game/gamescript.h
-index 2cccb63..f405b43 100644
+index 2cccb63..20777b4 100644
 --- a/common/game/gamescript.h
 +++ b/common/game/gamescript.h
 @@ -25,8 +25,10 @@ class Npc;
@@ -4433,7 +4496,7 @@ index 2cccb63..f405b43 100644
      void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
      void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
      void  printCannotBuyError         (Npc &npc);
-@@ -445,6 +484,58 @@ class GameScript final {
+@@ -445,6 +484,60 @@ class GameScript final {
      void exitsession         ();
  
      void sort(std::vector<DlgChoice>& dlg);
@@ -4453,6 +4516,8 @@ index 2cccb63..f405b43 100644
 +    bool    isPartyMember(Npc& npc);
 +    size_t  hiredCount   ();
 +    bool    squadFull    ();
++    // Вступить в отряд героя - одно и то же для найма в диалоге и для пошедших по своей воле (ainpc.cpp)
++    void    squadJoin    (Npc& npc);
 +    int32_t hirePrice    (Npc& npc) const;
 +    void    companionSay (Npc& npc, Npc& player, std::string_view svm);
 +    void    tickSquad    ();
@@ -4492,7 +4557,7 @@ index 2cccb63..f405b43 100644
      void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
      bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
  
-@@ -460,6 +551,7 @@ class GameScript final {
+@@ -460,6 +553,7 @@ class GameScript final {
      NpcProcessPolicy                                            aiProcessPolicy = NpcProcessPolicy::AiNormal;
  
      std::unique_ptr<DirectMemory>                               dma;
@@ -4500,11 +4565,12 @@ index 2cccb63..f405b43 100644
  
      std::unique_ptr<SpellDefinitions>                           spells;
      std::unique_ptr<SvmDefinitions>                             svm;
-@@ -486,6 +578,16 @@ class GameScript final {
+@@ -486,6 +580,17 @@ class GameScript final {
      size_t                                                      gilCount=0;
      std::vector<int32_t>                                        gilAttitudes;
      int                                                         aiOutOrderId=0;
 +    uint64_t                                                    squadTickTime=0;
++    size_t                                                      squadLogged=0;
 +    std::vector<Npc*>                                           squadTmp;
 +    struct SquadMark { const Npc* npc; uint64_t until; };
 +    std::vector<SquadMark>                                      squadMarks;
@@ -12234,7 +12300,7 @@ index e015398..3fead12 100644
 +  }
 +
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..26653ee 100644
+index 7309936..d59165c 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
 @@ -21,6 +21,7 @@
@@ -12262,7 +12328,7 @@ index 7309936..26653ee 100644
  
      std::string_view displayName() const;
      auto       displayPosition() const -> Tempest::Vec3;
-@@ -289,6 +300,61 @@ class Npc final {
+@@ -289,6 +300,64 @@ class Npc final {
  
      bool      isAttackAnim() const;
      bool      isPrehit() const;
@@ -12277,6 +12343,8 @@ index 7309936..26653ee 100644
 +    void      saveRoutines();
 +    bool      restoreRoutines();
 +    bool      hasSavedRoutines() const { return routinesSaved; }
++    // Gothic II Mobile: имя текущего состояния ИИ (ZS_...) - для журнала
++    const char* stateName() const { return aiState.hint!=nullptr ? aiState.hint : ""; }
 +    bool      isAutoFight() const { return autoFight; }
 +    int32_t   fightTactic() const;
 +    // Gothic II Mobile: занятие напарника на привале (companions.cpp); не сохраняется
@@ -12313,6 +12381,7 @@ index 7309936..26653ee 100644
 +      uint64_t      teleAt   = 0;      // не телепортировать раньше
 +      uint64_t      wayAt    = 0;      // не искать путь по точкам раньше
 +      uint64_t      holdTo   = 0;      // не вести до (в очереди запуск состояния)
++      uint64_t      logAt    = 0;      // журнал «почему не ведём» - не чаще раза в 10 с
 +      bool          driving  = false;  // ведём его сами (goToPos или путь по точкам)
 +      };
 +    CompanionFollow companionFollow;
@@ -12324,7 +12393,7 @@ index 7309936..26653ee 100644
      bool      isImmortal() const;
  
      void      setPerceptionTime   (uint64_t time);
-@@ -456,6 +522,7 @@ class Npc final {
+@@ -456,6 +525,7 @@ class Npc final {
        Npc*             npc  = nullptr;
        const WayPoint*  wp   = nullptr;
        Tempest::Vec3    pos  = {};
@@ -12332,7 +12401,7 @@ index 7309936..26653ee 100644
  
        void             save(Serialize& fout) const;
        void             load(Serialize&  fin);
-@@ -555,6 +622,7 @@ class Npc final {
+@@ -555,6 +625,7 @@ class Npc final {
  
      // visual props (cache)
      uint8_t                        durtyTranform=0;
@@ -12340,7 +12409,7 @@ index 7309936..26653ee 100644
      Tempest::Vec3                  lastGroundNormal;
  
      DynamicWorld::NpcItem          physic;
-@@ -608,6 +676,8 @@ class Npc final {
+@@ -608,6 +679,8 @@ class Npc final {
      AiQueue                        aiQueue;
      AiQueue                        aiQueueOverlay;
      std::vector<Routine>           routines;
@@ -12349,7 +12418,7 @@ index 7309936..26653ee 100644
  
      Interactive*                   currentInteract=nullptr;
      Npc*                           currentOther   =nullptr;
-@@ -629,6 +699,7 @@ class Npc final {
+@@ -629,6 +702,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;
