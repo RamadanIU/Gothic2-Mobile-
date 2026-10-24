@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..0830727
+index 0000000..d3744b3
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2223 @@
+@@ -0,0 +1,2258 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -428,6 +428,11 @@ index 0000000..0830727
 +      case ATR_HITPOINTSMAX: return "здоровья";
 +      default:               return "умения";
 +      }
++    }
++
++  // Дела по пути: идущий с героем делает их и возвращается в строй (отряд ждёт, пока дело не кончится)
++  bool isErrand(std::string_view n) {
++    return n=="go_to_place" || n=="go_to_npc" || n=="approach" || n=="loot" || n=="take_item" || n=="use_mob";
 +    }
 +
 +  const char* attitudeName(Attitude a) {
@@ -1483,6 +1488,10 @@ index 0000000..0830727
 +    return;
 +  a.closed = true;
 +  Log::i("[g2m] ai: act ",a.name,ok ? " ok: " : " fail: ",note);
++  // Дело в отряде кончилось - отряд снова ведёт его строем (GameScript::tickSquadFollow). Подошёл поговорить
++  // (talk_to_npc) - ещё 15 с на беседу, не уходить посреди фразы
++  if(a.begun && a.actor!=nullptr && isErrand(a.name) && npcAlive(a.actor))
++    a.actor->companionFollow.holdTo = (a.name=="approach" && ok) ? owner.tickCount()+15000 : 0;
 +  if(!a.report || a.id.empty())
 +    return;
 +  a.report = false;
@@ -1744,6 +1753,11 @@ index 0000000..0830727
 +      }
 +    a.text = fromCp1251(a.item->displayName());
 +    }
++  else if(name=="activity" && owner.isHired(npc)) {
++    // В отряде занятия - на привале, сами (GameScript::tickSquadIdle): занятие вывело бы из отряда
++    fail("ты в отряде героя: на привале займёшься делом сам; остаться здесь - wait_here, уйти к своим делам - go_home");
++    return;
++    }
 +  else if(name=="activity") {
 +    static const struct { const char* name; const char* zs; } list[] = {
 +      {"stand","ZS_STAND_ARMSCROSSED"}, {"guard","ZS_STAND_GUARDING"}, {"sit","ZS_SIT_CAMPFIRE"},
@@ -1966,32 +1980,46 @@ index 0000000..0830727
 +    setParty(npc,party);
 +    npc.resumeAiRoutine();
 +    };
++  // Дело по пути (подойти, подобрать, обыскать, сесть): идущий с героем из отряда не выходит - прежде любое такое
++  // дело (и подход к жителю перед talk_to_npc) выводило его из отряда, и он переставал идти строем. Отряд не ведёт
++  // его, пока дело не кончится (holdTo, снимается в finish), потом - снова в строй
++  const bool inSquad = owner.isHired(npc);
++  auto errand = [&](uint64_t ms) {
++    if(!inSquad) {
++      restart(false);
++      return;
++      }
++    npc.clearAiQueue();
++    npc.companionIdle            = Npc::CompanionIdle();
++    npc.companionFollow.holdTo   = now+ms;
++    npc.companionFollow.driving  = false;
++    };
 +
 +  if(a.name=="go_to_place") {
-+    restart(false);
-+    npc.aiPush(AiQueue::aiGoToPoint(*a.wp));
 +    a.deadline = now+180000;
++    errand(180000);
++    npc.aiPush(AiQueue::aiGoToPoint(*a.wp));
 +    }
 +  else if(a.name=="go_to_npc" || a.name=="approach") {
-+    restart(false);
-+    npc.aiPush(AiQueue::aiGoToNpc(a.target));
 +    a.deadline = now+90000;
++    errand(90000);
++    npc.aiPush(AiQueue::aiGoToNpc(a.target));
 +    }
 +  else if(a.name=="loot") {
-+    restart(false);
-+    npc.aiPush(AiQueue::aiGoToNpc(a.target));
 +    a.deadline = now+40000;
++    errand(40000);
++    npc.aiPush(AiQueue::aiGoToNpc(a.target));
 +    }
 +  else if(a.name=="take_item") {
-+    restart(false);
++    a.deadline = now+40000;
++    errand(40000);
 +    npc.aiPush(AiQueue::aiGotoItem(*a.item));
 +    npc.aiPush(AiQueue::aiTakeItem(*a.item));
-+    a.deadline = now+40000;
 +    }
 +  else if(a.name=="use_mob") {
-+    restart(false);
-+    npc.aiPush(AiQueue::aiUseMob(a.text,1));
 +    a.deadline = now+30000;
++    errand(30000);
++    npc.aiPush(AiQueue::aiUseMob(a.text,1));
 +    }
 +  else if(a.name=="attack") {
 +    owner.invokeAttack(npc,*a.target,owner.attackReason(npc,*a.target));
@@ -2012,6 +2040,13 @@ index 0000000..0830727
 +      restart(false);
 +      finish(a,true,"стоишь на месте");
 +      }
++    }
++  else if(a.name=="stop_fight" && inSquad) {
++    // В отряде - к тому, что было: идти следом или ждать в лагере (распорядок отряда не трогаем)
++    npc.setTarget(nullptr);
++    npc.resumeAiRoutine();
++    npc.aiPush(AiQueue::aiRemoveWeapon());
++    finish(a,true,"ты прекратил бой");
 +    }
 +  else if(a.name=="stop_fight") {
 +    npc.setTarget(nullptr);
