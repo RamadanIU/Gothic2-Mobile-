@@ -326,6 +326,41 @@ public class AiLogicTest {
     }
 
     @Test
+    public void toolCallsWrittenAsTextAreExecutedAndHidden() throws IOException {
+        // как на скриншоте пользователя: теги вместо function calling
+        String text = "<p>Наконец-то! Получай, грязный наемник!</p> <weapon draw=\"true\"/> <attack target=\"n5\"/>";
+        assertEquals("Наконец-то! Получай, грязный наемник!", Speech.clean(text));
+        java.util.Set<String> known = LlmClient.toolNames(Tools.all());
+        List<LlmClient.ToolCall> calls = TextCalls.extract(text, known);
+        assertEquals(2, calls.size());
+        assertEquals("weapon", calls.get(0).name);
+        assertEquals(Boolean.TRUE, calls.get(0).args.get("draw"));
+        assertEquals("attack", calls.get(1).name);
+        assertEquals("n5", Json.str(calls.get(1).args, "target"));
+        // JSON, вызов со скобками, тег с JSON внутри; неизвестные имена и <p> - не вызовы
+        calls = TextCalls.extract("Идём. {\"name\":\"follow_hero\",\"arguments\":{}} give_item(item=\"ITMI_GOLD\", count=5) "
+            + "<look_at>{\"target\":\"hero\"}</look_at> <dance/> fly()", known);
+        assertEquals(3, calls.size());
+        assertEquals("follow_hero", calls.get(0).name);
+        assertEquals("give_item", calls.get(1).name);
+        assertEquals(5L, Json.num(calls.get(1).args, "count", 0));
+        assertEquals("look_at", calls.get(2).name);
+        assertEquals("hero", Json.str(calls.get(2).args, "target"));
+        assertEquals("Идём.", Speech.clean("Идём. follow_hero() wait_here"));
+        // через клиент: вызовы текстом становятся настоящими, история - с tool_calls; «только словами» - не исполнять
+        LlmClient c = new LlmClient(AiSettings.inMemory().chat(), (url, key, body, t) ->
+            "{\"choices\":[{\"message\":{\"content\":\"Стой! <attack target=\\\"n5\\\"/>\"}}]}");
+        LlmClient.Reply r = c.chat(new ArrayList<>(), Tools.all(), 10);
+        assertEquals(1, r.calls.size());
+        assertEquals("attack", r.calls.get(0).name);
+        assertEquals(1, Json.arr(r.message.get("tool_calls")).size());
+        assertEquals("Стой!", Speech.clean(r.text));
+        assertTrue(c.chat(new ArrayList<>(), Tools.all(), 10, true).calls.isEmpty());
+        assertTrue(c.chat(new ArrayList<>(), null, 10).calls.isEmpty());
+        assertTrue(Persona.system().contains("никогда не пиши их в тексте"));
+    }
+
+    @Test
     public void memoryKeepsResidentNotes() throws IOException {
         File dir = tmp.newFolder("notes");
         Memory m = new Memory(dir);
