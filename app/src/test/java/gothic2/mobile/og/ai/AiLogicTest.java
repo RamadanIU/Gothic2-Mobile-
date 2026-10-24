@@ -530,6 +530,35 @@ public class AiLogicTest {
         assertFalse(Tools.isStory("talk_to_npc"));
     }
 
+    @Test
+    public void npcsTalkToEachOtherAndAnswerWithDeeds() {
+        // житель, которого герой просит сказать что-то другому, говорит тому (talk_to_npc), а не герою
+        String r = Persona.resident("Наемник", "Наёмник", false, "", new ArrayList<>(), new ArrayList<>());
+        assertTrue(r, r.contains(Persona.TALK_OTHERS));
+        assertTrue(r, r.contains("не тема: это talk_to_npc"));
+        assertTrue(Persona.system().contains(Persona.TALK_OTHERS));
+        // слушающий отвечает и делом: у него инструменты, кроме своих бесед и сюжетных тем
+        String l = Persona.npcReply("Мика", "Ополченец", false, "", new ArrayList<>(), new ArrayList<>(), "Наёмник");
+        assertTrue(l, l.contains("Чужак тебе не начальник"));
+        java.util.Set<String> names = LlmClient.toolNames(Tools.listener());
+        assertFalse(names.contains("talk_to_npc"));
+        assertFalse(names.contains("story_topic"));
+        assertTrue(names.contains("go_home"));
+        assertTrue(names.contains("follow_hero"));
+        assertTrue(names.contains("give_item"));
+        assertFalse(Tools.forListener("talk_to_npc"));
+        // talk_to_npc герою - обычная реплика; другому человеку - слова, при которых жест уместен
+        List<LlmClient.ToolCall> toHero = java.util.Arrays.asList(new LlmClient.ToolCall("1", "talk_to_npc",
+            Json.of("target", "hero", "text", "Вот так-то."), "{}"));
+        assertEquals("Вот так-то.", Tools.heroLine(toHero));
+        assertFalse(Tools.talksToNpc(toHero));
+        List<LlmClient.ToolCall> toMika = java.util.Arrays.asList(
+            new LlmClient.ToolCall("2", "look_at", Json.of("target", "n1"), "{}"),
+            new LlmClient.ToolCall("3", "talk_to_npc", Json.of("target", "n1", "text", "Проваливай!"), "{}"));
+        assertTrue(Tools.talksToNpc(toMika));
+        assertEquals("", Tools.heroLine(toMika));
+    }
+
     private static byte[] wav(short[] samples, int rate, int ch) {
         int data = samples.length * 2;
         byte[] b = new byte[44 + data];
