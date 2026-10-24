@@ -284,6 +284,17 @@ public class AiLogicTest {
     }
 
     @Test
+    public void observationShowsSquadState() {
+        String waiting = Observation.describe(Json.obj(Json.parse(
+            "{\"self\":{\"hp\":1,\"hpMax\":1,\"weapon\":\"убрано\",\"inParty\":1,\"waiting\":1,\"items\":[]}}")));
+        assertTrue(waiting, waiting.contains("ждёшь героя здесь (ты в его отряде)"));
+        assertFalse(waiting, waiting.contains("идёшь с героем"));
+        String following = Observation.describe(Json.obj(Json.parse(
+            "{\"self\":{\"hp\":1,\"hpMax\":1,\"weapon\":\"убрано\",\"inParty\":1,\"items\":[]}}")));
+        assertTrue(following, following.contains("идёшь с героем (в его отряде)"));
+    }
+
+    @Test
     public void memoryKeepsResidentNotes() throws IOException {
         File dir = tmp.newFolder("notes");
         Memory m = new Memory(dir);
