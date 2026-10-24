@@ -259,6 +259,31 @@ public class AiLogicTest {
     }
 
     @Test
+    public void gesturesOnlyWithWords() throws IOException {
+        // жест, взгляд, занятие - только вместе со словами; действия - без ограничений
+        assertTrue(Tools.needsWords("gesture"));
+        assertTrue(Tools.needsWords("look_at"));
+        assertTrue(Tools.needsWords("activity"));
+        assertFalse(Tools.needsWords("give_item"));
+        assertFalse(Tools.needsWords("follow_hero"));
+        assertFalse(Persona.system().contains("Можно промолчать"));
+        assertTrue(Persona.system().contains("только вместе со словами"));
+        String r = Persona.resident("Регис", "", false, "", new ArrayList<>(), new ArrayList<>());
+        assertFalse(r, r.contains("Можно промолчать"));
+        assertTrue(r, r.contains("отвечай ему словами всегда"));
+        // повтор «только словами»: инструменты описаны, но вызывать их нельзя
+        List<String> bodies = new ArrayList<>();
+        LlmClient c = new LlmClient(AiSettings.inMemory().chat(), (url, key, body, t) -> {
+            bodies.add(body);
+            return "{\"choices\":[{\"message\":{\"content\":\"Да.\"}}]}";
+        });
+        c.chat(new ArrayList<>(), Tools.all(), 10, true);
+        c.chat(new ArrayList<>(), Tools.all(), 10);
+        assertTrue(bodies.get(0), bodies.get(0).contains("\"tool_choice\":\"none\""));
+        assertFalse(bodies.get(1), bodies.get(1).contains("tool_choice"));
+    }
+
+    @Test
     public void memoryKeepsResidentNotes() throws IOException {
         File dir = tmp.newFolder("notes");
         Memory m = new Memory(dir);

@@ -63,6 +63,11 @@ final class GeraltBrain {
     private static final Actor GERALT = new Actor("self", "", Persona.NAME, "", false, 0);
 
     private static final int MAX_STEPS = 3;
+    /** Жест или занятие без слов на слова героя не исполняется — модель должна сначала ответить. */
+    private static final String[] SILENT = {
+        "не сделано: жест, взгляд и занятие — только вместе со словами. Сначала ответь герою вслух.", "again"};
+    static final String WORDS_PLEASE = "Ты не ответил герою словами. Ответь ему вслух сейчас: 1–3 предложения, "
+        + "только то, что произносишь, без жестов и инструментов.";
     /** Беседа с жителем: ход модели продлевается, пока Геральт продолжает её (talk_to_npc), но не дальше. */
     private static final int MAX_TALK_STEPS = 8;
     /** Геральт в скриптах игры (ainpc.cpp): житель может заговорить и с ним. */
@@ -325,6 +330,7 @@ final class GeraltBrain {
             msgs.add(Json.of("role", "user", "content",
                 (mem.isEmpty() ? "" : mem + "\n\n") + Observation.describe(snap) + "\n\n" + trigger));
             int steps = MAX_STEPS;
+            boolean spoke = false;
             for (int step = 0; step < steps; step++) {
                 long t0 = now();
                 LlmClient.Reply r = llm.chat(msgs, tools, 1500);
@@ -338,6 +344,7 @@ final class GeraltBrain {
                     break;
                 }
                 if (!speech.isEmpty()) {
+                    spoke = true;
                     memory.add(stamp() + " Ты: «" + speech + "»");
                     speak("self", "hero", speech, Tts.Voice.geralt(""));
                 }
@@ -345,13 +352,21 @@ final class GeraltBrain {
                 msgs.add(r.message);
                 boolean again = false;
                 for (LlmClient.ToolCall c : r.calls) {
-                    String[] res = runTool(c, GERALT, snap);
+                    String[] res = heroAsked && !spoke && Tools.needsWords(c.name) ? SILENT : runTool(c, GERALT, snap);
                     msgs.add(Json.of("role", "tool", "tool_call_id", c.id, "content", res[0]));
                     if ("again".equals(res[1])) again = true;
                     // Беседа с жителем: Геральт может ответить на его слова ещё раз
                     if ("talk_to_npc".equals(c.name)) steps = Math.min(MAX_TALK_STEPS, Math.max(steps, step + 2));
                 }
                 if (!again) break;
+            }
+            // Герой что-то сказал - ответ словами обязателен
+            if (heroAsked && !spoke) {
+                String speech = forceWords(msgs, llm);
+                if (!speech.isEmpty()) {
+                    memory.add(stamp() + " Ты: «" + speech + "»");
+                    speak("self", "hero", speech, Tts.Voice.geralt(""));
+                }
             }
         } catch (IOException e) {
             showError("модель — " + e.getMessage());
@@ -445,6 +460,7 @@ final class GeraltBrain {
                 (mem.isEmpty() ? "" : mem + "\n\n") + Observation.describe(snap) + "\n\nГерой говорит тебе: «" + text + "»"));
             memory.addTalk(a.key, "Герой: " + text);
             int steps = MAX_STEPS;
+            boolean spoke = false;
             for (int step = 0; step < steps; step++) {
                 long t0 = now();
                 LlmClient.Reply r = chat.chat(msgs, tools, 1200);
@@ -454,6 +470,7 @@ final class GeraltBrain {
                 AiLog.i("resident model " + (now() - t0) + " ms: «" + AiLog.cut(speech, 200) + "»" + calls);
                 if (step == 0) ui.hideStatus();
                 if (!speech.isEmpty()) {
+                    spoke = true;
                     memory.addTalk(a.key, a.name + ": " + speech);
                     speak(ref, "hero", speech, a.tts());
                 }
@@ -461,12 +478,20 @@ final class GeraltBrain {
                 msgs.add(r.message);
                 boolean again = false;
                 for (LlmClient.ToolCall c : r.calls) {
-                    String[] res = runTool(c, a, snap);
+                    String[] res = !spoke && Tools.needsWords(c.name) ? SILENT : runTool(c, a, snap);
                     msgs.add(Json.of("role", "tool", "tool_call_id", c.id, "content", res[0]));
                     if ("again".equals(res[1])) again = true;
                     if ("talk_to_npc".equals(c.name)) steps = Math.min(MAX_TALK_STEPS, Math.max(steps, step + 2));
                 }
                 if (!again) break;
+            }
+            // Герой обратился к жителю - ответ словами обязателен
+            if (!spoke) {
+                String speech = forceWords(msgs, chat);
+                if (!speech.isEmpty()) {
+                    memory.addTalk(a.key, a.name + ": " + speech);
+                    speak(ref, "hero", speech, a.tts());
+                }
             }
         } catch (IOException e) {
             showError("модель — " + e.getMessage());
@@ -474,6 +499,14 @@ final class GeraltBrain {
             ui.hideStatus();
             lastActivity = now();
         }
+    }
+
+    /** Ответ модели без слов на слова героя: ещё раз, только речью (вызывать инструменты нельзя). */
+    private String forceWords(List<Map<String, Object>> msgs, LlmClient llm) throws IOException {
+        msgs.add(Json.of("role", "user", "content", WORDS_PLEASE));
+        String speech = Speech.clean(llm.chat(msgs, tools, 600, true).text);
+        AiLog.i("words forced: «" + AiLog.cut(speech, 200) + "»");
+        return speech;
     }
 
     private static List<String> strings(Object arr) {
@@ -533,6 +566,11 @@ final class GeraltBrain {
             }
             msgs.add(Json.of("role", "user", "content", toGeralt ? said : line));
             reply = Speech.clean(chat.chat(msgs, null, 700).text);
+            if (reply.isEmpty()) {
+                // Промолчал на обращённые к нему слова - ещё раз: ответ словами обязателен
+                msgs.add(Json.of("role", "user", "content", "Ответь ему вслух: 1–3 предложения, только то, что произносишь."));
+                reply = Speech.clean(chat.chat(msgs, null, 700).text);
+            }
         } catch (IOException e) {
             showError("модель — " + e.getMessage());
             return "ты сказал «" + name + "»: «" + said + "», но ответа не расслышал";
