@@ -21,10 +21,11 @@ public final class Persona {
      * Реплика слышна только герою; другому человеку — talk_to_npc. Без этого правила жители, которых герой просил
      * поговорить с кем-то, подходили к нему и говорили всё герою, а тот, кому это было сказано, ничего не слышал.
      */
-    static final String TALK_OTHERS = "Твою реплику (текст ответа) слышит только герой. Сказать что-то другому человеку — "
-        + "спросить, передать, приказать, прогнать, позвать с собой — только talk_to_npc с его ref из «Рядом»: подойдёшь и "
-        + "скажешь сам, он ответит и может что-то сделать. Герой просит поговорить с кем-то, объяснить ему, сказать ему — "
-        + "вызови talk_to_npc, а не пересказывай это герою.";
+    static final String TALK_OTHERS = "Когда с тобой говорит герой, твою реплику (текст ответа) слышит только он. Сказать "
+        + "что-то другому человеку — спросить, передать, приказать, прогнать, позвать с собой — только talk_to_npc с его ref "
+        + "из «Рядом»: подойдёшь и поговоришь с ним сам, он ответит и может что-то сделать, беседа продолжится, пока ты не "
+        + "добьёшься своего. Герой просит поговорить с кем-то, объяснить ему, сказать ему — вызови talk_to_npc, а не "
+        + "пересказывай это герою и не обращайся к тому человеку в своей реплике.";
 
     public static String system() {
         return String.join("\n",
@@ -99,28 +100,64 @@ public final class Persona {
      * без подробностей).
      */
     public static String npcReply(String name, String guild, boolean female, String lore, List<String> topics,
-                                  List<String> lines, String speaker) {
+                                  List<String> lines, String speaker, boolean canTalk) {
         StringBuilder sb = new StringBuilder();
         identity(sb, name, guild, female, lore, topics, lines);
         sb.append("\n\nКто с тобой говорит: ").append(speaker == null ? "этот чужак — Геральт." : speaker);
         sb.append("\n\nКак отвечать:");
         whoSpeaks(sb);
         manners(sb, "собеседник");
-        reactions(sb);
+        reactions(sb, canTalk);
         return sb.toString();
+    }
+
+    public static String npcReply(String name, String guild, boolean female, String lore, List<String> topics,
+                                  List<String> lines, String speaker) {
+        return npcReply(name, guild, female, lore, topics, lines, speaker, false);
+    }
+
+    /** Житель, который сам ведёт беседу с другим (talk_to_npc): кто он и тон; правила беседы — converse. */
+    public static String npcIdentity(String name, String guild, boolean female, String lore, List<String> topics,
+                                     List<String> lines) {
+        StringBuilder sb = new StringBuilder();
+        identity(sb, name, guild, female, lore, topics, lines);
+        sb.append("\n\nКак говорить:");
+        manners(sb, "собеседник");
+        return sb.toString();
+    }
+
+    /**
+     * Говорящий продолжает беседу с partnerName (talk_to_npc): его текст слышит собеседник, а не герой; пустой ответ —
+     * беседа окончена. purpose — зачем он заговорил (слова героя или того, кто к нему обратился).
+     */
+    static void converse(StringBuilder sb, String partnerName, String partner, String purpose) {
+        sb.append("\n\nСейчас ты сам подошёл к «").append(partnerName).append("» и говоришь с ним. Кто он: ").append(partner);
+        if (!purpose.isEmpty()) sb.append("\nЗачем ты с ним заговорил: ").append(purpose);
+        sb.append("\n\nКак продолжать беседу:");
+        sb.append("\n- Твой текст сейчас слышит «").append(partnerName).append("», а не герой. Скажи ему следующую ")
+            .append("реплику — 1–2 предложения, по делу, чтобы добиться своего. Обращайся к нему, а не к герою.");
+        sb.append("\n- Можешь и сделать что-то (инструменты): дать отпор, отдать вещь, уйти.");
+        sb.append("\n- Добился своего, он окончательно отказал или говорить больше не о чем — ничего не говори (пустой ")
+            .append("ответ): беседа закончится, и ты вернёшься к герою. Не повторяй уже сказанного.");
+        sb.append("\n- ").append(NO_CODE);
     }
 
     /**
      * Ответ делом на слова другого NPC (инструменты Tools.listener): раньше слушающий мог только говорить, и
      * приказ, просьба или угроза ничего не меняли в мире.
      */
-    static void reactions(StringBuilder sb) {
+    static void reactions(StringBuilder sb, boolean canTalk) {
         sb.append("\n- Отвечай ему словами всегда. На его слова можешь и ответить делом — инструментами, по своему нраву и ")
             .append("по тому, кто говорит: приказ своего начальника (ополченцу — лорд Андре и паладины, наёмнику — Ли, ")
             .append("послушнику — маги) выполняй; прогоняют — уйди (go_home) или огрызнись; угрожают — обнажи оружие ")
             .append("(weapon), нападают — дай отпор (attack); велят идти с героем — follow_hero, если согласен; просят вещь — ")
             .append("give_item (target — ref говорящего). Чужак тебе не начальник: его приказы — только за плату или по ")
             .append("дружбе. Людей бери из «Обстановки» по ref, говорящий тоже там. Жест и взгляд — вместе со словами.");
+        sb.append("\n- Твой ответ текстом слышит тот, кто с тобой говорит.");
+        if (canTalk) {
+            sb.append(" Просят передать что-то другому человеку или разобраться с ним — подойди и скажи ему сам: ")
+                .append("talk_to_npc с его ref (тому, кто говорит с тобой, talk_to_npc не нужен — он и так слышит).");
+        }
     }
 
     /** Отвечать с оглядкой на собеседника: гильдия, одежда, оружие видны сразу. */

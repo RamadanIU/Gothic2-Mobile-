@@ -540,8 +540,21 @@ public class AiLogicTest {
         // слушающий отвечает и делом: у него инструменты, кроме своих бесед и сюжетных тем
         String l = Persona.npcReply("Мика", "Ополченец", false, "", new ArrayList<>(), new ArrayList<>(), "Наёмник");
         assertTrue(l, l.contains("Чужак тебе не начальник"));
-        java.util.Set<String> names = LlmClient.toolNames(Tools.listener());
+        java.util.Set<String> names = LlmClient.toolNames(Tools.listener(false));
         assertFalse(names.contains("talk_to_npc"));
+        // слушающий может заговорить с третьим (передать, разобраться) - но не во вложенной беседе
+        assertTrue(LlmClient.toolNames(Tools.listener(true)).contains("talk_to_npc"));
+        assertFalse(LlmClient.toolNames(Tools.listener(true)).contains("story_topic"));
+        String third = Persona.npcReply("Сентенза", "Наёмник", false, "", new ArrayList<>(), new ArrayList<>(), "Наёмник", true);
+        assertTrue(third, third.contains("подойди и скажи ему сам"));
+        assertFalse(l, l.contains("подойди и скажи ему сам"));
+        // говорящий продолжает беседу: его текст слышит собеседник, пустой ответ - конец беседы
+        StringBuilder conv = new StringBuilder(Persona.npcIdentity("Сентенза", "Наёмник", false, "", new ArrayList<>(),
+            new ArrayList<>()));
+        Persona.converse(conv, "Мика", "Мика — ополченец", "герой сказал тебе: «скажи Мике, чтобы платил»");
+        assertTrue(conv.toString(), conv.toString().contains("Твой текст сейчас слышит «Мика», а не герой"));
+        assertTrue(conv.toString(), conv.toString().contains("скажи Мике, чтобы платил"));
+        assertTrue(conv.toString(), conv.toString().contains("пустой ответ"));
         assertFalse(names.contains("story_topic"));
         assertTrue(names.contains("go_home"));
         assertTrue(names.contains("follow_hero"));
