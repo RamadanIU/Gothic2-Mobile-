@@ -76,8 +76,10 @@ public final class Tools {
             props("value", en(new String[]{"friendly", "neutral", "angry", "hostile"})), "value"));
         // Закончить разговор с героем модели нельзя: она закрывала диалог сразу после своей реплики, и разговор не
         // складывался. Диалог закрывает герой («Пока.»)
-        t.add(tool("talk_to_npc", "Подойти к человеку и сказать ему фразу; он ответит. Беседу можно продолжать: снова "
-                + "talk_to_npc с тем же ref — он помнит, о чём вы говорили. Для расспросов местных.",
+        t.add(tool("talk_to_npc", "Сказать что-то другому человеку из «Рядом» (не герою): спросить, передать, приказать, "
+                + "позвать, прогнать. Подойдёшь к нему сам — go_to_npc перед этим не нужен. Он услышит, ответит и может "
+                + "что-то сделать в ответ. Текст твоей реплики слышит только герой: что надо сказать другому — только этим "
+                + "инструментом. Беседу можно продолжать: снова talk_to_npc с тем же ref — он помнит, о чём вы говорили.",
             props("target", str("ref человека из «Рядом»"), "text", str("что сказать")), "target", "text"));
         t.add(tool("remember", "Запомнить важное надолго: уговор, имя, долг, обещание.",
             props("note", str("коротко, от себя")), "note"));
@@ -101,6 +103,38 @@ public final class Tools {
 
     static boolean isStory(String tool) {
         return "story_topic".equals(tool);
+    }
+
+    /**
+     * Инструменты того, к кому обратился другой NPC (talk_to_npc): ответить делом — уйти, пойти с героем, дать
+     * вещь, обнажить оружие. Без talk_to_npc: беседу ведёт заговоривший, слушающий отвечает ему словами.
+     */
+    public static List<Map<String, Object>> listener() {
+        List<Map<String, Object>> t = new ArrayList<>();
+        for (Map<String, Object> m : all()) {
+            if (forListener(Json.str(Json.obj(m.get("function")), "name"))) t.add(m);
+        }
+        return t;
+    }
+
+    static boolean forListener(String tool) {
+        return !"talk_to_npc".equals(tool) && !isStory(tool);
+    }
+
+    /** Вызов talk_to_npc другому человеку (не герою) — это тоже слова: жест или взгляд при нём уместны. */
+    static boolean talksToNpc(List<LlmClient.ToolCall> calls) {
+        for (LlmClient.ToolCall c : calls) {
+            if ("talk_to_npc".equals(c.name) && !"hero".equals(Json.str(c.args, "target"))) return true;
+        }
+        return false;
+    }
+
+    /** Слова герою, написанные вызовом talk_to_npc с target hero (модели так делали): это обычная реплика. */
+    static String heroLine(List<LlmClient.ToolCall> calls) {
+        for (LlmClient.ToolCall c : calls) {
+            if ("talk_to_npc".equals(c.name) && "hero".equals(Json.str(c.args, "target"))) return Json.str(c.args, "text");
+        }
+        return "";
     }
 
     private static Map<String, Object> tool(String name, String desc, Map<String, Object> props, String... required) {
