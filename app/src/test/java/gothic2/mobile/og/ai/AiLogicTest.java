@@ -451,6 +451,85 @@ public class AiLogicTest {
         assertEquals(Tts.pick(Tts.Gemini.MALE, 7), Tts.pick(Tts.Gemini.MALE, 7));
     }
 
+    @Test
+    public void storyTopicsInObservation() {
+        String snap = "{\"ev\":\"snapshot\",\"story\":{\"topics\":["
+            + "{\"id\":\"t4512\",\"hero\":\"Что мы можем сделать?\",\"says\":\"Только сила Инноса может помочь нам.\","
+            + "\"quest\":\"Глаз Инноса\",\"log\":\"В городе Хоринис расположился отряд паладинов.\"},"
+            + "{\"id\":\"t4400\",\"imp\":1,\"says\":\"Наконец-то!\"},"
+            + "{\"id\":\"t4600\",\"hero\":\"Я принёс траву.\",\"perm\":1,\"done\":\"Трава для алхимика\"}],"
+            + "\"choices\":[{\"id\":\"c7731\",\"text\":\"Что это за НОВАЯ угроза?\",\"of\":\"t4400\"}],"
+            + "\"quests\":[{\"name\":\"Глаз Инноса\",\"entry\":\"Я должен убедить паладинов.\"}]}}";
+        String d = Story.describe(Json.obj(Json.parse(snap)));
+        assertTrue(d, d.contains("t4512 — герой спрашивает или говорит: «Что мы можем сделать?»"));
+        assertTrue(d, d.contains("Даёт задание «Глаз Инноса»"));
+        assertTrue(d, d.contains("t4400 — ты сам хочешь сказать это герою"));
+        assertTrue(d, d.contains("(можно не раз)"));
+        assertTrue(d, d.contains("Задание «Трава для алхимика» будет выполнено"));
+        assertTrue(d, d.contains("c7731 — «Что это за НОВАЯ угроза?»"));
+        assertTrue(d, d.contains("«Глаз Инноса»: Я должен убедить паладинов."));
+        // Нет тем - нет и раздела
+        assertEquals("", Story.describe(Json.obj(Json.parse("{\"ev\":\"snapshot\"}"))));
+        // Длинные слова темы - урезаны до подсказки
+        StringBuilder longText = new StringBuilder();
+        for (int i = 0; i < 100; i++) longText.append("слово ");
+        String cut = Story.cut(longText.toString(), Story.PREVIEW);
+        assertTrue(cut.length() <= Story.PREVIEW + 1);
+        assertTrue(cut.endsWith("…"));
+    }
+
+    @Test
+    public void storyResultForModel() {
+        String done = "{\"ev\":\"act_done\",\"id\":\"G2M_AI_A3\",\"name\":\"story\",\"ok\":true,\"note\":\"тема сыграна\","
+            + "\"story\":{\"title\":\"Что мы можем сделать?\",\"lines\":[{\"hero\":1,\"text\":\"Что мы можем сделать?\"},"
+            + "{\"text\":\"Найди Глаз Инноса.\"},{\"text\":\"Он у паладинов.\"}],"
+            + "\"quests\":[{\"name\":\"Глаз Инноса\",\"status\":\"new\",\"entry\":\"Я должен убедить паладинов.\"},"
+            + "{\"name\":\"Трава\",\"status\":\"success\"}],"
+            + "\"got\":[\"Письмо x2\"],\"gave\":[],\"gold\":-50,\"xp\":100,\"attrs\":[\"сила +5\"],\"ended\":1,"
+            + "\"choices\":[{\"id\":\"c1\",\"text\":\"Да\"},{\"id\":\"c2\",\"text\":\"Нет\"}],"
+            + "\"next\":[{\"id\":\"t9\",\"hero\":\"Где паладины?\"}]}}";
+        Map<String, Object> m = Json.obj(Json.parse(done));
+        String r = Story.result(m);
+        assertTrue(r, r.contains("Ты сказал в игре: «Найди Глаз Инноса. Он у паладинов.»"));
+        assertTrue(r, r.contains("Герой говорил в игре: «Что мы можем сделать?»"));
+        assertTrue(r, r.contains("новое задание «Глаз Инноса»: «Я должен убедить паладинов.»"));
+        assertTrue(r, r.contains("задание «Трава» выполнено"));
+        assertTrue(r, r.contains("герой получил: Письмо x2"));
+        assertTrue(r, r.contains("герой заплатил золота: 50"));
+        assertTrue(r, r.contains("герой получил опыт: 100"));
+        assertTrue(r, r.contains("герой научился: сила +5"));
+        assertTrue(r, r.contains("закончил разговор"));
+        assertTrue(r, r.contains("c1 «Да»; c2 «Нет»."));
+        assertTrue(r, r.contains("t9 «Где паладины?»"));
+        String memo = Story.memo(m);
+        assertTrue(memo, memo.startsWith("(по сюжету — «Что мы можем сделать?»: "));
+        assertTrue(memo, memo.endsWith(")"));
+
+        Map<String, Object> fail = Json.obj(Json.parse(
+            "{\"ev\":\"act_done\",\"ok\":false,\"note\":\"эта тема сейчас недоступна\"}"));
+        assertTrue(Story.result(fail).startsWith("не вышло: эта тема сейчас недоступна"));
+        assertEquals("", Story.memo(fail));
+    }
+
+    @Test
+    public void storyToolOnlyForResidents() {
+        boolean geralt = false;
+        for (Map<String, Object> t : Tools.all()) {
+            if ("story_topic".equals(Json.str(Json.obj(t.get("function")), "name"))) geralt = true;
+        }
+        assertFalse("у Геральта нет сюжетных тем", geralt);
+        boolean resident = false;
+        for (Map<String, Object> t : Tools.resident()) {
+            if ("story_topic".equals(Json.str(Json.obj(t.get("function")), "name"))) resident = true;
+        }
+        assertTrue(resident);
+        Map<String, Object> c = Tools.engineAct("A7", "story_topic", Json.of("topic", "t4512"));
+        assertEquals("story", c.get("name"));
+        assertEquals("t4512", Json.str(Json.obj(c.get("args")), "topic"));
+        assertTrue(Tools.isStory("story_topic"));
+        assertFalse(Tools.isStory("talk_to_npc"));
+    }
+
     private static byte[] wav(short[] samples, int rate, int ch) {
         int data = samples.length * 2;
         byte[] b = new byte[44 + data];

@@ -84,6 +84,25 @@ public final class Tools {
         return t;
     }
 
+    /**
+     * Инструменты живого жителя: те же, что у Геральта, и сюжетные темы его диалогов из игры (Story) — задания,
+     * награды, пропуска, обучение исполняет скрипт игры, как в родном диалоге.
+     */
+    public static List<Map<String, Object>> resident() {
+        List<Map<String, Object>> t = all();
+        t.add(tool("story_topic", "Сыграть тему из «Темы разговора» — сюжет игры: задание, его сдача, награда, разрешение, "
+                + "обучение, важная новость. Её слова и последствия настоящие: задание попадает в дневник героя, вещи и "
+                + "деньги переходят из рук в руки, герой получает опыт. Вызывай без слов: в ответ придёт, что ты сказал в "
+                + "игре, и итог — тогда перескажи это герою своими словами. topic — id темы (t…) или варианта ответа "
+                + "героя в начатой теме (c…).",
+            props("topic", str("id из «Темы разговора», например t4512, или варианта, например c7731")), "topic"));
+        return t;
+    }
+
+    static boolean isStory(String tool) {
+        return "story_topic".equals(tool);
+    }
+
     private static Map<String, Object> tool(String name, String desc, Map<String, Object> props, String... required) {
         List<Object> req = new ArrayList<>(Arrays.asList((Object[]) required));
         Map<String, Object> params = Json.of("type", "object", "properties", props);
@@ -150,6 +169,10 @@ public final class Tools {
                 break;
             case "set_attitude":
                 a.put("value", Json.str(args, "value"));
+                break;
+            case "story_topic":
+                a.put("topic", Json.str(args, "topic"));
+                name = "story";
                 break;
             default:
                 return null;
