@@ -562,6 +562,10 @@ public class AiLogicTest {
         assertTrue(l, l.contains(Persona.DEEDS));
         assertTrue(l, l.contains("свои просят помочь в драке"));
         assertTrue(Persona.system().contains(Persona.DEEDS));
+        // «возмутиться» и «обрадоваться» были анимациями зеваки у драки - житель «плясал» вместо удара
+        java.util.List<String> gestures = java.util.Arrays.asList(Tools.GESTURES);
+        assertFalse(gestures.contains("angry"));
+        assertFalse(gestures.contains("cheer"));
         assertFalse(names.contains("story_topic"));
         assertTrue(names.contains("go_home"));
         assertTrue(names.contains("follow_hero"));
