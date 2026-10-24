@@ -78,16 +78,27 @@ public final class Persona {
     /**
      * Ответ жителя на слова другого (Геральта или жителя) — без инструментов, в его характере. lore — кто он
      * (NpcLore), topics — темы его диалогов в игре, lines — его собственные реплики из игры (манера речи и что он
-     * знает), stranger — кто с ним говорит (null — Геральт).
+     * знает), speaker — кто с ним говорит (Observation.speaker: имя, гильдия, одежда, оружие…; null — чужак Геральт
+     * без подробностей).
      */
     public static String npcReply(String name, String guild, boolean female, String lore, List<String> topics,
-                                  List<String> lines, String stranger) {
+                                  List<String> lines, String speaker) {
         StringBuilder sb = new StringBuilder();
         identity(sb, name, guild, female, lore, topics, lines);
-        sb.append("\n\nС тобой говорит ").append(stranger == null ? "этот чужак — Геральт." : stranger + ".");
+        sb.append("\n\nКто с тобой говорит: ").append(speaker == null ? "этот чужак — Геральт." : speaker);
         sb.append("\n\nКак отвечать:");
+        whoSpeaks(sb);
         manners(sb, "собеседник");
         return sb.toString();
+    }
+
+    /** Отвечать с оглядкой на собеседника: гильдия, одежда, оружие видны сразу. */
+    private static void whoSpeaks(StringBuilder sb) {
+        sb.append("\n- Сначала посмотри, кто с тобой говорит (раздел «Кто с тобой говорит»): по гильдии, одежде и ")
+            .append("оружию сразу видно, кто перед тобой — бандит, ополченец, паладин, маг, наёмник, крестьянин, богач ")
+            .append("или бродяга. Говори с ним так, как в этом мире принято говорить с таким человеком: стражнику — ")
+            .append("уважение или опаска, бандиту — недоверие, магу — почтение, своему — свойски. Обнажённое оружие — ")
+            .append("угроза, раненый — повод спросить, что случилось. Обращайся к нему по имени, если знаешь его.");
     }
 
     public static String npcReply(String name, String guild, boolean female, String lore, List<String> topics,
@@ -104,8 +115,10 @@ public final class Persona {
         StringBuilder sb = new StringBuilder();
         identity(sb, name, guild, female, lore, topics, lines);
         sb.append("\n\nС тобой заговорил герой — странник, каких на острове теперь много; кто он такой, видно в ")
-            .append("«Обстановке» (гильдия, одежда, оружие). Его слова приходят в кавычках после «Герой говорит тебе».");
+            .append("разделе «Кто с тобой говорит» (гильдия, одежда, оружие). Его слова приходят в кавычках после ")
+            .append("«Герой говорит тебе».");
         sb.append("\n\nКак говорить:");
+        whoSpeaks(sb);
         manners(sb, "герой");
         sb.append("\n- Отвечай только на то, что герой действительно сказал; не выдумывай за него слов.");
         sb.append("\n- Герой обратился к тебе — отвечай ему словами всегда. Жест (gesture), взгляд (look_at) и занятие ")

@@ -295,6 +295,37 @@ public class AiLogicTest {
     }
 
     @Test
+    public void npcsSeeWhoTalksToThem() {
+        // как говорящий выглядит для слушающего (describe из движка)
+        Map<String, Object> d = Json.obj(Json.parse("{\"ev\":\"describe\",\"id\":\"VLK_420_CORAGON\",\"name\":\"Корагон\","
+            + "\"guild\":\"Горожанин\",\"armor\":\"Одежда горожанина\",\"melee\":\"Дубинка\",\"drawn\":1,\"level\":7,"
+            + "\"hp%\":40,\"myAtt\":\"сердито\",\"party\":1}"));
+        String sp = Observation.speaker(d, "Корагон", NpcLore.reputation("VLK_420_CORAGON"));
+        assertTrue(sp, sp.startsWith("Корагон — гильдия: Горожанин, мужчина; одежда: Одежда горожанина, оружие: Дубинка"));
+        assertTrue(sp, sp.contains("(оружие обнажено!)"));
+        assertTrue(sp, sp.contains("уровень 7"));
+        assertTrue(sp, sp.contains("Ранен: здоровье 40%"));
+        assertTrue(sp, sp.contains("Ты относишься к нему: сердито"));
+        assertTrue(sp, sp.contains("Идёт с героем"));
+        assertTrue(sp, sp.contains("Что о нём известно в округе: Хозяин кабака в нижнем городе."));
+        // герой - из снимка обстановки слушающего
+        String hero = Observation.speaker(Json.obj(Json.parse("{\"guild\":\"Наёмник\",\"armor\":\"Лёгкие доспехи наёмника\","
+            + "\"weaponDrawn\":0,\"hp\":40,\"hpMax\":40,\"level\":5,\"attitude\":\"нейтрально\"}")), "Герой", "");
+        assertTrue(hero, hero.contains("гильдия: Наёмник"));
+        assertTrue(hero, hero.contains("одежда: Лёгкие доспехи наёмника"));
+        assertFalse(hero, hero.contains("обнажено"));
+        // в списке «Рядом» - одежда и оружие каждого человека
+        String obs = Observation.describe(Json.obj(Json.parse("{\"npcs\":[{\"ref\":\"n2\",\"name\":\"Бандит\","
+            + "\"guild\":\"Бандит\",\"armor\":\"Доспехи бандита\",\"melee\":\"Ржавый меч\",\"att\":\"враждебно\",\"dist\":5}]}")));
+        assertTrue(obs, obs.contains("одежда: Доспехи бандита, оружие: Ржавый меч"));
+        assertTrue(obs, obs.contains("к тебе: враждебно"));
+        // правило: отвечать с оглядкой на того, кто говорит
+        String p = Persona.npcReply("Регис", "", false, "", new ArrayList<>(), new ArrayList<>(), sp);
+        assertTrue(p, p.contains("Кто с тобой говорит: Корагон"));
+        assertTrue(p, p.contains("бандиту — недоверие"));
+    }
+
+    @Test
     public void memoryKeepsResidentNotes() throws IOException {
         File dir = tmp.newFolder("notes");
         Memory m = new Memory(dir);

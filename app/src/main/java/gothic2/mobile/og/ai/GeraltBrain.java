@@ -327,8 +327,11 @@ final class GeraltBrain {
             List<Map<String, Object>> msgs = new ArrayList<>();
             msgs.add(Json.of("role", "system", "content", Persona.system()));
             String mem = memory.context(30);
+            String who = heroAsked && !Json.obj(snap.get("hero")).isEmpty()
+                ? "\n\nКто с тобой говорит: " + Observation.speaker(Json.obj(snap.get("hero")), "Герой (безымянный странник)", "")
+                : "";
             msgs.add(Json.of("role", "user", "content",
-                (mem.isEmpty() ? "" : mem + "\n\n") + Observation.describe(snap) + "\n\n" + trigger));
+                (mem.isEmpty() ? "" : mem + "\n\n") + Observation.describe(snap) + who + "\n\n" + trigger));
             int steps = MAX_STEPS;
             boolean spoke = false;
             for (int step = 0; step < steps; step++) {
@@ -457,7 +460,9 @@ final class GeraltBrain {
                 strings(info.get("topics")), strings(info.get("lines")))));
             String mem = memory.npcContext(a.key);
             msgs.add(Json.of("role", "user", "content",
-                (mem.isEmpty() ? "" : mem + "\n\n") + Observation.describe(snap) + "\n\nГерой говорит тебе: «" + text + "»"));
+                (mem.isEmpty() ? "" : mem + "\n\n") + Observation.describe(snap)
+                    + "\n\nКто с тобой говорит: " + Observation.speaker(Json.obj(snap.get("hero")), "Герой (безымянный странник)", "")
+                    + "\n\nГерой говорит тебе: «" + text + "»"));
             memory.addTalk(a.key, "Герой: " + text);
             int steps = MAX_STEPS;
             boolean spoke = false;
@@ -543,20 +548,20 @@ final class GeraltBrain {
         boolean toGeralt = GERALT_ID.equalsIgnoreCase(npcId);
         String key = npcId.isEmpty() ? name : npcId;
         String line = speaker.name + ": " + said;
+        // Кто говорит - глазами слушающего: имя, гильдия, одежда, оружие, его отношение (движок, describe)
+        String looks = speakerSeenBy(speaker, ref);
         String reply;
         try {
             List<Map<String, Object>> msgs = new ArrayList<>();
             if (toGeralt) {
                 msgs.add(Json.of("role", "system", "content", Persona.system()
-                    + "\n\nСейчас с тобой заговорил житель — " + speaker.name
-                    + (speaker.guild.isEmpty() ? "" : " (" + speaker.guild + ")") + ". Ответь ему вслух, без инструментов."));
+                    + "\n\nСейчас с тобой заговорил житель. Кто он: " + looks
+                    + "\nОтветь ему вслух, без инструментов, с оглядкой на то, кто он."));
             } else {
                 Map<String, Object> info = loreOf(key, ref);
-                String stranger = speaker.geralt() ? null
-                    : speaker.name + (speaker.guild.isEmpty() ? "" : " (" + speaker.guild + ")") + ", житель острова";
                 msgs.add(Json.of("role", "system", "content", Persona.npcReply(name, Json.str(who, "guild"),
                     Json.bool(who, "female", false), NpcLore.of(npcId), strings(info.get("topics")),
-                    strings(info.get("lines")), stranger)));
+                    strings(info.get("lines")), looks)));
                 // Свои реплики - ответы модели, чужие (Геральт, герой, другие жители) - с именем говорящего
                 String own = name + ": ";
                 for (String l : memory.talk(key)) {
@@ -592,6 +597,25 @@ final class GeraltBrain {
         speak(ref, speaker.ref, reply, v);
         return "ты сказал «" + name + "»: «" + said + "». «" + name + "» ответил: «" + reply
             + "». Можешь продолжить беседу (talk_to_npc с тем же ref) или закончить её.";
+    }
+
+    /**
+     * Как говорящий (Геральт или житель) выглядит для слушающего listenerRef: описание из движка (describe) и его
+     * известность в округе. Нет ответа движка — по имени и гильдии.
+     */
+    private String speakerSeenBy(Actor speaker, String listenerRef) {
+        String req = "d" + (++seq);
+        engine.send(Json.of("cmd", "describe", "req", req, "target", speaker.ref, "viewer", listenerRef));
+        Map<String, Object> d = waitFor(e -> "describe".equals(Json.str(e, "ev")) && req.equals(Json.str(e, "req")), 2500);
+        String known = speaker.geralt()
+            ? "чужак, назвавшийся Геральтом; несколько дней сидит в кабаке Корагона; седой, со шрамом, жёлтые кошачьи "
+                + "глаза, два меча."
+            : NpcLore.reputation(d == null ? "" : Json.str(d, "id"));
+        if (d == null || Json.str(d, "name").isEmpty()) {
+            return speaker.name + (speaker.guild.isEmpty() ? "" : " — гильдия: " + speaker.guild)
+                + (known.isEmpty() ? "" : ". Что о нём известно в округе: " + known);
+        }
+        return Observation.speaker(d, speaker.name, known);
     }
 
     /** Сведения о жителе из движка (темы и реплики его диалогов в игре) — один раз за сеанс. */
