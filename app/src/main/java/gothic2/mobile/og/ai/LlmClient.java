@@ -8,8 +8,10 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Языковая модель по адресу, совместимому с OpenAI (/chat/completions): Ollama Cloud, Gemini, Groq,
@@ -114,7 +116,32 @@ public final class LlmClient {
                 resp = http.post(url, role.key, body, 60000);
             }
         }
-        return parse(resp);
+        Reply r = parse(resp);
+        if (tools == null || tools.isEmpty() || wordsOnly || !r.calls.isEmpty()) return r;
+        return withTextCalls(r, toolNames(tools));
+    }
+
+    /** Имена инструментов из их описаний (function.name). */
+    static Set<String> toolNames(List<Map<String, Object>> tools) {
+        Set<String> names = new HashSet<>();
+        for (Map<String, Object> t : tools) names.add(Json.str(Json.obj(t.get("function")), "name"));
+        return names;
+    }
+
+    /**
+     * Модель написала вызовы инструментов текстом (<attack target="n5"/>, JSON, follow_hero()) вместо function
+     * calling — это настоящие вызовы (TextCalls); сообщение для истории — с ними, как при обычном вызове.
+     */
+    static Reply withTextCalls(Reply r, Set<String> names) {
+        List<ToolCall> calls = TextCalls.extract(r.text, names);
+        if (calls.isEmpty()) return r;
+        Map<String, Object> back = Json.of("role", "assistant", "content", Speech.clean(r.text));
+        List<Object> tcs = new ArrayList<>();
+        for (ToolCall c : calls) {
+            tcs.add(Json.of("id", c.id, "type", "function", "function", Json.of("name", c.name, "arguments", c.rawArgs)));
+        }
+        back.put("tool_calls", tcs);
+        return new Reply(r.text, calls, back);
     }
 
     /** Разбор ответа /chat/completions. */

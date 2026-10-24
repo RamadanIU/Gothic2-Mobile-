@@ -12,6 +12,10 @@ public final class Speech {
     private static final Pattern SPEAKER = Pattern.compile("^(?iu)\\s*(геральт|geralt)\\s*:\\s*");
     // Вызов инструмента текстом вместо function calling: в речь не попадает
     private static final Pattern CODE = Pattern.compile("(?s)```.*?(```|$)|\\{[^{}]*(\\{[^{}]*\\}[^{}]*)*\\}|<\\|[^|]*\\|>");
+    // Теги (<p>, </p>, <attack target="n5"/>) и вызовы вида attack(target="n5"), follow_hero - в речь не попадают:
+    // в русской реплике латиницы со скобками и подчёркиваниями не бывает
+    private static final Pattern TAGS = Pattern.compile("</?\\s*[a-zA-Z_][^<>]{0,300}>");
+    private static final Pattern CALLS = Pattern.compile("\\b[a-z][a-z0-9_]*\\s*\\([^()]{0,300}\\)|\\b[a-z]+(_[a-z0-9]+)+\\b");
     private static final int MAX_CHARS = 600;
 
     private Speech() {
@@ -22,6 +26,8 @@ public final class Speech {
         if (text == null) return "";
         String t = THINK.matcher(text).replaceAll(" ");
         t = CODE.matcher(t).replaceAll(" ");
+        t = TAGS.matcher(t).replaceAll(" ");
+        t = CALLS.matcher(t).replaceAll(" ");
         t = STARS.matcher(t).replaceAll(" ");
         t = BRACKETS.matcher(t).replaceAll(" ");
         t = SPEAKER.matcher(t).replaceAll("");
