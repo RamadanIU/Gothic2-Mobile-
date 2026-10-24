@@ -134,7 +134,12 @@
   он знает; текста игры в приложении нет. Запрашивается один раз за сеанс на жителя.
 - **Мир** — что знает каждый на острове (барьер пал, паладины, ополчение, Онар и наёмники, маги, слухи об орках
   и драконах; `NpcLore.WORLD`).
-- **Геральт** — незнакомец, назвавшийся Геральтом, сидит в кабаке Корагона, держится вежливо.
+- **Кто с ним говорит** (2026-10-24) — раздел «Кто с тобой говорит» глазами слушающего: имя, гильдия (бандит,
+  горожанин, ополченец…), пол, одежда, оружие (обнажено ли), уровень, ранен ли, в отряде ли героя, как слушающий к
+  нему относится и что о нём известно в округе (первое предложение `NpcLore`, для Геральта — чужак из кабака).
+  Движок — запрос `describe{req,target,viewer}` (`AiNpc::sendDescribe`); правило — отвечать с оглядкой на то, кто
+  перед тобой (стражнику — уважение или опаска, бандиту — недоверие, магу — почтение). Так же — блок героя, когда
+  к жителю или Геральту обращается герой. В списке «Рядом» у каждого человека — одежда, оружие и отношение к тебе.
 - **Прошлые беседы** с Геральтом — последние 16 реплик с каждым жителем (до 40 жителей), в памяти сохранения
   (`Memory.talks`).
 
@@ -204,9 +209,10 @@ Gothic и перевести в форматы ZenGin, а проверить р�
 
 Протокол (JSON). Приложение → движок: `say{id,who,to,text,ms,mood}`, `act{id,name,args}` (в том числе
 `equip{item}`, `unequip{item}`, `go_home`; поле `who` — кто делает: `self` — Геральт, `nN` — житель), `think{on}`,
-`snapshot{req,who}`, `lore{req,target}`, `end_talk`, `hush`. Движок →
+`snapshot{req,who}`, `lore{req,target}`, `describe{req,target,viewer}`, `end_talk`, `hush`. Движок →
 приложение: `ready{story,token,load}`, `saving{story,token}`, `snapshot{req,…}` (предметы — `{id,name,n,kind,
-equipped,dmg,prot,need}`, жители — с `id` экземпляра), `lore{req,id,name,guild,topics,lines}`, `talk_start`, `talk_end`, `listen{free,target,name}` (`free` — кнопка «Сказать» без диалога, `target` — кому: `self` или житель `nN`;
+equipped,dmg,prot,need}`, жители — с `id` экземпляра), `lore{req,id,name,guild,topics,lines}`, `describe{req,id,name,guild,female,armor,melee,ranged,drawn,level,hp%,
+geralt,party,myAtt,dist}`, `talk_start`, `talk_end`, `listen{free,target,name}` (`free` — кнопка «Сказать» без диалога, `target` — кому: `self` или житель `nN`;
 снимок жителя — с полем `actor`), `type`, `bye`,
 `line_start{id,vol}`, `line_end{id}`, `line_skip`, `act_done{id,name,ok,note}`, `event{kind,text,who}` (виды:
 `hero_near`, `hero_left`, `hero_hit_me`, `hit`, `hero_attacks`, `hero_attacked`, `enemy`, `death`, `down`, `up`,

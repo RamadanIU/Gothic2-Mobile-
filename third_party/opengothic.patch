@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..f331006
+index 0000000..0830727
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2162 @@
+@@ -0,0 +1,2223 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -428,6 +428,23 @@ index 0000000..f331006
 +      case ATR_HITPOINTSMAX: return "здоровья";
 +      default:               return "умения";
 +      }
++    }
++
++  const char* attitudeName(Attitude a) {
++    return a==ATT_HOSTILE ? "враждебно" : a==ATT_ANGRY ? "сердито" : a==ATT_FRIENDLY ? "дружески" : "нейтрально";
++    }
++
++  // Как человек выглядит со стороны: одежда, оружие (обнажено ли), уровень - кто он такой, видно сразу
++  void putLooks(JsonOut& j, Npc& n) {
++    if(auto* ar = n.currentArmor())
++      put(j,"armor",fromCp1251(ar->displayName()));
++    if(auto* mw = n.currentMeleeWeapon())
++      put(j,"melee",fromCp1251(mw->displayName()));
++    if(auto* rw = n.currentRangedWeapon())
++      put(j,"ranged",fromCp1251(rw->displayName()));
++    if(n.weaponState()!=WeaponState::NoWeapon)
++      put(j,"drawn",1);
++    put(j,"level",n.level());
 +    }
 +
 +  // Предмет в снимке: id, имя, сколько, вид, надет ли, урон/защита, чего не хватает, чтобы надеть
@@ -952,6 +969,10 @@ index 0000000..f331006
 +    }
 +  if(cmd=="lore") {
 +    sendLore(str(d,"req"),str(d,"target"));
++    return;
++    }
++  if(cmd=="describe") {
++    sendDescribe(str(d,"req"),str(d,"target"),str(d,"viewer"));
 +    return;
 +    }
 +
@@ -1590,6 +1611,41 @@ index 0000000..f331006
 +        break;
 +      }
 +    j.EndArray();
++    }
++  j.EndObject();
++  AiLink::send(buf.GetString());
++  }
++
++void AiNpc::sendDescribe(std::string_view req, std::string_view ref, std::string_view viewer) {
++  // Кто говорит - глазами того, к кому обращаются: имя, гильдия, одежда, оружие, здоровье, как слушающий к
++  // нему относится. Для бесед жителей между собой (talk_to_npc): слушающий видит, бандит перед ним или стражник
++  rapidjson::StringBuffer buf;
++  JsonOut j(buf);
++  j.StartObject();
++  put(j,"ev","describe");
++  std::string r;
++  for(char c:req)
++    if(std::isalnum(uint8_t(c)) || c=='_')
++      r.push_back(c);
++  put(j,"req",r);
++  Npc* n = npcByRef(ref);
++  Npc* v = npcByRef(viewer);
++  if(n!=nullptr) {
++    put(j,"id",npcId(*n));
++    put(j,"name",fromCp1251(n->displayName()));
++    put(j,"guild",guildName(int32_t(n->guild())));
++    put(j,"female",n->handle().voice==16 || n->handle().voice==17 ? 1 : 0);
++    putLooks(j,*n);
++    const int32_t hmax = std::max(1,n->attribute(ATR_HITPOINTSMAX));
++    put(j,"hp%",int64_t(n->attribute(ATR_HITPOINTS))*100/hmax);
++    if(n==geralt)
++      put(j,"geralt",1);
++    if(owner.isHired(*n))
++      put(j,"party",1);
++    if(v!=nullptr && v!=n) {
++      put(j,"myAtt",attitudeName(owner.personAttitude(*v,*n))); // как слушающий относится к нему
++      putMeters(j,"dist",std::sqrt(v->qDistTo(*n)));
++      }
 +    }
 +  j.EndObject();
 +  AiLink::send(buf.GetString());
@@ -2314,6 +2370,11 @@ index 0000000..f331006
 +      put(j,"guild",guildName(int32_t(n.guild())));
 +      put(j,"female",n.handle().voice==16 || n.handle().voice==17 ? 1 : 0);
 +      put(j,"voice",n.handle().voice);
++      putLooks(j,n);
++      if(!n.isDead())
++        put(j,"att",attitudeName(owner.personAttitude(n,me))); // как он относится к тебе
++      if(owner.isHired(n))
++        put(j,"party",1);
 +      } else {
 +      put(j,"monster",1);
 +      }
@@ -2402,10 +2463,10 @@ index 0000000..f331006
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..07e738f
+index 0000000..c75b221
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,221 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -2559,6 +2620,7 @@ index 0000000..07e738f
 +    void   reportTrade();
 +    void   sendSnapshot(Npc& me, std::string_view reason);
 +    void   sendLore(std::string_view req, std::string_view ref);
++    void   sendDescribe(std::string_view req, std::string_view ref, std::string_view viewer);
 +    void   sendEvent(std::string_view kind, std::string_view text, Npc* who);
 +    std::string snapshot(Npc& me);
 +

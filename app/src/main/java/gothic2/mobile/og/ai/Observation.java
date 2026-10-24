@@ -93,6 +93,12 @@ public final class Observation {
                 String f = Json.str(n, "fights");
                 if (!f.isEmpty()) d.append(", дерётся с ").append(f);
                 if (!Json.bool(n, "seen", true)) d.append(", не видно");
+                if (Json.bool(n, "party", false)) d.append(", в отряде героя");
+                // Как выглядит: по одежде и оружию видно, кто перед тобой
+                String looks = looks(n);
+                if (!looks.isEmpty()) d.append("; ").append(looks);
+                String att = Json.str(n, "att");
+                if (!att.isEmpty() && !"нейтрально".equals(att)) d.append("; к тебе: ").append(att);
                 sb.append(" (").append(d).append(')');
             }
         } else {
@@ -137,6 +143,44 @@ public final class Observation {
             }
             sb.append('.');
         }
+        return sb.toString();
+    }
+
+    /** Одежда и оружие человека: «одежда: …, оружие: … (обнажено), лук: …, уровень 5»; пусто — ничего не видно. */
+    static String looks(Map<String, Object> p) {
+        StringBuilder d = new StringBuilder();
+        String ar = Json.str(p, "armor");
+        d.append("одежда: ").append(ar.isEmpty() ? "простая" : ar);
+        String mw = Json.str(p, "melee");
+        if (!mw.isEmpty()) d.append(", оружие: ").append(mw);
+        String rw = Json.str(p, "ranged");
+        if (!rw.isEmpty()) d.append(", ").append(mw.isEmpty() ? "оружие: " : "за спиной: ").append(rw);
+        if (Json.bool(p, "drawn", false) || Json.bool(p, "weaponDrawn", false)) d.append(" (оружие обнажено!)");
+        long lv = Json.num(p, "level", 0);
+        if (lv > 0) d.append(", уровень ").append(lv);
+        return d.toString();
+    }
+
+    /**
+     * Кто говорит с тобой — крупно, чтобы модель отвечала с оглядкой на него: имя, гильдия (бандит, горожанин,
+     * ополченец…), пол, одежда, оружие, здоровье, твоё отношение, в отряде ли героя, что о нём известно в округе.
+     * p — описание из движка (describe) или блок героя из снимка; known — его известность (NpcLore.reputation).
+     */
+    public static String speaker(Map<String, Object> p, String name, String known) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(name.isEmpty() ? Json.str(p, "name") : name);
+        String g = Json.str(p, "guild");
+        sb.append(" — ").append(g.isEmpty() ? "без гильдии" : "гильдия: " + g);
+        sb.append(Json.bool(p, "female", false) ? ", женщина" : ", мужчина");
+        sb.append("; ").append(looks(p)).append('.');
+        long hp = p.containsKey("hp%") ? Json.num(p, "hp%", 100)
+            : Json.num(p, "hpMax", 0) > 0 ? Json.num(p, "hp", 0) * 100 / Json.num(p, "hpMax", 1) : 100;
+        if (hp < 100) sb.append(" Ранен: здоровье ").append(hp).append("%.");
+        if (Json.bool(p, "party", false)) sb.append(" Идёт с героем (в его отряде).");
+        String att = Json.str(p, "myAtt");
+        if (att.isEmpty()) att = Json.str(p, "attitude");
+        if (!att.isEmpty()) sb.append(" Ты относишься к нему: ").append(att).append('.');
+        if (!known.isEmpty()) sb.append(" Что о нём известно в округе: ").append(known);
         return sb.toString();
     }
 
