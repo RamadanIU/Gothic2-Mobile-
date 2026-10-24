@@ -8034,7 +8034,7 @@ index 4c01505..36cb23a 100644
    }
  
 diff --git a/common/mainwindow.cpp b/common/mainwindow.cpp
-index 52b66d3..a7d6d94 100644
+index 52b66d3..779e118 100644
 --- a/common/mainwindow.cpp
 +++ b/common/mainwindow.cpp
 @@ -1,5 +1,8 @@
@@ -8081,7 +8081,21 @@ index 52b66d3..a7d6d94 100644
  #endif
      player(dialogs,inventory) {
    Gothic::inst().onSettingsChanged.bind(this,&MainWindow::onSettings);
-@@ -210,6 +221,9 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -142,10 +153,12 @@ void MainWindow::setupUi() {
+   addWidget(&inventory);
+   addWidget(&chapter);
+   addWidget(&video);
++  addWidget(&rootMenu);
+ #if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: сенсорный слой - поверх меню игры (его кнопки «Выбрать», «Назад», стрелки); касание мимо
++  // кнопок он не берёт - оно достаётся меню
+   addWidget(&mobileUi);
+ #endif
+-  addWidget(&rootMenu);
+ 
+   rootMenu.setMainMenu();
+ 
+@@ -210,6 +223,9 @@ void MainWindow::paintEvent(PaintEvent& event) {
        p.setBrush(Color(1.0));
  
        drawMsg(p);
@@ -8091,7 +8105,7 @@ index 52b66d3..a7d6d94 100644
  
        auto focus = world->validateFocus(player.focus());
        paintFocus(p,focus,vp);
-@@ -224,6 +238,32 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -224,6 +240,32 @@ void MainWindow::paintEvent(PaintEvent& event) {
            bool showManaBar   = (opt.showManaBar==2) || (opt.showManaBar==1 && (pl->weaponState()==WeaponState::Mage || inventory.isActive()));
            bool showSwimBar   = (opt.showSwimBar==2) || (opt.showSwimBar==1 && pl->isDive());
  
@@ -8124,7 +8138,7 @@ index 52b66d3..a7d6d94 100644
            if(showHealthBar)
              drawBar(p,barHp, 10, h()-10, hp, AlignLeft | AlignBottom);
            if(showManaBar)
-@@ -236,6 +276,7 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -236,6 +278,7 @@ void MainWindow::paintEvent(PaintEvent& event) {
                drawBar(p,barMisc,w()/2,h()-10, (v-t)/(v), AlignHCenter | AlignBottom);
                }
              }
@@ -8132,7 +8146,7 @@ index 52b66d3..a7d6d94 100644
            }
          }
        }
-@@ -257,10 +298,18 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -257,10 +300,18 @@ void MainWindow::paintEvent(PaintEvent& event) {
    const float scale = Gothic::interfaceScale(this);
    if(Gothic::inst().doFrate() && !Gothic::inst().isDesktop()) {
      char fpsT[64]={};
@@ -8151,7 +8165,7 @@ index 52b66d3..a7d6d94 100644
      }
  
    if(!Gothic::inst().isDesktop() && world!=nullptr) {
-@@ -304,6 +353,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
+@@ -304,6 +355,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
    }
  
  void MainWindow::mouseDownEvent(MouseEvent &event) {
@@ -8163,7 +8177,7 @@ index 52b66d3..a7d6d94 100644
    if(event.button<sizeof(mouseP))
      mouseP[event.button]=true;
    auto act     = keycodec.tr(event);
-@@ -312,6 +366,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
+@@ -312,6 +368,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
    }
  
  void MainWindow::mouseUpEvent(MouseEvent &event) {
@@ -8174,7 +8188,7 @@ index 52b66d3..a7d6d94 100644
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
    player.onKeyReleased(act,mapping);
-@@ -333,6 +391,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
+@@ -333,6 +393,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
    }
  
  void MainWindow::processMouse(MouseEvent& event, bool enable) {
@@ -8187,7 +8201,7 @@ index 52b66d3..a7d6d94 100644
    auto center = Point(w()/2,h()/2);
    if(enable && event.pos()!=center && hasFocus()) {
      dMouse += (event.pos()-center);
-@@ -344,21 +408,23 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -344,21 +410,23 @@ void MainWindow::tickMouse(uint64_t dt) {
    auto camera = Gothic::inst().camera();
    if(dialogs.hasContent() || Gothic::inst().isPause() || camera==nullptr || camera->isCutscene()) {
      dMouse = Point();
@@ -8213,7 +8227,7 @@ index 52b66d3..a7d6d94 100644
    dpScaled.x/=float(w());
    dpScaled.y/=float(h());
    if(camLookaroundInverse)
-@@ -375,12 +441,22 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -375,12 +443,22 @@ void MainWindow::tickMouse(uint64_t dt) {
    // Log::d("mouse dMouse   = ", dMouse.x,   ", ", dMouse.y);
    // Log::d("mouse dpScaled = ", dpScaled.x, ", ", dpScaled.y);
  
@@ -8236,7 +8250,7 @@ index 52b66d3..a7d6d94 100644
    }
  
  void MainWindow::onSettings() {
-@@ -390,14 +466,74 @@ void MainWindow::onSettings() {
+@@ -390,7 +468,59 @@ void MainWindow::onSettings() {
    if(zMaxFps>0)
      maxFpsInv = 1000u/uint64_t(zMaxFps); else
      maxFpsInv = 0;
@@ -8254,8 +8268,8 @@ index 52b66d3..a7d6d94 100644
 +  if(!Gothic::inst().isInGame() && !video.isActive())
 +    fps = (fps>0) ? std::min(fps, 60) : 60;
 +  return fps;
-   }
- 
++  }
++
 +void MainWindow::perfReport(uint64_t now) {
 +  if(perf.start==0) {
 +    perf = PerfWindow();
@@ -8291,12 +8305,12 @@ index 52b66d3..a7d6d94 100644
 +
 +  perf = PerfWindow();
 +  perf.start = now;
-+  }
+   }
 +#endif
-+
+ 
  void MainWindow::mouseWheelEvent(MouseEvent &event) {
    if(auto camera = Gothic::inst().camera())
-     camera->changeZoom(event.delta);
+@@ -398,6 +528,14 @@ void MainWindow::mouseWheelEvent(MouseEvent &event) {
    }
  
  void MainWindow::keyDownEvent(KeyEvent &event) {
@@ -8311,7 +8325,7 @@ index 52b66d3..a7d6d94 100644
    if(video.isActive()){
      event.accept();
      video.keyDownEvent(event);
-@@ -495,6 +631,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
+@@ -495,6 +633,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
    }
  
  void MainWindow::keyUpEvent(KeyEvent &event) {
@@ -8327,7 +8341,7 @@ index 52b66d3..a7d6d94 100644
    if(uiKeyUp==&video){
      video.keyUpEvent(event);
      if(event.isAccepted())
-@@ -529,6 +674,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -529,6 +676,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
  
@@ -8339,7 +8353,7 @@ index 52b66d3..a7d6d94 100644
    std::string_view menuEv;
    if(act==KeyCodec::Escape)
      menuEv = Gothic::inst().menuMain();
-@@ -543,6 +693,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -543,6 +695,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
      if(auto pl = Gothic::inst().player())
        rootMenu.setPlayer(*pl);
      clearInput();
@@ -8347,7 +8361,7 @@ index 52b66d3..a7d6d94 100644
      }
    else if(act==KeyCodec::Inventory && !dialogs.isActive()) {
      if(inventory.isActive()) {
-@@ -553,10 +704,136 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -553,10 +706,141 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
          inventory.open(*pl);
        }
      clearInput();
@@ -8359,9 +8373,14 @@ index 52b66d3..a7d6d94 100644
 +
 +#if defined(__MOBILE_PLATFORM__)
 +MainWindow::TouchMode MainWindow::touchMode() const {
-+  if(rootMenu.isActive() || Gothic::inst().checkLoading()!=Gothic::LoadState::Idle)
++  if(Gothic::inst().checkLoading()!=Gothic::LoadState::Idle)
 +    return TouchMode::Hidden;
-+  if(video.isActive() || chapter.isActive())
++  // Ролик поверх меню (заставка из главного меню) получает клавиши первым - «Пропустить»
++  if(video.isActive())
++    return TouchMode::Skip;
++  if(rootMenu.isActive())
++    return TouchMode::Menu;
++  if(chapter.isActive())
 +    return TouchMode::Skip;
 +  if(Gothic::inst().world()==nullptr)
 +    return TouchMode::Hidden;
@@ -8389,8 +8408,8 @@ index 52b66d3..a7d6d94 100644
 +
 +bool MainWindow::touchCanTakeAll() const {
 +  return inventory.canTakeAll();
-+  }
-+
+   }
+ 
 +const char* MainWindow::touchQuickSave() {
 +  auto& g  = Gothic::inst();
 +  auto  pl = g.player();
@@ -8409,8 +8428,8 @@ index 52b66d3..a7d6d94 100644
 +    return "Нельзя сохраниться во время боя";
 +  g.quickSave();
 +  return nullptr;
-   }
- 
++  }
++
 +bool MainWindow::touchQuickSaveInfo(std::string& out) const {
 +  static const char* slot = "save_slot_0.sav";
 +  if(!FileUtil::exists(TextCodec::toUtf16(slot)))
@@ -8485,7 +8504,7 @@ index 52b66d3..a7d6d94 100644
  void MainWindow::focusEvent(FocusEvent &event) {
    if(!event.in)
      return;
-@@ -882,8 +1159,16 @@ uint64_t MainWindow::tick() {
+@@ -882,8 +1166,16 @@ uint64_t MainWindow::tick() {
      Gothic::inst().finishLoading();
      if(st==Gothic::LoadState::FailedLoad)
        rootMenu.setMainMenu();
@@ -8502,7 +8521,7 @@ index 52b66d3..a7d6d94 100644
      return 0;
      }
    else if(st!=Gothic::LoadState::Idle) {
-@@ -949,6 +1234,30 @@ void MainWindow::tickCamera(uint64_t dt) {
+@@ -949,6 +1241,30 @@ void MainWindow::tickCamera(uint64_t dt) {
                               ws==WeaponState::W2H);
    auto       pos          = pl!=nullptr ? pl->cameraBone(camera.isFirstPerson()) : Vec3();
  
@@ -8533,7 +8552,7 @@ index 52b66d3..a7d6d94 100644
    if(!camera.isCutscene() && !camera.isFree()) {
      const bool fs = SystemApi::isFullscreen(hwnd());
      if(!fs && mouseP[Event::ButtonLeft]) {
-@@ -1102,20 +1411,49 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
+@@ -1102,20 +1418,49 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
    auto& thumb = lres.isEmpty() ? tex : lres;
    auto  pm    = device.readPixels(textureCast<const Texture2d&>(thumb));
  
@@ -8583,7 +8602,7 @@ index 52b66d3..a7d6d94 100644
  
    update();
    }
-@@ -1127,6 +1465,11 @@ void MainWindow::onVideo(std::string_view fname) {
+@@ -1127,6 +1472,11 @@ void MainWindow::onVideo(std::string_view fname) {
    }
  
  void MainWindow::onStartLoading() {
@@ -8595,7 +8614,7 @@ index 52b66d3..a7d6d94 100644
    player   .clearInput();
    inventory.onWorldChanged();
    dialogs  .onWorldChanged();
-@@ -1240,16 +1583,37 @@ void MainWindow::render(){
+@@ -1240,16 +1590,37 @@ void MainWindow::render(){
        once player position is updated, animation bones(cameraBone in particular) can be updated
        lastly - camera position
        */
@@ -8633,7 +8652,7 @@ index 52b66d3..a7d6d94 100644
      Resources::resetRecycled(cmdId);
  
      if(video.isActive()) {
-@@ -1274,9 +1638,47 @@ void MainWindow::render(){
+@@ -1274,9 +1645,47 @@ void MainWindow::render(){
      renderer.draw(swapchain[swapchain.currentImage()],enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
      }
      sync = device.submit(cmd);
@@ -8681,7 +8700,7 @@ index 52b66d3..a7d6d94 100644
      auto t = Application::tickCount();
      auto frameTime = maxFpsInv;
      if(!Gothic::inst().isInGame() && !video.isActive())
-@@ -1286,6 +1688,7 @@ void MainWindow::render(){
+@@ -1286,6 +1695,7 @@ void MainWindow::render(){
        Application::sleep(delay);
        t += delay;
        }
@@ -8690,7 +8709,7 @@ index 52b66d3..a7d6d94 100644
      if(Gothic::inst().isBenchmarkMode() && Gothic::inst().world()!=nullptr && Gothic::inst().world()->currentCs()!=nullptr)
        benchmark.push(t-time);
 diff --git a/common/mainwindow.h b/common/mainwindow.h
-index 3fb2713..a49b58a 100644
+index 3fb2713..8933790 100644
 --- a/common/mainwindow.h
 +++ b/common/mainwindow.h
 @@ -19,12 +19,14 @@
@@ -8708,17 +8727,18 @@ index 3fb2713..a49b58a 100644
  #include "graphics/renderer.h"
  #include "ui/dialogmenu.h"
  #include "ui/inventorymenu.h"
-@@ -49,6 +51,46 @@ class MainWindow : public Tempest::Window {
+@@ -49,6 +51,49 @@ class MainWindow : public Tempest::Window {
  
      float uiScale() const;
  
 +#if defined(__MOBILE_PLATFORM__)
 +    // Gothic II Mobile: что показывает сенсорный слой и как он передаёт ввод игре
 +    enum class TouchMode : uint8_t {
-+      Hidden,     // меню игры (у него своё касание), загрузка
++      Hidden,     // загрузка
 +      World,      // мир: джойстик, камера, бой
 +      Navigation, // диалог, сумка, торговля, документ: стрелки, «Выбрать», «Назад»
 +      Skip,       // ролик, заставка главы, сцена: «Пропустить»
++      Menu,       // меню игры, журнал, герой: касание по пунктам - у меню, кнопки - у TouchInput
 +      };
 +    TouchMode touchMode() const;
 +    void      touchKey (Tempest::Event::KeyType k);
@@ -8748,6 +8768,8 @@ index 3fb2713..a49b58a 100644
 +    int       touchInventoryRow() const            { return inventory.touchSlotHeight(); }
 +    auto      touchInventoryAction()               { return inventory.touchActionKind(); }
 +    void      touchInventoryDo()                   { inventory.touchAction(); }
++    // Меню игры: какие кнопки показать
++    MenuTouchInfo touchMenuInfo() const { return rootMenu.touchInfo(); }
 +    // Нижний край полосок здоровья и маны (на телефоне они слева вверху, не под пальцами)
 +    int       touchHudBottom() const;
 +#endif
@@ -8755,7 +8777,7 @@ index 3fb2713..a49b58a 100644
    private:
      void paintEvent     (Tempest::PaintEvent& event) override;
      void resizeEvent    (Tempest::SizeEvent & event) override;
-@@ -89,6 +131,7 @@ class MainWindow : public Tempest::Window {
+@@ -89,6 +134,7 @@ class MainWindow : public Tempest::Window {
      void setFullscreen(bool fs);
  
      void processMouse(Tempest::MouseEvent& event, bool enable);
@@ -8763,7 +8785,7 @@ index 3fb2713..a49b58a 100644
      void tickMouse(uint64_t dt);
      void onSettings();
  
-@@ -152,11 +195,15 @@ class MainWindow : public Tempest::Window {
+@@ -152,11 +198,15 @@ class MainWindow : public Tempest::Window {
      ConsoleWidget             console;
  #if defined(__MOBILE_PLATFORM__)
      TouchInput                mobileUi;
@@ -8779,7 +8801,7 @@ index 3fb2713..a49b58a 100644
      PlayerControl             player;
      uint64_t                  lastTick=0;
  
-@@ -178,4 +225,27 @@ class MainWindow : public Tempest::Window {
+@@ -178,4 +228,27 @@ class MainWindow : public Tempest::Window {
      Fps           fps;
      BenchmarkData benchmark;
      uint64_t      maxFpsInv = 0;
@@ -8975,7 +8997,7 @@ index f08a36e..ecacc3a 100644
  
      std::vector<PScreen>                pscreen;
 diff --git a/common/ui/gamemenu.cpp b/common/ui/gamemenu.cpp
-index 17a2ec6..cf8c4d4 100644
+index 17a2ec6..302e22e 100644
 --- a/common/ui/gamemenu.cpp
 +++ b/common/ui/gamemenu.cpp
 @@ -7,6 +7,7 @@
@@ -8986,22 +9008,670 @@ index 17a2ec6..cf8c4d4 100644
  
  #include "utils/string_frm.h"
  #include "world/objects/npc.h"
-@@ -224,6 +225,15 @@ struct GameMenu::SavNameDialog : Dialog {
+@@ -26,6 +27,16 @@ using namespace Tempest;
  
-   void mouseDownEvent(MouseEvent& e) override { e.accept(); }
-   void mouseUpEvent  (MouseEvent&) override {
+ static const float scriptDiv=8192.0f;
+ 
 +#if defined(__MOBILE_PLATFORM__)
-+    // Gothic II Mobile: клавиатуры нет - пустое имя сохранения заменяется датой и временем
-+    if(text.empty()) {
-+      const std::time_t now = std::time(nullptr);
-+      char buf[32] = {};
-+      std::strftime(buf, sizeof(buf), "%d.%m.%Y %H:%M", std::localtime(&now));
-+      text = buf;
-+      }
++// Gothic II Mobile: клавиатуры нет - имя сохранения - дата и время
++static std::string saveNameNow() {
++  const std::time_t now = std::time(nullptr);
++  char buf[32] = {};
++  std::strftime(buf, sizeof(buf), "%d.%m.%Y %H:%M", std::localtime(&now));
++  return buf;
++  }
 +#endif
-     close();
-     accepted = true;
++
+ struct GameMenu::ListContentDialog : Dialog {
+   ListContentDialog(Item& textView):textView(textView) {
+     setFocusPolicy(ClickFocus);
+@@ -374,6 +385,25 @@ void GameMenu::initItems() {
+       }
+     updateItem(hItems[i]);
      }
++
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: клавиш на телефоне нет - пункт «Управление» (назначение клавиш) скрыт,
++  // пункты под ним поднимаются на его место
++  for(auto& h:hItems) {
++    if(h.name!="MENUITEM_OPT_CONTROLS" || h.handle==nullptr || !h.visible)
++      continue;
++    const int32_t y0 = h.handle->pos_y;
++    int32_t       dy = -1;
++    for(auto& o:hItems)
++      if(o.handle!=nullptr && o.handle->pos_y>y0 && (dy<0 || o.handle->pos_y-y0<dy))
++        dy = o.handle->pos_y-y0;
++    h.visible = false;
++    if(dy>0)
++      for(auto& o:hItems)
++        if(o.handle!=nullptr && o.handle->pos_y>y0)
++          o.handle->pos_y -= dy;
++    }
++#endif
+   }
+ 
+ void GameMenu::paintEvent(PaintEvent &e) {
+@@ -408,6 +438,9 @@ void GameMenu::paintEvent(PaintEvent &e) {
+     auto&       fnt   = Resources::font(scale);
+     fnt.drawText(p, w()-fnt.textSize(appBuild).w-int(25*scale), h()-int(25*scale), appBuild);
+     }
++#if defined(__MOBILE_PLATFORM__)
++  drawLoupe(p);
++#endif
+   }
+ 
+ void GameMenu::drawItem(Painter& p, Item& hItem) {
+@@ -559,11 +592,13 @@ void GameMenu::drawQuestList(Painter& p, Item& it, int x, int y, int w, int h,
+     itY+=sz.h;
+     }
+ 
+-  if(listBegin>it.value) {
++  // Gothic II Mobile: пролистанный пальцем список стоит, где оставили (выделение может уйти за край)
++  it.more = listEnd<listLen;
++  if(listBegin>it.value && &it!=freeScroll) {
+     it.scroll = std::max(it.scroll-1,0);
+     update();
+     }
+-  if(listEnd<=it.value) {
++  if(listEnd<=it.value && &it!=freeScroll) {
+     it.scroll = std::min(it.scroll+1,listLen);
+     update();
+     }
+@@ -609,6 +644,361 @@ GameMenu::Item* GameMenu::touchHitTest(Item& p, Point pos) {
+   return nullptr;
+   }
+ 
++#if defined(__MOBILE_PLATFORM__)
++// Gothic II Mobile: касание в меню (docs/CONTROLS.md, «Меню игры»). Пункты меню игры - строки в 13-30 dp высотой,
++// под пальцем их не видно: палец ведёт подсветку (берётся ближайший пункт), над пальцем - лупа с выделенным,
++// отпустить - выделено, коснуться выделенного - выбрать. Список заданий и запись листаются пальцем,
++// ползунок и переключатель меняются движением вбок. Стрелки, «Выбрать», «Назад» - кнопки TouchInput
++
++Rect GameMenu::chainRect(const Item& p) const {
++  // Пункт с IT_EFFECTS_NEXT - одна строка с соседом (подпись и переключатель): касаться можно любой части
++  Rect  r  = itemRect(p);
++  auto* it = &p;
++  for(int i=0; i<zenkit::IMenu::item_count && (it->handle->flags & zenkit::MenuItemFlag::EFFECTS); ++i) {
++    auto next = const_cast<GameMenu*>(this)->selectedNextItem(const_cast<Item*>(it));
++    if(next==nullptr || next==&p)
++      break;
++    const Rect n  = itemRect(*next);
++    const int  x0 = std::min(r.x,n.x), y0 = std::min(r.y,n.y);
++    const int  x1 = std::max(r.x+r.w,n.x+n.w), y1 = std::max(r.y+r.h,n.y+n.h);
++    r  = Rect(x0,y0,x1-x0,y1-y0);
++    it = next;
++    }
++  return r;
++  }
++
++GameMenu::Item* GameMenu::chainOf(Item& p, zenkit::MenuItemType type) {
++  auto* it = &p;
++  for(int i=0; i<zenkit::IMenu::item_count && it!=nullptr; ++i) {
++    if(it->handle!=nullptr && it->handle->type==type)
++      return it;
++    if(!(it->handle->flags & zenkit::MenuItemFlag::EFFECTS))
++      break;
++    auto next = selectedNextItem(it);
++    if(next==&p)
++      break;
++    it = next;
++    }
++  return nullptr;
++  }
++
++GameMenu::Item* GameMenu::touchItemAt(Point pos) {
++  // Ближайший пункт: внутри строки - тот, чей центр ближе (строки меню перекрываются), рядом - в пределах запаса
++  const float scale = Gothic::interfaceScale(this);
++  const int   slop  = int(14*scale);
++  Item*       best  = nullptr;
++  int         bestD = slop+1, bestC = 0;
++  for(auto& it:hItems) {
++    if(it.handle==nullptr || !it.visible || !isSelectable(it.handle) || !isEnabled(it.handle))
++      continue;
++    const Rect r  = chainRect(it);
++    const int  dx = std::max({r.x-pos.x, 0, pos.x-(r.x+r.w)});
++    const int  dy = std::max({r.y-pos.y, 0, pos.y-(r.y+r.h)});
++    const int  d  = std::max(dx,dy);
++    const int  c  = std::abs(pos.y-(r.y+r.h/2));
++    if(d<bestD || (d==bestD && c<bestC)) {
++      best  = &it;
++      bestD = d;
++      bestC = c;
++      }
++    }
++  return best;
++  }
++
++GameMenu::Item* GameMenu::visibleList() {
++  for(auto& it:hItems)
++    if(it.handle!=nullptr && it.visible && it.handle->type==zenkit::MenuItemType::LISTBOX)
++      return &it;
++  return nullptr;
++  }
++
++int GameMenu::questAt(Item& list, Point pos) {
++  // Та же раскладка строк, что в drawQuestList
++  auto ql = Gothic::inst().questLog();
++  if(ql==nullptr)
++    return -1;
++  const auto& item  = list.handle;
++  const float scale = Gothic::interfaceScale(this);
++  const Rect  r     = itemRect(list);
++  const int   px    = int(float(w()*item->frame_sizex)/scriptDiv);
++  const int   py    = int(float(h()*item->frame_sizey)/scriptDiv);
++  const int   x = r.x+px, y = r.y+py, lw = r.w-2*px, lh = r.h-2*py;
++  if(pos.x<x || pos.x>=x+lw)
++    return -1;
++  const auto  st    = toStatus(item->user_string[0]);
++  auto&       fnt   = Resources::font(item->fontname,Resources::FontType::Normal,scale);
++  int32_t     id    = -1;
++  int         itY   = y;
++  for(size_t i=0; i<ql->questCount(); i++) {
++    auto& quest = ql->quest(ql->questCount()-i-1);
++    if(!isCompatible(quest,st))
++      continue;
++    ++id;
++    if(id<list.scroll)
++      continue;
++    const auto sz = fnt.textSize(lw,quest.name);
++    if(itY+sz.h>lh+y)
++      break;
++    // Строка выше рисуется от itY; немного запаса вверх и вниз - строки тонкие
++    if(pos.y>=itY && pos.y<itY+sz.h+fnt.pixelSize()/2)
++      return id;
++    itY += sz.h;
++    }
++  return -1;
++  }
++
++void GameMenu::touchSelect(Item& it) {
++  if(&it==selectedItem())
++    return;
++  Gothic::inst().emitGlobalSound(Gothic::inst().loadSoundFx("MENU_BROWSE"));
++  setSelection(int(indexOf(it)),1);
++  if(auto s = selectedItem())
++    updateSavThumb(*s);
++  }
++
++void GameMenu::onBeginTouch(Point pos) {
++  touchDown  = true;
++  touchMoved = false;
++  touchTap   = false;
++  touchDrag  = TouchDrag::None;
++  touchList  = nullptr;
++  touchAccum = 0;
++  touchStart = pos;
++  touchLast  = pos;
++
++  // Запись журнала: касание только листает
++  if(logView!=nullptr)
++    return;
++
++  // Список заданий справа: строка - выделить (из раздела сразу в список), выделенная - открыть
++  if(auto list = visibleList(); list!=nullptr && itemRect(*list).contains(pos) &&
++     numQuests(Gothic::inst().questLog(),toStatus(list->handle->user_string[0]))>0) {
++    touchList = list;
++    const int row = questAt(*list,pos);
++    if(row<0)
++      return;
++    touchTap = (logList==list && row==list->value);
++    if(!touchTap && openLogList(*list) && list->value!=row) {
++      Gothic::inst().emitGlobalSound(Gothic::inst().loadSoundFx("MENU_BROWSE"));
++      list->value = row;
++      }
++    update();
++    return;
++    }
++
++  // Мимо списка - к разделам и пунктам: список заданий закрывается
++  if(logList!=nullptr)
++    closeSubView();
++  if(auto it = touchItemAt(pos)) {
++    touchTap = (it==selectedItem());
++    touchSelect(*it);
++    }
++  update();
++  }
++
++void GameMenu::onDragTouch(Point pos) {
++  if(!touchDown)
++    return;
++  const float scale = Gothic::interfaceScale(this);
++  const Point d0    = pos-touchStart;
++  if(!touchMoved && std::max(std::abs(d0.x),std::abs(d0.y))>=int(10*scale)) {
++    touchMoved = true;
++    touchTap   = false;
++    const bool hor = std::abs(d0.x)>std::abs(d0.y);
++    auto*      sel = selectedItem();
++    if(logView!=nullptr)
++      touchDrag = TouchDrag::Text;
++    else if(touchList!=nullptr)
++      touchDrag = TouchDrag::List;
++    else if(hor && sel!=nullptr && chainOf(*sel,zenkit::MenuItemType::SLIDER)!=nullptr)
++      touchDrag = TouchDrag::Slider;
++    else if(hor && sel!=nullptr && chainOf(*sel,zenkit::MenuItemType::CHOICEBOX)!=nullptr)
++      touchDrag = TouchDrag::Choice;
++    else
++      touchDrag = TouchDrag::Hover;
++    }
++
++  const Point d = pos-touchLast;
++  switch(touchDrag) {
++    case TouchDrag::None:
++      break;
++    case TouchDrag::Hover:
++      if(auto it = touchItemAt(pos))
++        touchSelect(*it);
++      break;
++    case TouchDrag::Text: {
++      // Палец вверх - текст вверх (дальше по записи), по строке за высоту шрифта
++      auto&     fnt  = Resources::font(logView->handle->fontname,Resources::FontType::Normal,scale);
++      const int step = std::max(1,fnt.pixelSize());
++      touchAccum += d.y;
++      for(; touchAccum<=-step; touchAccum+=step)
++        logView->scroll++;
++      for(; touchAccum>=step; touchAccum-=step)
++        logView->scroll = std::max(logView->scroll-1,0);
++      break;
++      }
++    case TouchDrag::List: {
++      auto&     fnt  = Resources::font(touchList->handle->fontname,Resources::FontType::Normal,scale);
++      const int step = std::max(1,fnt.pixelSize());
++      touchAccum += d.y;
++      for(; touchAccum<=-step; touchAccum+=step) {
++        if(touchList->more) {
++          touchList->scroll++;
++          touchList->more = false; // до следующей отрисовки - по одной строке
++          freeScroll = touchList;
++          }
++        }
++      for(; touchAccum>=step; touchAccum-=step) {
++        if(touchList->scroll>0) {
++          touchList->scroll--;
++          freeScroll = touchList;
++          }
++        }
++      break;
++      }
++    case TouchDrag::Slider: {
++      // Сдвиг пальца на ширину строки - весь ползунок: тянуть можно с любого места строки
++      auto* sl  = selectedItem()!=nullptr ? chainOf(*selectedItem(),zenkit::MenuItemType::SLIDER) : nullptr;
++      if(sl==nullptr)
++        break;
++      const auto& sec = sl->handle->on_chg_set_option_section;
++      const auto& opt = sl->handle->on_chg_set_option;
++      const int   rw  = itemRect(*sl).w;
++      if(rw<=0 || sec.empty() || opt.empty())
++        break;
++      float v   = Gothic::settingsGetF(sec,opt) + float(d.x)/float(rw);
++      float stp = sliderStep(sl->handle);
++      if(stp>0.f && stp<1.f)
++        v = std::round(std::clamp(v,0.f,1.f)/stp)*stp;
++      Gothic::settingsSetF(sec,opt,std::clamp(v,0.f,1.f));
++      break;
++      }
++    case TouchDrag::Choice: {
++      // Вбок на 40 - следующее значение
++      const int step = int(40*scale);
++      touchAccum += d.x;
++      for(; touchAccum>=step; touchAccum-=step)
++        onKeyboard(KeyCodec::Right);
++      for(; touchAccum<=-step; touchAccum+=step)
++        onKeyboard(KeyCodec::Left);
++      break;
++      }
++    }
++  touchLast = pos;
++  update();
++  }
++
++void GameMenu::onEndTouch(bool activate) {
++  const bool tap  = activate && touchDown && !touchMoved && touchTap;
++  const bool list = touchList!=nullptr;
++  touchDown = false;
++  touchDrag = TouchDrag::None;
++  touchList = nullptr;
++  update();
++  if(!tap)
++    return;
++  // Выбор может закрыть меню - последним действием
++  if(list) {
++    Gothic::inst().emitGlobalSound(Gothic::inst().loadSoundFx("MENU_SELECT"));
++    openLogEntry();
++    } else {
++    onKeyboard(KeyCodec::ActionGeneric);
++    }
++  }
++
++void GameMenu::drawLoupe(Painter& p) {
++  // Пока палец на меню - выделенное крупно над пальцем: под пальцем строки не видно
++  if(!touchDown || logView!=nullptr || touchDrag==TouchDrag::Text || touchDrag==TouchDrag::List)
++    return;
++  std::string txt;
++  if(logList!=nullptr) {
++    if(auto q = questOf(*logList,logList->value))
++      txt = q->name;
++    }
++  else if(auto sel = selectedItem(); sel!=nullptr && sel->handle!=nullptr) {
++    txt = sel->handle->text[0];
++    // Подпись и переключатель - одна строка: «Субтитры: вкл»
++    if(auto ch = chainOf(*sel,zenkit::MenuItemType::CHOICEBOX); ch!=nullptr && ch!=sel) {
++      std::vector<char> buf;
++      getText(*ch,buf);
++      if(buf.size()>1 && buf[0]!='\0')
++        txt = txt + ": " + buf.data();
++      }
++    }
++  for(auto& c:txt)
++    if(c=='\n')
++      c = ' ';
++  if(txt.empty())
++    return;
++
++  const float scale = Gothic::interfaceScale(this);
++  auto&       fnt   = Resources::font(Resources::FontType::Hi,scale*1.5f);
++  const auto  sz    = fnt.textSize(txt);
++  const int   pad   = int(10*scale);
++  const int   bw    = sz.w+2*pad, bh = fnt.pixelSize()+2*pad;
++  // Над пальцем, в пределах экрана (меню бывает меньше экрана - координаты экрана через x(), y())
++  int bx = touchLast.x-bw/2;
++  int by = touchLast.y-int(70*scale)-bh;
++  bx = std::max(std::min(bx,owner.w()-x()-bw-pad),-x()+pad);
++  if(by<-y()+pad)
++    by = touchLast.y+int(50*scale);
++  p.setBrush(Color(0.36f,0.27f,0.16f,0.95f));
++  p.drawRect(bx-2,by-2,bw+4,bh+4);
++  p.setBrush(Color(0.07f,0.055f,0.045f,0.94f));
++  p.drawRect(bx,by,bw,bh);
++  p.setBrush(Color(1.f));
++  fnt.drawText(p,bx+pad,by+pad+fnt.pixelSize(),txt);
++  }
++
++MenuTouchInfo GameMenu::touchInfo() {
++  MenuTouchInfo ret;
++  if(logView!=nullptr) {
++    ret.nav = true;
++    ret.sub = true;
++    return ret;
++    }
++  if(logList!=nullptr) {
++    ret.nav    = true;
++    ret.sub    = true;
++    ret.action = "Открыть";
++    return ret;
++    }
++
++  int num = 0;
++  for(auto& it:hItems)
++    if(it.handle!=nullptr && it.visible && isSelectable(it.handle) && isEnabled(it.handle))
++      ++num;
++  ret.nav = num>1;
++
++  auto sel = selectedItem();
++  if(sel==nullptr || sel->handle==nullptr || !isSelectable(sel->handle) || !isEnabled(sel->handle))
++    return ret;
++  ret.action = "Выбрать";
++  if(chainOf(*sel,zenkit::MenuItemType::SLIDER)!=nullptr) {
++    ret.hor    = true;
++    ret.action = nullptr; // ползунок - стрелками и пальцем вбок
++    }
++  else if(chainOf(*sel,zenkit::MenuItemType::CHOICEBOX)!=nullptr) {
++    ret.hor    = true;
++    ret.action = "Изменить";
++    }
++
++  for(size_t i=0; i<zenkit::IMenuItem::select_action_count; ++i) {
++    const auto& str = sel->handle->on_sel_action_s[i];
++    if(str=="SAVEGAME_SAVE")
++      ret.action = "Сохранить";
++    else if(str=="SAVEGAME_LOAD")
++      ret.action = sel->savHdr.version!=0 ? "Загрузить" : nullptr;
++    else if(str.find("EFFECTS ")==0) {
++      // Раздел журнала: открыть список, если в нём что-то есть
++      auto list = visibleList();
++      ret.action = (list!=nullptr && numQuests(Gothic::inst().questLog(),toStatus(list->handle->user_string[0]))>0) ?
++                   "Открыть" : nullptr;
++      }
++    }
++  return ret;
++  }
++#else
+ void GameMenu::onBeginTouch(Point pos) {
+   touchSlider = nullptr;
+   touchActive = false;
+@@ -666,7 +1056,108 @@ void GameMenu::onEndTouch(bool activate) {
+     onKeyboard(KeyCodec::ActionGeneric);
+   }
+ 
++#endif
++
++uint32_t GameMenu::indexOf(const Item& it) const {
++  return uint32_t(&it-hItems);
++  }
++
++const QuestLog::Quest* GameMenu::questOf(const Item& list, int32_t id) const {
++  auto ql = Gothic::inst().questLog();
++  if(ql==nullptr || list.handle==nullptr)
++    return nullptr;
++  const auto st  = toStatus(list.handle->user_string[0]);
++  int32_t    num = 0;
++  for(size_t i=0; i<ql->questCount(); ++i) {
++    auto& quest = ql->quest(ql->questCount()-i-1);
++    if(!isCompatible(quest,st))
++      continue;
++    if(num==id)
++      return &quest;
++    ++num;
++    }
++  return nullptr;
++  }
++
++bool GameMenu::openLogList(Item& list) {
++  const int32_t num = numQuests(Gothic::inst().questLog(),toStatus(list.handle->user_string[0]));
++  if(num<=0)
++    return false;
++  if(logList!=&list) {
++    if(logList==nullptr)
++      logPrev = curItem;
++    logList    = &list;
++    freeScroll = nullptr;
++    curItem    = indexOf(list); // подсветка строки - у выделенного списка (drawQuestList)
++    }
++  list.value = std::clamp(list.value,0,num-1);
++  update();
++  return true;
++  }
++
++void GameMenu::openLogEntry() {
++  if(logList==nullptr)
++    return;
++  auto* view  = selectedContentItem(logList);
++  auto* quest = questOf(*logList,logList->value);
++  if(view==nullptr || quest==nullptr)
++    return;
++  std::string text;
++  for(size_t i=0; i<quest->entry.size(); ++i) {
++    text += quest->entry[i];
++    if(i+1<quest->entry.size())
++      text+="\n---\n";
++    }
++  view->scroll          = 0;
++  view->handle->text[0] = text;
++  view->visible         = true;
++  logView               = view;
++  curItem               = indexOf(*view);
++  update();
++  }
++
++bool GameMenu::closeSubView() {
++  if(logView!=nullptr) {
++    logView->visible = false;
++    logView          = nullptr;
++    curItem          = logList!=nullptr ? indexOf(*logList) : logPrev;
++    update();
++    return true;
++    }
++  if(logList!=nullptr) {
++    logList    = nullptr;
++    freeScroll = nullptr;
++    curItem    = logPrev;
++    update();
++    return true;
++    }
++  return false;
++  }
++
+ void GameMenu::onKeyboard(KeyCodec::Action key) {
++  // Gothic II Mobile: открыта запись журнала - стрелки листают её
++  if(logView!=nullptr) {
++    if(key==KeyCodec::Forward && logView->scroll>0)
++      logView->scroll--;
++    if(key==KeyCodec::Back)
++      logView->scroll++; // ограничивается при отрисовке
++    update();
++    return;
++    }
++  // Открыт список заданий: стрелки - выделение, «Выбрать» - открыть запись
++  if(logList!=nullptr) {
++    const int32_t num = numQuests(Gothic::inst().questLog(),toStatus(logList->handle->user_string[0]));
++    if((key==KeyCodec::Forward && logList->value>0) || (key==KeyCodec::Back && logList->value+1<num)) {
++      Gothic::inst().emitGlobalSound(Gothic::inst().loadSoundFx("MENU_BROWSE"));
++      logList->value += (key==KeyCodec::Forward) ? -1 : +1;
++      freeScroll = nullptr; // выделение снова ведёт список за собой
++      }
++    if(key==KeyCodec::ActionGeneric)
++      openLogEntry();
++    update();
++    return;
++    }
++
+   auto sel = selectedItem();
+   if(sel!=nullptr && isHorSelectable(sel->handle)) {
+     if(key==KeyCodec::Left)
+@@ -777,7 +1268,7 @@ void GameMenu::setSelection(int desired, int seek) {
+     cur%=zenkit::IMenu::item_count;
+ 
+     auto& it=hItems[cur].handle;
+-    if(isSelectable(it) && isEnabled(it)){
++    if(isSelectable(it) && isEnabled(it) && hItems[cur].visible){
+       curItem=cur;
+       for(size_t i=0;i<zenkit::IMenuItem::select_action_count;++i)
+         if(it->on_sel_action[i]==int(zenkit::MenuItemSelectAction::EXECUTE_COMMANDS))
+@@ -885,6 +1376,11 @@ void GameMenu::execSingle(Item &it, int slideDx, KeyCodec::Action hint) {
+   if(item->type==zenkit::MenuItemType::INPUT && slideDx==0) {
+     ctrlInput = &it;
+     if(item->on_chg_set_option.empty()) {
++#if defined(__MOBILE_PLATFORM__)
++      // Gothic II Mobile: окно ввода имени ждало клавиатуру и касание - сразу сохраняем с датой и временем
++      item->text[0] = saveNameNow();
++      ctrlInput = nullptr;
++#else
+       SavNameDialog dlg{item->text[0]};
+       if(it.savHdr.version==0)
+         dlg.text = "";
+@@ -893,6 +1389,7 @@ void GameMenu::execSingle(Item &it, int slideDx, KeyCodec::Action hint) {
+       ctrlInput = nullptr;
+       if(!dlg.accepted)
+         return;
++#endif
+       }
+     else if(hint==KeyCodec::K_Del) {
+       keyCodec.clear(item->on_chg_set_option_section, item->on_chg_set_option);
+@@ -1035,6 +1532,12 @@ void GameMenu::execCommands(std::string str, bool isClick, KeyCodec::Action hint
+       auto& i = hItems[id];
+       if(i.handle != nullptr && i.handle->type==zenkit::MenuItemType::LISTBOX) {
+         i.visible = (i.name==arg0);
++#if defined(__MOBILE_PLATFORM__)
++        if(i.visible && isClick) {
++          openLogList(i);
++          return;
++          }
++#else
+         if(i.visible && isClick) {
+           const uint32_t prev = curItem;
+           curItem = id;
+@@ -1047,6 +1550,7 @@ void GameMenu::execCommands(std::string str, bool isClick, KeyCodec::Action hint
+           dlg.exec();
+           curItem = prev;
+           }
++#endif
+         }
+       }
+     }
+diff --git a/common/ui/gamemenu.h b/common/ui/gamemenu.h
+index 73b7c75..219a4b2 100644
+--- a/common/ui/gamemenu.h
++++ b/common/ui/gamemenu.h
+@@ -18,6 +18,7 @@ class Gothic;
+ class MenuRoot;
+ class Npc;
+ class GthFont;
++struct MenuTouchInfo;
+ 
+ class GameMenu : public Tempest::Widget {
+   public:
+@@ -34,6 +35,13 @@ class GameMenu : public Tempest::Widget {
+     void onTick();
+     void processMusicTheme();
+ 
++    // Gothic II Mobile: «Назад» в журнале - закрыть запись, затем список заданий; false - закрывать само меню
++    bool closeSubView();
++#if defined(__MOBILE_PLATFORM__)
++    // Gothic II Mobile: какие сенсорные кнопки показать поверх меню (TouchInput, docs/CONTROLS.md, «Меню игры»)
++    MenuTouchInfo touchInfo();
++#endif
++
+     KeyCodec::Action keyClose() const { return kClose; }
+ 
+   protected:
+@@ -61,6 +69,7 @@ class GameMenu : public Tempest::Widget {
+       int32_t                             value   = 0;
+       int32_t                             scroll  = 0;
+       bool                                visible = true;
++      bool                                more    = false; // Gothic II Mobile: у списка есть строки ниже видимых
+       };
+ 
+     MenuRoot&                             owner;
+@@ -86,6 +95,39 @@ class GameMenu : public Tempest::Widget {
+ 
+     KeyCodec::Action                      kClose = KeyCodec::Escape;
+ 
++    // Gothic II Mobile: журнал без вложенных окон (окно забирает все касания, в том числе у кнопок):
++    // открытый список заданий и запись - состояния самого меню
++    Item*                                 logList = nullptr;
++    Item*                                 logView = nullptr;
++    uint32_t                              logPrev = 0;     // раздел, к которому вернуться из списка
++    Item*                                 freeScroll = nullptr; // список пролистан пальцем: выделение не тянет его назад
++
++#if defined(__MOBILE_PLATFORM__)
++    // Gothic II Mobile: касание. Палец ведёт подсветку по пунктам, касание выделенного - выбор;
++    // в списке и записи - листать, по ползунку и переключателю вбок - менять значение
++    enum class TouchDrag : uint8_t { None, Hover, List, Text, Slider, Choice };
++    TouchDrag                             touchDrag  = TouchDrag::None;
++    Tempest::Point                        touchStart, touchLast;
++    bool                                  touchDown  = false;
++    bool                                  touchMoved = false;
++    bool                                  touchTap   = false; // коснулись уже выделенного - отпустить = выбрать
++    Item*                                 touchList  = nullptr;
++    int                                   touchAccum = 0;
++
++    Item*                                 touchItemAt(Tempest::Point pos);
++    Tempest::Rect                         chainRect(const Item& it) const;
++    Item*                                 chainOf(Item& it, zenkit::MenuItemType type);
++    Item*                                 visibleList();
++    int                                   questAt(Item& list, Tempest::Point pos);
++    void                                  touchSelect(Item& it);
++    void                                  drawLoupe(Tempest::Painter& p);
++#endif
++
++    bool                                  openLogList(Item& list);
++    void                                  openLogEntry();
++    const QuestLog::Quest*                questOf(const Item& list, int32_t id) const;
++    uint32_t                              indexOf(const Item& it) const;
++
+     void                                  drawItem(Tempest::Painter& p, Item& it);
+     void                                  drawSlider(Tempest::Painter& p, Item& it, int x, int y, int w, int h);
+     void                                  drawQuestList(Tempest::Painter& p, Item& it, int x, int y, int w, int h,
 diff --git a/common/ui/inventorymenu.cpp b/common/ui/inventorymenu.cpp
 index b532ab8..5f2f4c3 100644
 --- a/common/ui/inventorymenu.cpp
@@ -9266,6 +9936,96 @@ index d4ddb41..e6cbee7 100644
  
      std::unique_ptr<Page>     pageOth, pagePl;
      PageLocal                 pageLocal[2];
+diff --git a/common/ui/menuroot.cpp b/common/ui/menuroot.cpp
+index 7286715..1579db8 100644
+--- a/common/ui/menuroot.cpp
++++ b/common/ui/menuroot.cpp
+@@ -126,6 +126,28 @@ bool MenuRoot::hasVersionLine() const {
+   return showVersionHint;
+   }
+ 
++void MenuRoot::back() {
++  // Gothic II Mobile: в журнале «Назад» сначала закрывает запись и список заданий, затем само меню
++  if(current!=nullptr && current->closeSubView())
++    return;
++  popMenu();
++  }
++
++#if defined(__MOBILE_PLATFORM__)
++MenuTouchInfo MenuRoot::touchInfo() const {
++  if(current==nullptr)
++    return MenuTouchInfo();
++  auto ret = current->touchInfo();
++  if(ret.sub || !menuStack.empty())
++    ret.back = "Назад";
++  else if(Gothic::inst().isInGame())
++    ret.back = current->keyClose()==KeyCodec::Escape ? "К игре" : "Закрыть";
++  else
++    ret.back = nullptr; // главное меню до начала игры: возвращаться некуда
++  return ret;
++  }
++#endif
++
+ void MenuRoot::mouseDownEvent(MouseEvent& event) {
+   // Only the first pointer interacts; ignoring others keeps their drag and up events away.
+   if(current==nullptr || event.mouseID!=0) {
+@@ -133,7 +155,7 @@ void MenuRoot::mouseDownEvent(MouseEvent& event) {
+     return;
+     }
+   if(event.button==Event::ButtonRight) {
+-    popMenu();
++    back();
+     return;
+     }
+ #if defined(__MOBILE_PLATFORM__)
+@@ -233,7 +255,9 @@ void MenuRoot::keyDownEvent(KeyEvent &e) {
+       current->onKeyboard(KeyCodec::ActionGeneric);
+     else if(e.key==Event::K_Delete)
+       current->onKeyboard(KeyCodec::K_Del);
+-    else if(e.key==Event::K_ESCAPE || keyCodec.tr(e)==current->keyClose())
++    else if(e.key==Event::K_ESCAPE)
++      back();
++    else if(keyCodec.tr(e)==current->keyClose())
+       popMenu();
+     }
+   }
+diff --git a/common/ui/menuroot.h b/common/ui/menuroot.h
+index fbb1b8a..807b708 100644
+--- a/common/ui/menuroot.h
++++ b/common/ui/menuroot.h
+@@ -10,6 +10,15 @@
+ class GameMenu;
+ class Npc;
+ 
++// Gothic II Mobile: сенсорные кнопки поверх меню игры (TouchInput): что показать
++struct MenuTouchInfo {
++  const char* action = nullptr; // подпись кнопки выбора (UTF-8); nullptr - кнопки нет
++  const char* back   = nullptr; // подпись «Назад»; nullptr - некуда (главное меню вне игры)
++  bool        nav    = false;   // стрелки вверх-вниз: есть что выделять или листать
++  bool        hor    = false;   // стрелки влево-вправо: выделен ползунок или переключатель
++  bool        sub    = false;   // открыт список заданий или запись журнала
++  };
++
+ class MenuRoot : public Tempest::Widget {
+   public:
+     MenuRoot(KeyCodec& keyCodec);
+@@ -27,6 +36,9 @@ class MenuRoot : public Tempest::Widget {
+ 
+     void showVersion(bool s);
+     bool hasVersionLine() const;
++#if defined(__MOBILE_PLATFORM__)
++    MenuTouchInfo touchInfo() const;
++#endif
+ 
+     void mouseWheelEvent(Tempest::MouseEvent& event) override;
+     void keyRepeatEvent (Tempest::KeyEvent&   event) override;
+@@ -53,4 +65,6 @@ class MenuRoot : public Tempest::Widget {
+     Tempest::Point                         touchStart;
+     bool                                   touchMoved = false;
+ #endif
++
++    void back();
+   };
 diff --git a/common/ui/touchicons.cpp b/common/ui/touchicons.cpp
 new file mode 100644
 index 0000000..b59b937
@@ -10162,10 +10922,10 @@ index 0000000..8538a5a
 +    const Tempest::Texture2d& cached(uint64_t key, const std::function<Tempest::Texture2d()>& make);
 +  };
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f1730..533f0e9 100644
+index d9f1730..45c5348 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,2023 @@
+@@ -1,41 +1,2057 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
@@ -10229,6 +10989,8 @@ index d9f1730..533f0e9 100644
 +    return Ui::Hidden;
 +  if(m==M::Skip)
 +    return Ui::Skip;
++  if(m==M::Menu)
++    return Ui::Menu;
 +  if(owner.touchIsLockPick())
 +    return Ui::LockPick;
 +  if(m==M::World) {
@@ -10308,8 +11070,15 @@ index d9f1730..533f0e9 100644
 +    case C_Skip:    return pill(W - m - pw, 12*d, pw, ph);
 +    case C_Up:      return round(m + 26*d, H - m - ph - 16*d - 26*d - 62*d, 26*d);
 +    case C_Down:    return round(m + 26*d, H - m - ph - 16*d - 26*d, 26*d);
-+    case C_Left:    return round(m + 36*d,         H - m - ph - 20*d - 36*d, 36*d);
-+    case C_Right:   return round(m + 36*d + 88*d,  H - m - ph - 20*d - 36*d, 36*d);
++    // Взлом - слева внизу; в меню игры (ползунки, переключатели) - над «Выбрать», под правым пальцем
++    case C_Left:
++      if(currentUi()==Ui::Menu)
++        return round(W - m - pw + 30*d, H - m - ph - 16*d - 30*d, 30*d);
++      return round(m + 36*d,         H - m - ph - 20*d - 36*d, 36*d);
++    case C_Right:
++      if(currentUi()==Ui::Menu)
++        return round(W - m - 30*d,      H - m - ph - 16*d - 30*d, 30*d);
++      return round(m + 36*d + 88*d,  H - m - ph - 20*d - 36*d, 36*d);
 +    case C_None:
 +    case C_Joy:
 +    case C_Look:
@@ -10356,21 +11125,29 @@ index d9f1730..533f0e9 100644
 +      }
 +    case C_Up:
 +    case C_Down:
++      if(ui==Ui::Menu)
++        return owner.touchMenuInfo().nav;
 +      return ui==Ui::Dialog && owner.touchDialogChoices();
 +    case C_Select:
 +      if(ui==Ui::Dialog)
 +        return owner.touchDialogChoices();
 +      if(ui==Ui::Inventory)
 +        return owner.touchInventoryAction()!=InventoryMenu::TouchAction::None;
++      if(ui==Ui::Menu)
++        return owner.touchMenuInfo().action!=nullptr;
 +      return false;
 +    case C_Back:
 +      if(ui==Ui::Dialog)
 +        return owner.touchDialogTalking();
++      if(ui==Ui::Menu)
++        return owner.touchMenuInfo().back!=nullptr;
 +      return ui==Ui::Inventory || ui==Ui::Document || ui==Ui::LockPick;
 +    case C_TakeAll:
 +      return ui==Ui::Inventory && owner.touchCanTakeAll();
 +    case C_Left:
 +    case C_Right:
++      if(ui==Ui::Menu)
++        return owner.touchMenuInfo().hor;
 +      return ui==Ui::LockPick;
 +    case C_Skip:
 +      return ui==Ui::Skip;
@@ -10605,6 +11382,10 @@ index d9f1730..533f0e9 100644
 +      case C_Right:  drawRound(p,b,TouchIcons::I_Right, pressed,false,1.f); break;
 +      case C_Select: {
 +        const char* txt = "Выбрать";
++        if(ui==Ui::Menu) {
++          if(auto a = owner.touchMenuInfo().action)
++            txt = a;
++          }
 +        if(ui==Ui::Inventory) {
 +          switch(owner.touchInventoryAction()) {
 +            case InventoryMenu::TouchAction::Use:  txt = "Применить"; break;
@@ -10625,6 +11406,10 @@ index d9f1730..533f0e9 100644
 +          txt = "Пропуск";
 +        else if(ui==Ui::LockPick)
 +          txt = "Отойти";
++        else if(ui==Ui::Menu) {
++          if(auto bk = owner.touchMenuInfo().back)
++            txt = bk;
++          }
 +        drawPill(p,b.rect,ui==Ui::Dialog ? TouchIcons::I_Skip : TouchIcons::I_Back,toCp1251(txt),pressed);
 +        break;
 +        }
@@ -10752,7 +11537,9 @@ index d9f1730..533f0e9 100644
 +  p.drawRect(c.x-ds/2, c.y-ds/2, ds, ds, 0,0,d.w(),d.h());
 +  drawLabel(p, std::to_string(std::min<size_t>(n,99)), c, true, 0.75f);
 +  }
-+
+ 
+-  p.setBrush(Color(1,1,1, 0.2f));
+-  p.drawRect(10, h()-10 - 100, 100, 100);
 +void TouchInput::drawHoldRing(Painter& p, const Button& b, float k) {
 +  k = std::clamp(k,0.f,1.f);
 +  const int   n   = 28;
@@ -10807,9 +11594,7 @@ index d9f1730..533f0e9 100644
 +  kb.r = kr;
 +  drawRound(p, kb, TouchIcons::I_Dot, false, active && joyRun, alpha+0.15f);
 +  }
- 
--  p.setBrush(Color(1,1,1, 0.2f));
--  p.drawRect(10, h()-10 - 100, 100, 100);
++
 +void TouchInput::drawTarget(Painter& p) {
 +  auto tg  = ctrl.touchTarget();
 +  auto cam = Gothic::inst().camera();
@@ -10832,11 +11617,8 @@ index d9f1730..533f0e9 100644
 +  drawGlyph(p, TouchIcons::I_Down, Point(ix, iy-int(26*d)+bob), gs, GoldBright);
 +  if(ctrl.focus().npc!=tg)
 +    drawLabel(p, tg->displayName(), Point(ix, iy-int(44*d)+bob), false, 0.85f);
-   }
- 
--void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
--  auto r = Rect(10, h()-10-100, 100, 100);
--  if(!r.contains(e.pos())) {
++  }
++
 +void TouchInput::drawSquad(Painter& p) {
 +  if(squad.empty())
 +    return;
@@ -11058,8 +11840,11 @@ index d9f1730..533f0e9 100644
 +    w->script().squadOrder(ord, ord==GameScript::SquadOrder::Attack ? squadTarget() : nullptr);
 +    Gothic::inst().onPrint(toCp1251("Отряд: ") + it.label);
 +    }
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
+-  auto r = Rect(10, h()-10-100, 100, 100);
+-  if(!r.contains(e.pos())) {
 +void TouchInput::drawWheel(Painter& p) {
 +  const auto  c  = wheelCenter();
 +  const int   R  = wheelRadius();
@@ -11125,6 +11910,12 @@ index d9f1730..533f0e9 100644
 +    }
 +
 +  Ctl c = hitTest(e.pos());
++  if(c==C_None && ui==Ui::Menu) {
++    // Меню игры: касание по пунктам, журналу, ползункам - у самого меню (слой под нами)
++    f = Finger();
++    e.ignore();
++    return;
++    }
 +  if(c==C_None) {
 +    switch(ui) {
 +      case Ui::World: {
@@ -11146,6 +11937,7 @@ index d9f1730..533f0e9 100644
 +      case Ui::Travel:
 +      case Ui::Confirm:
 +      case Ui::Fade:
++      case Ui::Menu:
 +        // Касание мимо кнопок поглощается: случайный тап ничего не сделает
 +        c = C_Absorb;
 +        break;
@@ -11159,8 +11951,14 @@ index d9f1730..533f0e9 100644
 +  if(c!=C_Joy && c!=C_Look && c!=C_List && c!=C_Absorb)
 +    timer.start(40);
 +  update();
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
+-  auto dp = e.pos() - mpos;
+-  mpos = e.pos();
+-  if(std::abs(dp.x)>0) {
+-    const float scale = 4.f;
+-    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
 +void TouchInput::mouseDragEvent(MouseEvent& e) {
 +  if(e.mouseID<0 || size_t(e.mouseID)>=fingers.size())
 +    return;
@@ -11373,8 +12171,8 @@ index d9f1730..533f0e9 100644
 +    case C_Left:
 +    case C_Right:
 +      sendNav(c);
-+      // Держать стрелку - листать список
-+      if(c==C_Up || c==C_Down) {
++      // Держать стрелку - листать список; в меню влево-вправо - двигать ползунок
++      if(c==C_Up || c==C_Down || currentUi()==Ui::Menu) {
 +        repeatCtl  = c;
 +        repeatNext = Application::tickCount()+400;
 +        }
@@ -11524,6 +12322,8 @@ index d9f1730..533f0e9 100644
 +      break;
 +    case C_Up:
 +    case C_Down:
++    case C_Left:
++    case C_Right:
 +      if(repeatCtl==c)
 +        repeatCtl = C_None;
 +      break;
@@ -11851,14 +12651,8 @@ index d9f1730..533f0e9 100644
 +static Tempest::Vec3 cityCenter() {
 +  auto& ci = TravelPoints::info(TravelPoints::M_City);
 +  return Tempest::Vec3(float(ci.left+ci.right)*0.5f, 0.f, float(ci.top+ci.bottom)*0.5f);
-   }
- 
--void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
--  auto dp = e.pos() - mpos;
--  mpos = e.pos();
--  if(std::abs(dp.x)>0) {
--    const float scale = 4.f;
--    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
++  }
++
 +void TouchInput::mapTap(Point p) {
 +  const auto  l    = mapLayout();
 +  const float d    = dp();
@@ -12207,10 +13001,10 @@ index d9f1730..533f0e9 100644
 +  drawPill(p, confirmButton(false), TouchIcons::I_Back, toCp1251("Отмена"),    false);
    }
 diff --git a/common/ui/touchinput.h b/common/ui/touchinput.h
-index f46becc..cf89ab6 100644
+index f46becc..026ae7f 100644
 --- a/common/ui/touchinput.h
 +++ b/common/ui/touchinput.h
-@@ -1,21 +1,251 @@
+@@ -1,21 +1,254 @@
  #pragma once
  
  #include <Tempest/Widget>
@@ -12238,6 +13032,8 @@ index f46becc..cf89ab6 100644
 +// сохранение; подержать - быстрая загрузка), «Меню».
 +// Слева вверху - полоски игры и состояние отряда. Диалог: касание по реплике, «Выбрать», «Пропуск».
 +// Сумка, сундук, торговля: касание по ячейке, листать пальцем, «Взять всё». Взлом: влево/вправо.
++// Меню игры, журнал, сохранения: палец ведёт подсветку по пунктам (касание мимо кнопок отдаётся меню - GameMenu),
++// стрелки вверх-вниз слева, влево-вправо (ползунки, переключатели) и «Выбрать» справа, «Назад» слева внизу.
  class TouchInput : public Tempest::Widget {
    public:
 -    TouchInput(PlayerControl& ctrl);
@@ -12310,6 +13106,7 @@ index f46becc..cf89ab6 100644
 +      Travel,  // карта «Путь»
 +      Confirm, // подтверждение быстрой загрузки
 +      Fade,    // мгновенное перемещение: экран темнеет
++      Menu,    // меню игры, журнал, герой: пункты - касанием по меню, здесь - стрелки, «Выбрать», «Назад»
 +      };
 +
 +    // Карта «Путь»: где что на экране
@@ -12846,7 +13643,7 @@ index f8badbd..a918201 100644
    while(true) {
      {
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..3fead12 100644
+index e015398..b072561 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -4,10 +4,12 @@
@@ -12916,19 +13713,24 @@ index e015398..3fead12 100644
    auto at = currentTaPoint();
    if(at==nullptr)
      return false;
-@@ -593,9 +617,23 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
+@@ -593,9 +617,28 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
    }
  
  void Npc::onNoHealth(bool death, HitSound sndMask) {
 +  // Gothic II Mobile: живой NPC (Геральт) тоже не погибает - только теряет сознание
 +  const bool hired = owner.script().isHired(*this) || owner.script().aiNpc().isAiNpc(*this);
-+  if(death && hired) {
++  // Gothic II Mobile: бессмертный человек - тоже: его можно побить до потери сознания и обыскать, но не убить -
++  // ни добиванием, ни стрелой, ни заклинанием, ни ударом врага, которому положено убивать (isKnockoutOnly)
++  if(death && (hired || isKnockoutOnly())) {
 +    // Gothic II Mobile: нанятый напарник не погибает - теряет сознание, потом встаёт, пьёт зелья и
-+    // идёт дальше (ZS_Unconscious -> ZS_HealSelf). В воде без сознания утонул бы - там просто держится
-+    if(isSwim() || isDive()) {
++    // идёт дальше (ZS_Unconscious -> ZS_HealSelf). В воде без сознания утонул бы - там просто держится.
++    // Уже лежащий (горит, тонет) - остаётся без сознания, сцена падения не повторяется
++    if(isSwim() || isDive() || isUnconscious()) {
 +      hnpc->attribute[ATR_HITPOINTS] = std::max(hnpc->attribute[ATR_HITPOINTS],1);
 +      return;
 +      }
++    if(!hired)
++      Tempest::Log::i("[g2m] immortal \"",displayName(),"\" knocked out by ",lastHit!=nullptr ? lastHit->displayName() : "-");
 +    death = false;
 +    }
    invent.switchActiveWeapon(*this,Item::NSLOT);
@@ -12942,7 +13744,17 @@ index e015398..3fead12 100644
    dropTorch();
    visual.setToFightMode(WeaponState::NoWeapon);
    updateWeaponSkeleton();
-@@ -1555,7 +1593,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
+@@ -1247,7 +1290,8 @@ void Npc::changeAttribute(Attribute a, int32_t val, bool allowUnconscious) {
+       return;
+     if(isPlayer() && owner.currentCs()!=nullptr)
+       return;
+-    if(isImmortal())
++    // Gothic II Mobile: у бессмертных людей жизни уходят как у всех - упав без сознания, они не умирают (onNoHealth)
++    if(isImmortal() && !isKnockoutOnly())
+       return;
+     }
+ 
+@@ -1555,7 +1599,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
    }
  
  bool Npc::implAttack(uint64_t dt) {
@@ -12951,7 +13763,7 @@ index e015398..3fead12 100644
      return false;
  
    if(currentTarget->isDown()){
-@@ -1580,8 +1618,11 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1580,8 +1624,11 @@ bool Npc::implAttack(uint64_t dt) {
      return true;
      }
  
@@ -12965,7 +13777,7 @@ index e015398..3fead12 100644
  
    if(bs==BS_LIE) {
      setAnim(Npc::Anim::Idle);
-@@ -1882,6 +1923,10 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1882,6 +1929,10 @@ bool Npc::implAttack(uint64_t dt) {
  bool Npc::implAiTick(uint64_t dt) {
    // Note AI-action queue takes priority, test case: Vatras pray at night
    if(aiQueue.size()==0) {
@@ -12976,7 +13788,7 @@ index e015398..3fead12 100644
      tickRoutine();
      if(aiQueue.size()>0)
        nextAiAction(aiQueue,dt);
-@@ -2077,6 +2122,9 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2077,6 +2128,9 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
  
    if(!isSpell || splCat==SpellCategory::SPELL_BAD) {
      perceptionProcess(other,this,0,PERC_ASSESSDAMAGE);
@@ -12986,7 +13798,7 @@ index e015398..3fead12 100644
      fghAlgo.onTakeHit();
      implFaiWait(0);
      }
-@@ -2529,6 +2577,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2529,6 +2583,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -12998,7 +13810,7 @@ index e015398..3fead12 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -2593,14 +2646,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2593,14 +2652,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_EquipArmor:
        invent.equipArmor(act.i0,*this);
        break;
@@ -13021,7 +13833,7 @@ index e015398..3fead12 100644
        break;
      case AI_UseMob: {
        if(act.i0<0) {
-@@ -3504,6 +3562,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -3504,6 +3568,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -13030,18 +13842,18 @@ index e015398..3fead12 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +3853,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +3859,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
-+  // Gothic II Mobile: нанятого напарника и живого NPC добить нельзя - они только без сознания
-+  if(owner.script().isHired(oth) || owner.script().aiNpc().isAiNpc(oth))
++  // Gothic II Mobile: нанятого напарника, живого NPC и бессмертного человека добить нельзя - они только без сознания
++  if(owner.script().isHired(oth) || owner.script().aiNpc().isAiNpc(oth) || oth.isKnockoutOnly())
 +    return false;
 +
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -4158,6 +4222,61 @@ bool Npc::isPrehit() const {
+@@ -4158,10 +4228,69 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -13103,7 +13915,15 @@ index e015398..3fead12 100644
  bool Npc::isImmortal() const {
    return hnpc->flags & zenkit::NpcFlag::IMMORTAL;
    }
-@@ -4238,6 +4357,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+ 
++bool Npc::isKnockoutOnly() const {
++  return isImmortal() && isHuman() && !isPlayer();
++  }
++
+ void Npc::setPerceptionTime(uint64_t time) {
+   perceptionTime = time;
+   }
+@@ -4238,6 +4367,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -13114,7 +13934,7 @@ index e015398..3fead12 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4356,6 +4479,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4489,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -13152,7 +13972,7 @@ index e015398..3fead12 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4822,3 +4976,40 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4822,3 +4986,40 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
    if(syncAtt)
      visual.syncAttaches();
    }
@@ -13194,7 +14014,7 @@ index e015398..3fead12 100644
 +  }
 +
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..d59165c 100644
+index 7309936..f706cef 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
 @@ -21,6 +21,7 @@
@@ -13222,7 +14042,7 @@ index 7309936..d59165c 100644
  
      std::string_view displayName() const;
      auto       displayPosition() const -> Tempest::Vec3;
-@@ -289,6 +300,64 @@ class Npc final {
+@@ -289,7 +300,68 @@ class Npc final {
  
      bool      isAttackAnim() const;
      bool      isPrehit() const;
@@ -13285,9 +14105,13 @@ index 7309936..d59165c 100644
 +    // Кому угрожает/с кем дерётся текущее состояние (other скриптов)
 +    Npc*      stateOther() const { return currentOther; }
      bool      isImmortal() const;
++    // Gothic II Mobile: бессмертный человек (флаг NPC_FLAG_IMMORTAL, не герой): урон проходит, но вместо смерти -
++    // без сознания; добить нельзя. Бессмертные звери и драконы - как в оригинале: урон не проходит
++    bool      isKnockoutOnly() const;
  
      void      setPerceptionTime   (uint64_t time);
-@@ -456,6 +525,7 @@ class Npc final {
+     void      setPerceptionEnable (PercType t, size_t fn);
+@@ -456,6 +528,7 @@ class Npc final {
        Npc*             npc  = nullptr;
        const WayPoint*  wp   = nullptr;
        Tempest::Vec3    pos  = {};
@@ -13295,7 +14119,7 @@ index 7309936..d59165c 100644
  
        void             save(Serialize& fout) const;
        void             load(Serialize&  fin);
-@@ -555,6 +625,7 @@ class Npc final {
+@@ -555,6 +628,7 @@ class Npc final {
  
      // visual props (cache)
      uint8_t                        durtyTranform=0;
@@ -13303,7 +14127,7 @@ index 7309936..d59165c 100644
      Tempest::Vec3                  lastGroundNormal;
  
      DynamicWorld::NpcItem          physic;
-@@ -608,6 +679,8 @@ class Npc final {
+@@ -608,6 +682,8 @@ class Npc final {
      AiQueue                        aiQueue;
      AiQueue                        aiQueueOverlay;
      std::vector<Routine>           routines;
@@ -13312,7 +14136,7 @@ index 7309936..d59165c 100644
  
      Interactive*                   currentInteract=nullptr;
      Npc*                           currentOther   =nullptr;
-@@ -629,6 +702,7 @@ class Npc final {
+@@ -629,6 +705,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;
