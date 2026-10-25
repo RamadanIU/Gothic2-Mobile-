@@ -222,8 +222,9 @@ public interface Tts {
 
     static byte[] post(String url, byte[] body, String type, String[] headers) throws IOException {
         HttpURLConnection c = LlmClient.open(url);
-        c.setConnectTimeout(15000);
-        c.setReadTimeout(60000);
+        // Озвучка, которая не пришла за 20 с, уже не нужна: реплика идёт субтитром (GeraltBrain.speak)
+        c.setConnectTimeout(10000);
+        c.setReadTimeout(20000);
         c.setDoOutput(true);
         c.setRequestMethod("POST");
         c.setRequestProperty("Content-Type", type);

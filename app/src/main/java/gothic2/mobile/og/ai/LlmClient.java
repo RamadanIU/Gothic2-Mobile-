@@ -16,7 +16,7 @@ import java.util.Set;
 /**
  * Языковая модель по адресу, совместимому с OpenAI (/chat/completions): Ollama Cloud, Gemini, Groq,
  * OpenRouter и другие. Инструменты — в формате function calling. Лимит (429) — запасной ключ роли, затем
- * одна пауза и повтор.
+ * одна пауза и повтор. Обрыв связи или ответа нет дольше TIMEOUT_MS — один повтор по новому соединению.
  */
 public final class LlmClient {
     /** Вызов инструмента из ответа модели. */
@@ -62,6 +62,11 @@ public final class LlmClient {
      * ставит по умолчанию, — «Dalvik/2.1.0 (Linux; U; Android …)».
      */
     static final String USER_AGENT = "Gothic2Mobile/1.0";
+    /**
+     * Ожидание ответа модели. Обычно ответ — 1–7 с; если сервер задумался на полминуты, новый запрос почти всегда
+     * отвечает быстрее, чем ждать дальше (журнал 2026-10-25: 16 и 34 с, затем таймауты по минуте).
+     */
+    static final int TIMEOUT_MS = 25000;
 
     static HttpURLConnection open(String url) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
@@ -105,20 +110,47 @@ public final class LlmClient {
         String url = endpoint(role.url, "chat/completions");
         String resp;
         try {
-            resp = http.post(url, role.key, body, 60000);
+            resp = postOnce(url, role.key, body);
         } catch (LlmException e) {
             if (e.status != 429 && e.status < 500) throw e;
             // Лимит или сбой сервиса: запасной ключ, иначе пауза и повтор
             if (e.status == 429 && !role.spareKey.isEmpty()) {
-                resp = http.post(url, role.spareKey, body, 60000);
+                resp = postOnce(url, role.spareKey, body);
             } else {
                 sleep(e.status == 429 ? 6000 : 2000);
-                resp = http.post(url, role.key, body, 60000);
+                resp = postOnce(url, role.key, body);
             }
         }
         Reply r = parse(resp);
         if (tools == null || tools.isEmpty() || wordsOnly || !r.calls.isEmpty()) return r;
         return withTextCalls(r, toolNames(tools));
+    }
+
+    /**
+     * Один запрос с повтором при сбое связи: таймаут, обрыв («Software caused connection abort» — Android закрыл
+     * старое соединение из пула), сброс. Ответ сервера с кодом ошибки — не сбой связи, его разбирает chat.
+     */
+    private String postOnce(String url, String key, String body) throws IOException {
+        try {
+            return http.post(url, key, body, TIMEOUT_MS);
+        } catch (LlmException e) {
+            throw e;
+        } catch (IOException e) {
+            if (Thread.currentThread().isInterrupted()) throw e;
+            sleep(500);
+            return http.post(url, key, body, TIMEOUT_MS);
+        }
+    }
+
+    /** Ошибка запроса словами игрока: что случилось и что делать. */
+    public static String describe(IOException e) {
+        if (e instanceof LlmException) return e.getMessage();
+        if (e instanceof java.net.SocketTimeoutException) return "сервер не ответил за " + TIMEOUT_MS / 1000 + " с (дважды) — сервер перегружен или слабая сеть";
+        if (e instanceof java.net.UnknownHostException) return "нет интернета (адрес сервера не найден)";
+        if (e instanceof java.net.ConnectException) return "нет связи с сервером";
+        if (e instanceof javax.net.ssl.SSLException || e instanceof java.net.SocketException) return "связь оборвалась — слабая сеть";
+        String m = e.getMessage();
+        return m == null || m.isEmpty() ? e.getClass().getSimpleName() : m;
     }
 
     /** Имена инструментов из их описаний (function.name). */

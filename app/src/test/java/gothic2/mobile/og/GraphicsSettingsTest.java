@@ -140,4 +140,26 @@ public class GraphicsSettingsTest {
         prefs.values.put(GraphicsSettings.RAGDOLL.key, 1);
         assertFalse(new GraphicsSettings(prefs).isOn(GraphicsSettings.RAGDOLL));
     }
+
+    @Test
+    public void occlusionIsOnByDefaultAndCanBeTurnedOff() {
+        // occlusion читает Gothic::Gothic: 0 - движок рисует и заслонённое (проверка пропадающих стен)
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        assertTrue(g.iniText().contains("\nocclusion=1\n"));
+        g.setOn(GraphicsSettings.OCCLUSION, false);
+        assertTrue(g.iniText().contains("\nocclusion=0\n"));
+        g.applyPreset(GraphicsSettings.DEFAULT_PRESET);
+        assertTrue("не входит в наборы", g.iniText().contains("\nocclusion=0\n"));
+    }
+
+    @Test
+    public void shortSummaryNamesPresetResolutionAndFps() {
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        g.applyPreset(GraphicsSettings.ECONOMY_PRESET);
+        assertEquals("Экономно: 50 %, 30 кадров/с", g.summaryShort());
+        g.cycle(GraphicsSettings.FPS);
+        g.cycle(GraphicsSettings.FPS);
+        g.cycle(GraphicsSettings.FPS);
+        assertEquals("Свои настройки: 50 %, без ограничения", g.summaryShort());
+    }
 }

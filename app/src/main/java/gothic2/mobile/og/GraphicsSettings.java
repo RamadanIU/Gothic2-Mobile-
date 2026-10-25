@@ -77,7 +77,14 @@ final class GraphicsSettings {
     static final Option RAGDOLL_FALL = new Option("gfx_ragdoll_fall", "ragdollFall",
         "Регдолл и у живых: долгое падение, удар тролля",
         new String[]{"включён", "выключен"}, new String[]{"1", "0"}, true);
-    static final Option[] EXTRA = {SHOW_FPS, RAGDOLL, RAGDOLL_FALL};
+    /**
+     * Не рисовать заслонённое (карта перекрытий движка): быстрее. Выключить — если пропадают стены, предметы или
+     * тело героя, хотя видны: тогда рисуется всё в кадре.
+     */
+    static final Option OCCLUSION = new Option("gfx_occlusion", "occlusion",
+        "Не рисовать заслонённое (быстрее; выключи, если пропадают стены)",
+        new String[]{"включено", "выключено"}, new String[]{"1", "0"}, true);
+    static final Option[] EXTRA = {SHOW_FPS, RAGDOLL, RAGDOLL_FALL, OCCLUSION};
 
     /** Готовые наборы: индексы вариантов в порядке {@link #ALL}. */
     static final String[] PRESET_NAMES = {"Экономно", "Сбалансированно", "Красиво"};
@@ -186,6 +193,13 @@ final class GraphicsSettings {
         try (OutputStream out = new FileOutputStream(new File(filesDir, "g2m.ini"))) {
             out.write(iniText().getBytes(StandardCharsets.US_ASCII));
         }
+    }
+
+    /** Коротко — для строки раздела на главной: набор, разрешение и частота. */
+    String summaryShort() {
+        int p = currentPreset();
+        return (p >= 0 ? PRESET_NAMES[p] : "Свои настройки") + ": " + RESOLUTION.labels[get(RESOLUTION)] + ", "
+            + FPS.labels[get(FPS)] + (get(FPS) == 3 ? "" : " кадров/с");
     }
 
     String summary() {
