@@ -455,6 +455,89 @@ public class AiLogicTest {
     }
 
     @Test
+    public void speechifyAudioIsExtracted() throws IOException {
+        byte[] w = wav(new short[]{5, -5, 7}, 24000, 1);
+        String resp = "{\"audio_data\":\"" + Base64.getEncoder().encodeToString(w)
+            + "\",\"audio_format\":\"wav\",\"billable_characters_count\":3,\"speech_marks\":{}}";
+        Pcm p = Speechify.parse(resp);
+        assertEquals(24000, p.rate);
+        assertEquals(-5, p.samples[1]);
+        try {
+            Speechify.parse("{\"audio_data\":\"" + Base64.getEncoder().encodeToString(new byte[]{1, 2, 3, 4})
+                + "\",\"audio_format\":\"mp3\"}");
+            assertTrue("mp3 не должен читаться как PCM", false);
+        } catch (IOException expected) {
+            // ждём ошибку
+        }
+    }
+
+    @Test
+    public void speechifyRequestIsSsmlInRussian() {
+        Map<String, Object> g = Speechify.request("Ведьмак & <монстры>", "tikhon", "simba-3.5", Tts.Voice.geralt(""));
+        assertEquals("<speak>Ведьмак &amp; &lt;монстры&gt;</speak>", g.get("input"));
+        assertEquals("ru-RU", g.get("language"));
+        assertEquals("simba-3.5", g.get("model"));
+        assertEquals("wav_24000", g.get("output_format"));
+        // житель - своя высота и темп; без модели поле не шлётся
+        Map<String, Object> n = Speechify.request("Эй!", "savva", "", new Tts.Voice(false, false, 7, ""));
+        assertEquals("<speak><prosody pitch=\"-7%\" rate=\"-1%\">Эй!</prosody></speak>", n.get("input"));
+        assertFalse(n.containsKey("model"));
+    }
+
+    @Test
+    public void speechifyVoicesBySettings() {
+        AiSettings s = AiSettings.inMemory();
+        s.set("tts_provider", AiSettings.TTS_SPEECHIFY);
+        assertEquals(AiSettings.TTS_SPEECHIFY, s.ttsProvider());
+        s.set("tts_speechify_model", "");
+        s.set("tts_speechify_male", " a , b ");
+        s.set("tts_speechify_female", "");
+        Speechify sp = new Speechify(s);
+        assertEquals("tikhon", sp.voiceFor(Tts.Voice.geralt("")));
+        String m = sp.voiceFor(new Tts.Voice(false, false, 3, ""));
+        assertTrue(m, m.equals("a") || m.equals("b"));
+        assertEquals(m, sp.voiceFor(new Tts.Voice(false, false, 3, "")));
+        // нет голосов женщин - голос Геральта
+        assertEquals("tikhon", sp.voiceFor(new Tts.Voice(false, true, 3, "")));
+    }
+
+    @Test
+    public void speechifyModelsSorted() throws IOException {
+        String json = "{\"models\":["
+            + "{\"id\":\"simba-3.0\",\"name\":\"Simba 3.0\",\"default\":true,\"recommended\":false,\"deprecated\":false,"
+            + "\"languages\":[\"en\",\"de-DE\"],\"endpoints\":[\"/v1/audio/speech\",\"/v1/audio/stream\"]},"
+            + "{\"id\":\"simba-3.5\",\"name\":\"Simba 3.5\",\"recommended\":true,\"languages\":[\"en\",\"ru\"],"
+            + "\"endpoints\":[\"/v1/audio/speech\"]},"
+            + "{\"id\":\"ws-only\",\"name\":\"X\",\"languages\":[\"ru\"],\"endpoints\":[\"/v1/audio/stream/ws\"]}],"
+            + "\"dialogue_models\":[]}";
+        List<Speechify.Model> m = Speechify.parseModels(json);
+        assertEquals(2, m.size());
+        assertEquals("simba-3.5", m.get(0).id);
+        assertEquals("Simba 3.5 — рекомендуется", m.get(0).title());
+        assertEquals("Simba 3.0 (без русского)", m.get(1).title());
+    }
+
+    @Test
+    public void speechifyVoicesPagedAndSorted() throws IOException {
+        String json = "{\"has_more\":true,\"next_cursor\":\"c2\",\"voices\":["
+            + "{\"id\":\"george\",\"display_name\":\"George\",\"gender\":\"male\",\"locale\":\"en-US\",\"type\":\"shared\","
+            + "\"preview_audio\":\"https://x/en.mp3\",\"models\":[{\"name\":\"simba-3.5\",\"languages\":["
+            + "{\"locale\":\"en-US\",\"preview_audio\":\"https://x/en2.mp3\"},{\"locale\":\"ru-RU\",\"preview_audio\":\"https://x/ru.mp3\"}]}]},"
+            + "{\"id\":\"savva\",\"display_name\":\"Aleksey\",\"gender\":\"male\",\"locale\":\"ru-RU\",\"staff_pick_rank\":2,\"models\":[]},"
+            + "{\"id\":\"tikhon\",\"display_name\":\"Vladimir\",\"gender\":\"male\",\"locale\":\"ru-RU\",\"staff_pick_rank\":1}]}";
+        Speechify.VoicePage p = Speechify.parseVoices(json, "simba-3.5");
+        assertEquals("c2", p.next);
+        assertEquals("https://x/ru.mp3", p.voices.get(0).preview);
+        List<Speechify.VoiceInfo> v = new ArrayList<>(p.voices);
+        Speechify.sortVoices(v);
+        assertEquals("tikhon", v.get(0).id);
+        assertEquals("savva", v.get(1).id);
+        assertEquals("george", v.get(2).id);
+        assertEquals("Vladimir — муж., ru-RU, ★1", v.get(0).title());
+        assertEquals("", Speechify.parseVoices("{\"has_more\":false,\"next_cursor\":null,\"voices\":[]}", "").next);
+    }
+
+    @Test
     public void storyTopicsInObservation() {
         String snap = "{\"ev\":\"snapshot\",\"story\":{\"topics\":["
             + "{\"id\":\"t4512\",\"hero\":\"Что мы можем сделать?\",\"says\":\"Только сила Инноса может помочь нам.\","

@@ -42,14 +42,16 @@ public final class AiSettings {
 
     public static final String TTS_ANDROID = "android";
     public static final String TTS_GEMINI = "gemini";
+    public static final String TTS_SPEECHIFY = "speechify";
     public static final String TTS_AZURE = "azure";
     public static final String TTS_ELEVENLABS = "elevenlabs";
     public static final String TTS_OPENAI = "openai";
     public static final String TTS_OFF = "off";
 
-    public static final String[] TTS_IDS = {TTS_GEMINI, TTS_AZURE, TTS_ELEVENLABS, TTS_OPENAI, TTS_ANDROID, TTS_OFF};
+    public static final String[] TTS_IDS = {TTS_GEMINI, TTS_SPEECHIFY, TTS_AZURE, TTS_ELEVENLABS, TTS_OPENAI, TTS_ANDROID, TTS_OFF};
     public static final String[] TTS_TITLES = {
         "Gemini — бесплатно, живой голос (ключ Google AI Studio)",
+        "Speechify — живые голоса, модели и голоса из списка (ключ platform.speechify.ai)",
         "Azure — бесплатно 0,5 млн знаков в месяц (ключ и регион)",
         "ElevenLabs — бесплатно 10 тыс. знаков в месяц",
         "Свой адрес, совместимый с OpenAI (/audio/speech)",
@@ -154,6 +156,10 @@ public final class AiSettings {
             case "tts_provider": return TTS_ANDROID;
             case "tts_gemini_model": return "gemini-3.8-flash-tts";
             case "tts_gemini_voice": return "Algenib";
+            case "tts_speechify_model": return "simba-3.5";
+            case "tts_speechify_voice": return "tikhon";
+            case "tts_speechify_male": return "savva";
+            case "tts_speechify_female": return "vasilisa";
             case "tts_azure_region": return "westeurope";
             case "tts_azure_voice": return "ru-RU-DmitryNeural";
             case "tts_eleven_voice": return "pNInz6obpgDQGcFmaJgB";

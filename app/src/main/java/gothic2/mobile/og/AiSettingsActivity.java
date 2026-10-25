@@ -8,6 +8,7 @@ import android.graphics.Typeface;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioTrack;
+import android.media.MediaPlayer;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
@@ -21,7 +22,9 @@ import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +33,7 @@ import gothic2.mobile.og.ai.AiSettings;
 import gothic2.mobile.og.ai.Json;
 import gothic2.mobile.og.ai.LlmClient;
 import gothic2.mobile.og.ai.Pcm;
+import gothic2.mobile.og.ai.Speechify;
 import gothic2.mobile.og.ai.Tts;
 
 /**
@@ -46,6 +50,8 @@ public class AiSettingsActivity extends Activity {
     private final Map<String, EditText> fields = new HashMap<>();
     private final Map<String, View> ttsBoxes = new HashMap<>();
     private TextView result;
+    private TextView voiceResult;
+    private MediaPlayer preview;
     private int pad;
 
     @Override
@@ -135,6 +141,21 @@ public class AiSettingsActivity extends Activity {
         field(gem, "tts_gemini_voice", "Голос Геральта", false);
         field(gem, "tts_gemini_model", "Модель озвучки", false);
 
+        LinearLayout sp = box(col, AiSettings.TTS_SPEECHIFY);
+        sp.addView(text("Ключ — platform.speechify.ai → API Keys. Модель и голоса — из списков твоего аккаунта; "
+            + "касание голоса в списке — его образец. Русские голоса — вверху (★ — рекомендованные Speechify), "
+            + "«Все языки» — любые голоса и твои клоны: по-русски они тоже говорят, но могут с акцентом. "
+            + "Жителям достаются голоса из списков по их голосу в игре, каждому — своя высота и темп.", 13, DIM));
+        field(sp, "tts_speechify_key", "Ключ Speechify", true);
+        field(sp, "tts_speechify_model", "Модель (simba-3.5 — 48 языков, русский тоже)", false);
+        sp.addView(smallButton("Список моделей", v -> pickSpeechifyModel()));
+        field(sp, "tts_speechify_voice", "Голос Геральта (id)", false);
+        sp.addView(smallButton("Выбрать голос Геральта", v -> pickSpeechifyVoices("tts_speechify_voice", "", true)));
+        field(sp, "tts_speechify_male", "Голоса мужчин (id через запятую)", false);
+        sp.addView(smallButton("Выбрать голоса мужчин", v -> pickSpeechifyVoices("tts_speechify_male", "male", true)));
+        field(sp, "tts_speechify_female", "Голоса женщин (id через запятую)", false);
+        sp.addView(smallButton("Выбрать голоса женщин", v -> pickSpeechifyVoices("tts_speechify_female", "female", true)));
+
         LinearLayout az = box(col, AiSettings.TTS_AZURE);
         az.addView(text("Azure AI Speech, бесплатный уровень F0 (portal.azure.com → Speech): ключ и регион ресурса.", 13, DIM));
         field(az, "tts_azure_key", "Ключ", true);
@@ -155,6 +176,8 @@ public class AiSettingsActivity extends Activity {
         field(oa, "tts_openai_voice", "Голос Геральта", false);
 
         col.addView(smallButton("Прослушать голос Геральта", v -> testVoice()));
+        voiceResult = text("", 13, DIM);
+        col.addView(voiceResult);
         showTts(cur);
 
         section(col, "Речь игрока");
@@ -196,6 +219,7 @@ public class AiSettingsActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        stopPreview();
         for (Map.Entry<String, EditText> e : fields.entrySet()) ai.set(e.getKey(), e.getValue().getText().toString());
     }
 
@@ -256,29 +280,161 @@ public class AiSettingsActivity extends Activity {
 
     private void testVoice() {
         saveFields();
-        result.setText("Озвучиваю…");
+        voiceResult.setText("Озвучиваю…");
         // Голос телефона (TextToSpeech) создаётся в главном потоке, синтез - в фоне
         final Tts tts;
         try {
             tts = Tts.create(ai, this);
         } catch (RuntimeException e) {
-            result.setText("Голос не вышел: " + e.getMessage());
+            voiceResult.setText("Голос не вышел: " + e.getMessage());
             return;
         }
         if (tts == null) {
-            result.setText("Голос выключен — только субтитры.");
+            voiceResult.setText("Голос выключен — только субтитры.");
             return;
         }
         new Thread(() -> {
             try {
                 Pcm pcm = tts.synth("Ведьмак. Монстров убиваю за плату. Тебе что-то нужно?", Tts.Voice.geralt(""));
                 play(pcm);
-                runOnUiThread(() -> result.setText("Голос работает (" + pcm.ms() + " мс)."));
+                runOnUiThread(() -> voiceResult.setText("Голос работает (" + pcm.ms() + " мс)."));
             } catch (Throwable e) {
                 // любая ошибка в фоне - строкой на экране, а не вылетом приложения
-                runOnUiThread(() -> result.setText("Голос не вышел: " + e.getMessage()));
+                runOnUiThread(() -> voiceResult.setText("Голос не вышел: " + e.getMessage()));
             }
         }).start();
+    }
+
+    private void setField(String key, String value) {
+        EditText e = fields.get(key);
+        if (e != null) e.setText(value);
+        ai.set(key, value);
+    }
+
+    /** Модели Speechify из аккаунта (/v1/audio/models). */
+    private void pickSpeechifyModel() {
+        saveFields();
+        String key = ai.get("tts_speechify_key");
+        voiceResult.setText("Загружаю модели Speechify…");
+        new Thread(() -> {
+            try {
+                List<Speechify.Model> models = Speechify.models(key);
+                runOnUiThread(() -> {
+                    voiceResult.setText("Моделей: " + models.size());
+                    if (models.isEmpty() || isFinishing()) return;
+                    String[] items = new String[models.size()];
+                    for (int i = 0; i < items.length; i++) items[i] = models.get(i).title();
+                    new AlertDialog.Builder(this)
+                        .setTitle("Модель озвучки")
+                        .setItems(items, (d, which) -> setField("tts_speechify_model", models.get(which).id))
+                        .show();
+                });
+            } catch (Throwable e) {
+                // любая ошибка в фоне - строкой на экране, а не вылетом приложения
+                runOnUiThread(() -> voiceResult.setText("Не вышло: " + e.getMessage()));
+            }
+        }).start();
+    }
+
+    /**
+     * Голоса Speechify для выбранной модели: Геральту — один (gender пусто), жителям — несколько своего пола.
+     * Касание голоса — образец; «Все языки» / «Только русские» — другой список.
+     */
+    private void pickSpeechifyVoices(String fieldKey, String gender, boolean russianOnly) {
+        saveFields();
+        String key = ai.get("tts_speechify_key");
+        String model = ai.get("tts_speechify_model");
+        boolean multi = !gender.isEmpty();
+        voiceResult.setText("Загружаю голоса Speechify…");
+        new Thread(() -> {
+            try {
+                List<Speechify.VoiceInfo> list = Speechify.voices(key, model, russianOnly, gender);
+                runOnUiThread(() -> {
+                    if (isFinishing()) return;
+                    if (list.isEmpty()) {
+                        voiceResult.setText(russianOnly ? "Русских голосов нет — показываю все языки." : "Голосов нет.");
+                        if (russianOnly) pickSpeechifyVoices(fieldKey, gender, false);
+                        return;
+                    }
+                    voiceResult.setText("Голосов: " + list.size() + ". Касание — образец.");
+                    showVoiceDialog(fieldKey, gender, russianOnly, multi, list);
+                });
+            } catch (Throwable e) {
+                // любая ошибка в фоне - строкой на экране, а не вылетом приложения
+                runOnUiThread(() -> voiceResult.setText("Не вышло: " + e.getMessage()));
+            }
+        }).start();
+    }
+
+    private void showVoiceDialog(String fieldKey, String gender, boolean russianOnly, boolean multi, List<Speechify.VoiceInfo> list) {
+        String[] items = new String[list.size()];
+        for (int i = 0; i < items.length; i++) items[i] = list.get(i).title();
+        List<String> current = Arrays.asList(ai.get(fieldKey).replace(" ", "").split(","));
+        String title = (gender.isEmpty() ? "Голос Геральта" : "male".equals(gender) ? "Голоса мужчин" : "Голоса женщин")
+            + (russianOnly ? " — русские" : " — все языки");
+        AlertDialog.Builder b = new AlertDialog.Builder(this).setTitle(title);
+        if (multi) {
+            boolean[] checked = new boolean[list.size()];
+            for (int i = 0; i < checked.length; i++) checked[i] = current.contains(list.get(i).id);
+            b.setMultiChoiceItems(items, checked, (d, which, on) -> {
+                checked[which] = on;
+                if (on) playPreview(list.get(which));
+            });
+            b.setPositiveButton("Выбрать", (d, w) -> {
+                List<String> ids = new ArrayList<>();
+                for (int i = 0; i < checked.length; i++) if (checked[i]) ids.add(list.get(i).id);
+                setField(fieldKey, String.join(",", ids));
+                voiceResult.setText(ids.isEmpty() ? "Голоса не выбраны — жители говорят голосом Геральта." : "Выбрано голосов: " + ids.size());
+            });
+        } else {
+            int[] chosen = {-1};
+            for (int i = 0; i < list.size(); i++) if (current.contains(list.get(i).id)) chosen[0] = i;
+            b.setSingleChoiceItems(items, chosen[0], (d, which) -> {
+                chosen[0] = which;
+                playPreview(list.get(which));
+            });
+            b.setPositiveButton("Выбрать", (d, w) -> {
+                if (chosen[0] < 0) return;
+                setField(fieldKey, list.get(chosen[0]).id);
+                voiceResult.setText("Голос Геральта: " + list.get(chosen[0]).title());
+            });
+        }
+        b.setNeutralButton(russianOnly ? "Все языки" : "Только русские", (d, w) -> pickSpeechifyVoices(fieldKey, gender, !russianOnly));
+        b.setNegativeButton("Отмена", null);
+        b.setOnDismissListener(d -> stopPreview());
+        b.show();
+    }
+
+    /** Образец голоса по ссылке из списка (без трат знаков тарифа). */
+    private void playPreview(Speechify.VoiceInfo v) {
+        stopPreview();
+        if (!v.preview.startsWith("https://")) {
+            voiceResult.setText(v.title() + ": образца нет");
+            return;
+        }
+        MediaPlayer mp = new MediaPlayer();
+        preview = mp;
+        try {
+            mp.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
+            mp.setDataSource(v.preview);
+            mp.setOnPreparedListener(MediaPlayer::start);
+            mp.setOnErrorListener((m, what, extra) -> {
+                voiceResult.setText(v.title() + ": образец не играет");
+                return true;
+            });
+            mp.prepareAsync();
+            voiceResult.setText("Образец: " + v.title());
+        } catch (IOException | RuntimeException e) {
+            stopPreview();
+            voiceResult.setText(v.title() + ": образец не играет");
+        }
+    }
+
+    private void stopPreview() {
+        if (preview == null) return;
+        preview.release();
+        preview = null;
     }
 
     private static void play(Pcm pcm) {
