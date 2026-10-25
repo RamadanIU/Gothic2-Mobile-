@@ -340,10 +340,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..1b4593f
+index 0000000..c06a9bf
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2859 @@
+@@ -0,0 +1,2886 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -396,6 +396,8 @@ index 0000000..1b4593f
 +  const int32_t  SpawnVersion = 2;
 +  // aivar[99] жителя: распорядок заменён по просьбе героя (вернуть после загрузки сохранения - daily_routine)
 +  const size_t   AivRoutine  = 99;
++  // aivar[94] героя: Геральт ушёл с ним из Хориниса (в другом мире) - в Хоринисе не создавать заново
++  const size_t   AivHeroGeraltAway = 94;
 +
 +  const float    NearDist    = 800.f;   // герой подошёл (см)
 +  const float    LeftDist    = 2000.f;  // герой ушёл
@@ -626,6 +628,28 @@ index 0000000..1b4593f
 +  goHome(npc);
 +  }
 +
++bool AiNpc::isGeraltNpc(const Npc& npc) {
++  // По экземпляру скрипта, а не по указателю: с выключенным ИИ указатель не ищется
++  if(thorusSym==size_t(-1))
++    thorusSym = owner.findSymbolIndex("VLK_2000_THORUS");
++  return thorusSym!=size_t(-1) && size_t(npc.instanceSymbol())==thorusSym;
++  }
++
++void AiNpc::leaveWorld(Npc& npc, Npc& hero) {
++  if(!isGeraltNpc(npc))
++    return;
++  hero.handle().aivar[AivHeroGeraltAway] = 1;
++  geralt      = nullptr;
++  geraltWorld = nullptr;
++  }
++
++void AiNpc::enterWorld(Npc& npc, Npc& hero, World& w) {
++  if(!isGeraltNpc(npc))
++    return;
++  hero.handle().aivar[AivHeroGeraltAway] = isTargetWorld(w) ? 0 : 1;
++  Log::i("[g2m] ai: Geralt came with hero to ",w.name());
++  }
++
 +Npc* AiNpc::addressee(const Npc& player, Npc* candidate) const {
 +  if(!AiLink::enabled())
 +    return nullptr;
@@ -796,7 +820,8 @@ index 0000000..1b4593f
 +  geralt   = nullptr;
 +  if(thorusSym==size_t(-1))
 +    thorusSym = owner.findSymbolIndex("VLK_2000_THORUS");
-+  if(thorusSym==size_t(-1) || !isTargetWorld(*w))
++  // Геральт может прийти с героем в любой мир (GameScript::squadEnterWorld); создаётся - только в Хоринисе
++  if(thorusSym==size_t(-1))
 +    return nullptr;
 +  geralt = w->findNpcByInstance(thorusSym);
 +  if(geralt!=nullptr)
@@ -1069,7 +1094,9 @@ index 0000000..1b4593f
 +        goHome(*n);
 +      }
 +    }
-+  if(npc==nullptr && isTargetWorld(*w) && thorusSym!=size_t(-1) && now>=insertTry) {
++  // Ушёл с героем в другой мир и там остался - в Хоринисе второго не создавать
++  const bool away = w->player()->handle().aivar[AivHeroGeraltAway]!=0;
++  if(npc==nullptr && isTargetWorld(*w) && !away && thorusSym!=size_t(-1) && now>=insertTry) {
 +    insertTry = now+5000;
 +    insert(*w);
 +    npc = geralt;
@@ -3205,10 +3232,10 @@ index 0000000..1b4593f
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..002813b
+index 0000000..615eb59
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,253 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -3253,6 +3280,10 @@ index 0000000..002813b
 +    // (GameScript::isHired); отпустить - к своим делам
 +    bool isAiFollower(Npc& npc) const;
 +    void releaseFollower(Npc& npc);
++    // Смена мира (GameScript::squadLeaveWorld/squadEnterWorld): Геральт ушёл с героем из мира или пришёл в мир.
++    // На герое - метка «Геральт не в Хоринисе»: там он не появляется заново, пока не вернётся с героем
++    void leaveWorld(Npc& npc, Npc& hero);
++    void enterWorld(Npc& npc, Npc& hero, World& w);
 +
 +    // Кнопка «Сказать» (TouchInput): кому герой скажет - выбранному или тому, на кого смотрит (живые жители), иначе
 +    // Геральту рядом; nullptr - некому. Сказать без диалога: слова - модели этого жителя
@@ -3333,6 +3364,7 @@ index 0000000..002813b
 +    void   setup(Npc& npc, bool fresh);
 +    void   dressArmor(Npc& npc);
 +    bool   isTargetWorld(World& w) const;
++    bool   isGeraltNpc(const Npc& npc);
 +    const WayPoint* spawnPoint(World& w);
 +    void   seat(Npc& npc, World& w);
 +    void   moveToSpawn(Npc& npc, World& w);
@@ -3459,14 +3491,16 @@ index 0000000..002813b
 +  };
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
-index 0000000..532bb2e
+index 0000000..11ab465
 --- /dev/null
 +++ b/common/game/companions.cpp
-@@ -0,0 +1,1535 @@
+@@ -0,0 +1,1605 @@
 +#include "gamescript.h"
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
++#include <Tempest/MemReader>
++#include <Tempest/MemWriter>
 +
 +#include <algorithm>
 +#include <cmath>
@@ -3478,6 +3512,7 @@ index 0000000..532bb2e
 +#include "world/aiqueue.h"
 +#include "world/world.h"
 +#include "physics/dynamicworld.h"
++#include "game/serialize.h"
 +#include "utils/cp1251.h"
 +#include "utils/string_frm.h"
 +#include "gothic.h"
@@ -3494,6 +3529,8 @@ index 0000000..532bb2e
 +// Приказ «не нападать» хранится в свободной ячейке aivar (скрипты игры используют 0..80 и 88):
 +// сохраняется и загружается вместе с NPC
 +static const size_t AivStance = 95;
++// Смена мира: идущие с героем ближе этого переходят с ним, см
++static const float SquadCarryDist = 5000.f;
 +// Герой столько стоит на месте - отряд отдыхает рядом с ним
 +static const uint64_t HeroIdleDelay = 25000;
 +
@@ -4136,6 +4173,71 @@ index 0000000..532bb2e
 +    fs.driving  = false;
 +    Tempest::Log::i("[g2m] squad: \"",npc->displayName(),"\" arrived with hero");
 +    }
++  }
++
++std::vector<std::vector<uint8_t>> GameScript::squadLeaveWorld() {
++  std::vector<std::vector<uint8_t>> ret;
++  auto& w  = world();
++  auto* pl = w.player();
++  if(pl==nullptr)
++    return ret;
++  squadMembers(squadTmp);
++  const std::vector<Npc*> squad    = squadTmp;
++  const size_t            zsFollow = findSymbolIndex("ZS_FOLLOW_PLAYER");
++  for(auto npc:squad) {
++    // Только безымянные нанятые и Геральт: сюжетные NPC, пошедшие с героем по своей воле, нужны скриптам своего мира
++    const bool carry = isAmbient(npc->handle()) && npc->hasRoutineState(zsFollow) && !npc->isCompanionCamp() &&
++                       !npc->isDown() && pl->qDistTo(*npc)<SquadCarryDist*SquadCarryDist;
++    if(!carry) {
++      Tempest::Log::i("[g2m] squad: \"",npc->displayName(),"\" stays in ",w.name());
++      continue;
++      }
++    npc->clearAiQueue();
++    std::vector<uint8_t> data;
++    {
++    Tempest::MemWriter wr{data};
++    Serialize          sr{wr};
++    sr.setEntry("squad");
++    npc->save(sr,0,"/npc/");
++    }
++    aiNpcPtr->leaveWorld(*npc,*pl);
++    Tempest::Log::i("[g2m] squad: \"",npc->displayName(),"\" leaves ",w.name()," with hero");
++    w.removeNpc(*npc);
++    ret.push_back(std::move(data));
++    }
++  return ret;
++  }
++
++void GameScript::squadEnterWorld(const std::vector<std::vector<uint8_t>>& squad, std::string_view wayPoint) {
++  auto& w  = world();
++  auto* pl = w.player();
++  if(pl==nullptr || squad.empty())
++    return;
++  for(auto& data:squad) {
++    Npc* npc = nullptr;
++    try {
++      Tempest::MemReader rd{data};
++      Serialize          sr{rd};
++      sr.setEntry("squad");
++      auto ptr = std::make_unique<Npc>(w,size_t(-1),wayPoint);
++      ptr->load(sr,0,"/npc/");
++      npc = w.insertNpc(std::move(ptr),wayPoint);
++      }
++    catch(...) {
++      Tempest::Log::e("[g2m] squad: unable to bring a companion to ",w.name());
++      continue;
++      }
++    if(npc==nullptr)
++      continue;
++    // Ссылки на NPC и точки прежнего мира в записи пусты: распорядок «следовать» и строй - заново, точка - прибытия
++    npc->handle().wp = std::string(wayPoint);
++    npc->clearAiQueue();
++    squadJoin(*npc);
++    npc->resumeAiRoutine();
++    aiNpcPtr->enterWorld(*npc,*pl,w);
++    Tempest::Log::i("[g2m] squad: \"",npc->displayName(),"\" came to ",w.name()," with hero");
++    }
++  squadArrive();
 +  }
 +
 +void GameScript::tickSquadFollow(Npc& player, uint64_t now) {
@@ -5166,10 +5268,15 @@ index b1d951f..8d5f5cd 100644
  
    if(hitFlg) {
 diff --git a/common/game/gamescript.cpp b/common/game/gamescript.cpp
-index 4b32af2..d36acab 100644
+index 4b32af2..09a1c8f 100644
 --- a/common/game/gamescript.cpp
 +++ b/common/game/gamescript.cpp
-@@ -6,6 +6,7 @@
+@@ -2,10 +2,12 @@
+ 
+ #include <Tempest/Log>
+ #include <Tempest/SoundEffect>
++#include <Tempest/TextCodec>
+ 
  #include <cctype>
  
  #include "game/compatibility/directmemory.h"
@@ -5177,7 +5284,7 @@ index 4b32af2..d36acab 100644
  #include "game/definitions/spelldefinitions.h"
  #include "game/serialize.h"
  #include "utils/string_frm.h"
-@@ -98,6 +99,7 @@ GameScript::GameScript(GameSession &owner)
+@@ -98,6 +100,7 @@ GameScript::GameScript(GameSession &owner)
    Gothic::inst().setupCommonScriptClasses(vm);
    Gothic::inst().setupVmCommonApi(vm);
    aiDefaultPipe.reset(new GlobalOutput(*this));
@@ -5185,41 +5292,64 @@ index 4b32af2..d36acab 100644
    initCommon();
    initSettings();
    Gothic::inst().onSettingsChanged.bind(this,&GameScript::initSettings);
-@@ -457,8 +459,11 @@ void GameScript::loadDialogOU() {
+@@ -457,8 +460,24 @@ void GameScript::loadDialogOU() {
    const auto version = Gothic::inst().version().game==1 ? zenkit::GameVersion::GOTHIC_1
                                                          : zenkit::GameVersion::GOTHIC_2;
  
-+  // Gothic II Mobile: у классики реплики свои (Cutscene_GII), а поиск по архивам и общему дереву _work
-+  // находит одноимённый файл аддона - только по пути
-+  const bool classic = CommandLine::inst().isClassic();
++  // Gothic II Mobile: сначала - по пути выбранного варианта (content/CUTSCENE у «Ночи Ворона», Cutscene_GII у
++  // классики): в общем дереве _work лежат обе папки, и поиск по имени (Vfs::find - с конца алфавита) находил
++  // реплики классики и в «Ночи Ворона». По имени - только если по пути файла нет
    for(auto& OU:names) {
 -    if(Resources::hasFile(OU)) {
-+    if(!classic && Resources::hasFile(OU)) {
-       std::unique_ptr<zenkit::Read> read;
-       auto zen = Resources::openReader(OU, read);
-       dialogs = std::move(*zen->read_object<zenkit::CutsceneLibrary>(version));
-@@ -466,7 +471,7 @@ void GameScript::loadDialogOU() {
-       }
- 
-     const size_t segment = OU.find_last_of("\\/");
--    if(segment!=std::string::npos && Resources::hasFile(OU.substr(segment+1))) {
-+    if(!classic && segment!=std::string::npos && Resources::hasFile(OU.substr(segment+1))) {
-       std::unique_ptr<zenkit::Read> read;
-       auto zen = Resources::openReader(OU.substr(segment+1), read);
-       dialogs = std::move(*zen->read_object<zenkit::CutsceneLibrary>(version));
-@@ -479,6 +484,11 @@ void GameScript::loadDialogOU() {
- 
-     auto gcutscene = CommandLine::inst().cutscenePath();
-     auto full      = FileUtil::caseInsensitiveSegment(gcutscene,str16,Dir::FT_File);
++    char16_t str16[256] = {};
++    for(size_t i=0; OU[i] && i<255; ++i)
++      str16[i] = char16_t(OU[i]);
++
++    auto gcutscene = CommandLine::inst().cutscenePath();
++    auto full      = FileUtil::caseInsensitiveSegment(gcutscene,str16,Dir::FT_File);
 +    if(!FileUtil::exists(std::u16string(full)) && CommandLine::inst().isClassic()) {
 +      // Gothic II Mobile: у классики нет своих реплик (Cutscene_GII) - общие
 +      auto base = CommandLine::inst().nestedPath({u"_work",u"Data",u"Scripts",u"content",u"CUTSCENE"},Dir::FT_Dir);
 +      full      = FileUtil::caseInsensitiveSegment(base,str16,Dir::FT_File);
 +      }
-     if(!FileUtil::exists(std::u16string(full)) && vmLang>=0) {
++    const bool byPath = FileUtil::exists(std::u16string(full)) && !Gothic::inst().isLegacyScripts();
++
++    if(!byPath && Resources::hasFile(OU)) {
+       std::unique_ptr<zenkit::Read> read;
+       auto zen = Resources::openReader(OU, read);
+       dialogs = std::move(*zen->read_object<zenkit::CutsceneLibrary>(version));
+@@ -466,20 +485,14 @@ void GameScript::loadDialogOU() {
+       }
+ 
+     const size_t segment = OU.find_last_of("\\/");
+-    if(segment!=std::string::npos && Resources::hasFile(OU.substr(segment+1))) {
++    if(!byPath && segment!=std::string::npos && Resources::hasFile(OU.substr(segment+1))) {
+       std::unique_ptr<zenkit::Read> read;
+       auto zen = Resources::openReader(OU.substr(segment+1), read);
+       dialogs = std::move(*zen->read_object<zenkit::CutsceneLibrary>(version));
+       return;
+       }
+ 
+-    char16_t str16[256] = {};
+-    for(size_t i=0; OU[i] && i<255; ++i)
+-      str16[i] = char16_t(OU[i]);
+-
+-    auto gcutscene = CommandLine::inst().cutscenePath();
+-    auto full      = FileUtil::caseInsensitiveSegment(gcutscene,str16,Dir::FT_File);
+-    if(!FileUtil::exists(std::u16string(full)) && vmLang>=0) {
++    if(!byPath && vmLang>=0) {
        gcutscene = CommandLine::inst().cutscenePath(ScriptLang(vmLang));
        full      = FileUtil::caseInsensitiveSegment(gcutscene,str16,Dir::FT_File);
-@@ -872,6 +882,14 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
+       }
+@@ -493,6 +506,7 @@ void GameScript::loadDialogOU() {
+         continue;
+       // auto zen = Resources::openReader(full);
+       dialogs = std::move(*zen->read_object<zenkit::CutsceneLibrary>(version));
++      Log::i("[g2m] dialogs ",OU,": ",TextCodec::toUtf8(std::u16string(full)));
+       return;
+       }
+     catch(...){
+@@ -872,6 +886,14 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
                                                               std::shared_ptr<zenkit::INpc> hnpc,
                                                               const std::vector<uint32_t>& except,
                                                               bool includeImp) {
@@ -5234,7 +5364,7 @@ index 4b32af2..d36acab 100644
    ScopeVar self (*vm.global_self(),  hnpc);
    ScopeVar other(*vm.global_other(), player);
    std::vector<zenkit::IInfo*> hDialog;
-@@ -920,6 +938,15 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
+@@ -920,6 +942,15 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
        ch.sort     = info.nr;
        choice.emplace_back(std::move(ch));
        }
@@ -5250,7 +5380,7 @@ index 4b32af2..d36acab 100644
      if(!choice.empty()){
        sort(choice);
        return choice;
-@@ -954,6 +981,15 @@ std::vector<GameScript::DlgChoice> GameScript::updateDialog(const GameScript::Dl
+@@ -954,6 +985,15 @@ std::vector<GameScript::DlgChoice> GameScript::updateDialog(const GameScript::Dl
    }
  
  void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
@@ -5266,7 +5396,7 @@ index 4b32af2..d36acab 100644
    ScopeVar self (*vm.global_self(), npc.handlePtr());
    ScopeVar other(*vm.global_other(), player.handlePtr());
  
-@@ -975,6 +1011,83 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
+@@ -975,6 +1015,83 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
    vm.call_function(vm.find_symbol_by_index(dlg.scriptFn));
    }
  
@@ -5350,7 +5480,7 @@ index 4b32af2..d36acab 100644
  void GameScript::printCannotUseError(Npc& npc, int32_t atr, int32_t nValue) {
    auto id = vm.find_symbol_by_name("G_CanNotUse");
    if(id==nullptr)
-@@ -1118,6 +1231,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
+@@ -1118,6 +1235,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
    return ret;
    }
  
@@ -5380,7 +5510,7 @@ index 4b32af2..d36acab 100644
  void GameScript::invokeItem(Npc *npc, ScriptFn fn) {
    if(fn==size_t(-1) || fn == 0)
      return;
-@@ -1281,6 +1417,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
+@@ -1281,6 +1421,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
    }
  
  bool GameScript::aiOutput(Npc &npc, std::string_view outputname, bool overlay) {
@@ -5392,7 +5522,7 @@ index 4b32af2..d36acab 100644
    string_frm name(outputname,".WAV");
    uint64_t   dt = 0;
  
-@@ -1323,6 +1464,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
+@@ -1323,6 +1468,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
    }
  
  std::string_view GameScript::messageByName(std::string_view id) const {
@@ -5403,7 +5533,7 @@ index 4b32af2..d36acab 100644
    auto blk = dialogs.block_by_name(id);
    if(blk == nullptr)
      return "";
-@@ -1333,6 +1478,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
+@@ -1333,6 +1482,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
    }
  
  uint32_t GameScript::messageTime(std::string_view id) const {
@@ -5414,7 +5544,7 @@ index 4b32af2..d36acab 100644
    static std::string tmp;
    tmp.assign(id);
  
-@@ -1472,6 +1621,10 @@ uint64_t GameScript::tickCount() const {
+@@ -1472,6 +1625,10 @@ uint64_t GameScript::tickCount() const {
  void GameScript::tick(uint64_t dt) {
    if(dma!=nullptr)
      dma->tick(dt);
@@ -5425,7 +5555,7 @@ index 4b32af2..d36acab 100644
    }
  
  uint32_t GameScript::rand(uint32_t max) {
-@@ -2022,6 +2175,9 @@ void GameScript::npc_settofistmode(std::shared_ptr<zenkit::INpc> npcRef) {
+@@ -2022,6 +2179,9 @@ void GameScript::npc_settofistmode(std::shared_ptr<zenkit::INpc> npcRef) {
  
  bool GameScript::npc_isinstate(std::shared_ptr<zenkit::INpc> npcRef, int stateFn) {
    auto npc = findNpc(npcRef);
@@ -5435,7 +5565,7 @@ index 4b32af2..d36acab 100644
    if(npc!=nullptr)
      return npc->isInState(uint32_t(stateFn));
    return false;
-@@ -2876,6 +3032,9 @@ int GameScript::npc_getactivespelllevel(std::shared_ptr<zenkit::INpc> npcRef) {
+@@ -2876,6 +3036,9 @@ int GameScript::npc_getactivespelllevel(std::shared_ptr<zenkit::INpc> npcRef) {
  void GameScript::ai_processinfos(std::shared_ptr<zenkit::INpc> npcRef) {
    auto npc = findNpc(npcRef);
    auto pl  = owner.player();
@@ -5445,7 +5575,7 @@ index 4b32af2..d36acab 100644
    if(pl!=nullptr && npc!=nullptr) {
      aiOutOrderId=0;
      npc->aiPush(AiQueue::aiProcessInfo(*pl));
-@@ -2889,6 +3048,13 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
+@@ -2889,6 +3052,13 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -5459,7 +5589,7 @@ index 4b32af2..d36acab 100644
    if(self!=nullptr && target!=nullptr) {
      self->aiPush(AiQueue::aiOutput(*target,outputname,aiOutOrderId));
      ++aiOutOrderId;
-@@ -2897,6 +3063,11 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
+@@ -2897,6 +3067,11 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
  
  void GameScript::ai_stopprocessinfos(std::shared_ptr<zenkit::INpc> selfRef) {
    auto self = findNpc(selfRef);
@@ -5471,7 +5601,7 @@ index 4b32af2..d36acab 100644
    if(self) {
      self->aiPush(AiQueue::aiStopProcessInfo(aiOutOrderId));
      ++aiOutOrderId;
-@@ -2981,6 +3152,13 @@ void GameScript::ai_outputsvm(std::shared_ptr<zenkit::INpc> selfRef, std::shared
+@@ -2981,6 +3156,13 @@ void GameScript::ai_outputsvm(std::shared_ptr<zenkit::INpc> selfRef, std::shared
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -5485,7 +5615,7 @@ index 4b32af2..d36acab 100644
    if(self!=nullptr && target!=nullptr) {
      self->aiPush(AiQueue::aiOutputSvm(*target,name,aiOutOrderId));
      ++aiOutOrderId;
-@@ -2994,6 +3172,13 @@ void GameScript::ai_outputsvm_overlay(std::shared_ptr<zenkit::INpc> selfRef, std
+@@ -2994,6 +3176,13 @@ void GameScript::ai_outputsvm_overlay(std::shared_ptr<zenkit::INpc> selfRef, std
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -5500,7 +5630,7 @@ index 4b32af2..d36acab 100644
      self->aiPush(AiQueue::aiOutputSvmOverlay(*target,name,aiOutOrderId));
      ++aiOutOrderId;
 diff --git a/common/game/gamescript.h b/common/game/gamescript.h
-index 2cccb63..b89286a 100644
+index 2cccb63..e9327bc 100644
 --- a/common/game/gamescript.h
 +++ b/common/game/gamescript.h
 @@ -25,8 +25,11 @@ class Npc;
@@ -5533,7 +5663,7 @@ index 2cccb63..b89286a 100644
        zenkit::IInfo*   handle   = nullptr;
        };
  
-@@ -121,6 +128,56 @@ class GameScript final {
+@@ -121,6 +128,61 @@ class GameScript final {
      auto updateDialog (const GameScript::DlgChoice &dlg, Npc &player, Npc &npc) -> std::vector<GameScript::DlgChoice>;
      void exec(const DlgChoice &dlg, Npc &player, Npc &npc);
  
@@ -5579,6 +5709,11 @@ index 2cccb63..b89286a 100644
 +    void   storyExec     (Npc& player, Npc& npc, zenkit::IInfo& info, uint32_t fn, StoryCapture& cap);
 +    // Герой перенёсся («Путь», мгновенно): кто идёт следом - рядом с ним в строю; ждущие - в лагере
 +    void   squadArrive ();
++    // Смена мира (GameSession::implChangeWorld): идущие с героем нанятые напарники и Геральт уходят из прежнего мира
++    // (запись NPC, как у героя - HeroStorage) и появляются рядом с героем в новом; ждущие в лагере, без сознания и
++    // отставшие дальше SquadCarryDist остаются
++    std::vector<std::vector<uint8_t>> squadLeaveWorld();
++    void   squadEnterWorld(const std::vector<std::vector<uint8_t>>& squad, std::string_view wayPoint);
 +    // Нанятый напарник: не погибает, только теряет сознание; его не добить и не обобрать
 +    bool   isHired     (Npc& npc);
 +    // AI_StartState напарника: без обыска побеждённых, без «смерти» скриптом, перед лечением - зелья,
@@ -5590,7 +5725,7 @@ index 2cccb63..b89286a 100644
      void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
      void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
      void  printCannotBuyError         (Npc &npc);
-@@ -445,6 +502,62 @@ class GameScript final {
+@@ -445,6 +507,62 @@ class GameScript final {
      void exitsession         ();
  
      void sort(std::vector<DlgChoice>& dlg);
@@ -5653,7 +5788,7 @@ index 2cccb63..b89286a 100644
      void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
      bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
  
-@@ -460,6 +573,7 @@ class GameScript final {
+@@ -460,6 +578,7 @@ class GameScript final {
      NpcProcessPolicy                                            aiProcessPolicy = NpcProcessPolicy::AiNormal;
  
      std::unique_ptr<DirectMemory>                               dma;
@@ -5661,7 +5796,7 @@ index 2cccb63..b89286a 100644
  
      std::unique_ptr<SpellDefinitions>                           spells;
      std::unique_ptr<SvmDefinitions>                             svm;
-@@ -486,6 +600,33 @@ class GameScript final {
+@@ -486,6 +605,33 @@ class GameScript final {
      size_t                                                      gilCount=0;
      std::vector<int32_t>                                        gilAttitudes;
      int                                                         aiOutOrderId=0;
@@ -5695,6 +5830,79 @@ index 2cccb63..b89286a 100644
  
      PerDist                                                     perceptionRanges;
  
+diff --git a/common/game/gamesession.cpp b/common/game/gamesession.cpp
+index 6f5c549..bb62bb4 100644
+--- a/common/game/gamesession.cpp
++++ b/common/game/gamesession.cpp
+@@ -13,6 +13,7 @@
+ #include "sound/soundfx.h"
+ #include "serialize.h"
+ #include "camera.h"
++#include "commandline.h"
+ #include "gothic.h"
+ 
+ using namespace Tempest;
+@@ -67,6 +68,8 @@ void GameSession::HeroStorage::putToWorld(World& owner, std::string_view wayPoin
+ 
+ 
+ GameSession::GameSession(std::string file) {
++  // Gothic II Mobile: новая игра - скрипты выбранного варианта (Gothic::loadScript)
++  Gothic::inst().setLegacyScripts(false);
+   cam.reset(new Camera());
+ 
+   Gothic::inst().setLoadingProgress(0);
+@@ -135,6 +138,18 @@ GameSession::GameSession(Serialize &fin) {
+     visitedWorlds[i].load(fin);
+   }
+ 
++  {
++  // Gothic II Mobile: метка скриптов (с 2026-10-25). Без неё - сохранение прежней версии: «Ночь Ворона» в Золотом
++  // издании GOG брала скрипты классики (_compiled_GII) - номера символов в сохранении от них; загрузить как тогда
++  std::string scripts;
++  if(fin.setEntry("g2m/scripts"))
++    fin.read(scripts);
++  const bool legacy = !CommandLine::inst().isClassic() && (scripts.empty() || scripts=="legacy");
++  Gothic::inst().setLegacyScripts(legacy);
++  Log::i("[g2m] savegame scripts: ",scripts.empty() ? std::string("(none - previous version)") : scripts,
++         legacy ? " - loading scripts as before (by name)" : "");
++  }
++
+   std::string    wname;
+   fin.setEntry("game/session");
+   fin.read(ticks,wrldTime,wrldTimePart,wname);
+@@ -202,6 +217,10 @@ void GameSession::save(Serialize &fout, std::string_view name, const Pixmap& scr
+   fout.setEntry("game/session");
+   fout.write(ticks,wrldTime,wrldTimePart,wrld->name());
+ 
++  // Gothic II Mobile: какими скриптами записано (GameSession(Serialize&))
++  fout.setEntry("g2m/scripts");
++  fout.write(std::string(Gothic::inst().isLegacyScripts() ? "legacy" : (CommandLine::inst().isClassic() ? "classic" : "notr")));
++
+   fout.setEntry("game/camera");
+   cam->save(fout);
+   Gothic::inst().setLoadingProgress(5);
+@@ -370,6 +389,11 @@ auto GameSession::implChangeWorld(std::unique_ptr<GameSession>&& game,
+     return std::move(game);
+     }
+ 
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: отряд, идущий с героем (нанятые напарники, Геральт), - с ним в новый мир. Раньше
++  // в новый мир переходил только герой. До записи героя: на нём метка «Геральт ушёл из Хориниса»
++  auto squad = vm->squadLeaveWorld();
++#endif
+   HeroStorage hdata;
+   if(auto hero = wrld->player())
+     hdata.save(*hero);
+@@ -405,6 +429,9 @@ auto GameSession::implChangeWorld(std::unique_ptr<GameSession>&& game,
+ 
+   initScripts(wss.isEmpty());
+   wrld->triggerOnStart(wss.isEmpty());
++#if defined(__MOBILE_PLATFORM__)
++  vm->squadEnterWorld(squad,wayPoint);
++#endif
+ 
+   for(auto& i:visitedWorlds)
+     if(i.compareName(wrld->name())){
 diff --git a/common/game/playercontrol.cpp b/common/game/playercontrol.cpp
 index aa16509..0d0e348 100644
 --- a/common/game/playercontrol.cpp
@@ -7893,7 +8101,7 @@ index 0000000..915c632
 +    static void             resolve(World& w, std::vector<Spot>& out);
 +  };
 diff --git a/common/gothic.cpp b/common/gothic.cpp
-index 56c5d58..a87949a 100644
+index 56c5d58..783dde5 100644
 --- a/common/gothic.cpp
 +++ b/common/gothic.cpp
 @@ -18,6 +18,7 @@
@@ -7980,43 +8188,67 @@ index 56c5d58..a87949a 100644
    }
  
  void Gothic::quickLoad() {
-@@ -749,7 +795,10 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
+@@ -749,27 +795,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
    }
  
  zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const ScriptLang lang) {
 -  if(Resources::hasFile(datFile)) {
-+  // Gothic II Mobile: у классики скрипты свои (_compiled_GII), а поиск по общему дереву _work находит
-+  // одноимённый скрипт аддона - только по пути
-+  const bool classic = CommandLine::inst().isClassic();
-+  if(!classic && Resources::hasFile(datFile)) {
-     auto buf = Resources::getFileBuffer(datFile);
-     zenkit::DaedalusScript script;
-     script.load(buf.get());
-@@ -757,7 +806,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
-     }
- 
-   const size_t segment = datFile.find_last_of("\\/");
--  if(segment!=std::string::npos && Resources::hasFile(datFile.substr(segment+1))) {
-+  if(!classic && segment!=std::string::npos && Resources::hasFile(datFile.substr(segment+1))) {
-     auto buf = Resources::getFileBuffer(datFile.substr(segment+1));
-     zenkit::DaedalusScript script;
-     script.load(buf.get());
-@@ -770,6 +819,10 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
- 
-   auto gscript = CommandLine::inst().scriptPath();
-   auto path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
-+  if(!FileUtil::exists(path) && classic) {
++  // Gothic II Mobile: сначала - по пути выбранного варианта (_compiled у «Ночи Ворона», _compiled_GII у классики).
++  // В Золотом издании GOG обе папки лежат в общем дереве _work, а поиск по имени (Resources::hasFile,
++  // Vfs::find - обход стеком, с конца алфавита) находил скрипт классики и в «Ночи Ворона»: без предметов,
++  // жителей и заданий аддона. По имени - только если по пути файла нет (скрипт в архиве мода)
++  const size_t segment = datFile.find_last_of("\\/");
++
++  char16_t str16[256] = {};
++  for(size_t i=0; i<datFile.size() && i<255; ++i)
++    str16[i] = char16_t(datFile[i]);
++
++  auto gscript = CommandLine::inst().scriptPath();
++  auto path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
++  if(!FileUtil::exists(path) && CommandLine::inst().isClassic()) {
 +    // Gothic II Mobile: у классики нет своего скрипта (_compiled_GII) - общий
 +    path = caseInsensitiveSegment(CommandLine::inst().baseScriptPath(),str16,Dir::FT_File);
 +    }
++  const bool byPath = FileUtil::exists(path) && !legacyScripts;
++
++  if(!byPath && Resources::hasFile(datFile)) {
+     auto buf = Resources::getFileBuffer(datFile);
+     zenkit::DaedalusScript script;
+     script.load(buf.get());
+     return script;
+     }
+ 
+-  const size_t segment = datFile.find_last_of("\\/");
+-  if(segment!=std::string::npos && Resources::hasFile(datFile.substr(segment+1))) {
++  if(!byPath && segment!=std::string::npos && Resources::hasFile(datFile.substr(segment+1))) {
+     auto buf = Resources::getFileBuffer(datFile.substr(segment+1));
+     zenkit::DaedalusScript script;
+     script.load(buf.get());
+     return script;
+     }
+ 
+-  char16_t str16[256] = {};
+-  for(size_t i=0; i<datFile.size() && i<255; ++i)
+-    str16[i] = char16_t(datFile[i]);
+-
+-  auto gscript = CommandLine::inst().scriptPath();
+-  auto path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
    if(!FileUtil::exists(path) && int(lang)>=0) {
      gscript = CommandLine::inst().scriptPath(lang);
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
+@@ -783,6 +840,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
+     path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
+     }
+ 
++  Log::i("[g2m] script ",datFile,": ",TextCodec::toUtf8(path));
+   auto buf = zenkit::Read::from(path);
+   zenkit::DaedalusScript script;
+   script.load(buf.get());
 diff --git a/common/gothic.h b/common/gothic.h
-index 2654cc4..687159b 100644
+index 2654cc4..4fab3e5 100644
 --- a/common/gothic.h
 +++ b/common/gothic.h
-@@ -71,6 +71,14 @@ class Gothic final {
+@@ -71,11 +71,23 @@ class Gothic final {
        bool     showHealthBar     = true;
        uint8_t  showManaBar       = 2;
        uint8_t  showSwimBar       = 1;
@@ -8031,6 +8263,23 @@ index 2654cc4..687159b 100644
        };
  
      auto         version() const -> const VersionInfo&;
+ 
+     bool         isInGame() const;
++    // Gothic II Mobile: скрипты сеанса ищутся по имени, как до 2026-10-25 (сохранение прежней версии: в «Ночи Ворона»
++    // она брала скрипты классики - номера символов в сохранении от них). Новая игра и новые сохранения - по пути
++    void         setLegacyScripts(bool l) { legacyScripts = l; }
++    bool         isLegacyScripts() const  { return legacyScripts; }
+     bool         isInGameAndAlive() const;
+ 
+     std::string_view defaultWorld()       const;
+@@ -257,6 +269,7 @@ class Gothic final {
+ 
+     std::mutex                              syncSnd;
+     Tempest::SoundDevice                    sndDev;
++    bool                                    legacyScripts = false;
+     std::unordered_map<std::string,SoundFx> sndFxCache;
+     std::unordered_map<std::string,SoundFx> sndWavCache;
+     std::vector<Tempest::SoundEffect>       sndStorage;
 diff --git a/common/graphics/drawcommands.cpp b/common/graphics/drawcommands.cpp
 index 1bf7897..06ad0da 100644
 --- a/common/graphics/drawcommands.cpp
@@ -14817,6 +15066,36 @@ index 915e49b..8a1732c 100644
  
    private:
      std::vector<const WayPoint*> dat;
+diff --git a/common/world/world.cpp b/common/world/world.cpp
+index 63a9d3f..3349620 100644
+--- a/common/world/world.cpp
++++ b/common/world/world.cpp
+@@ -143,6 +143,12 @@ void World::insertPlayer(std::unique_ptr<Npc> &&npc, std::string_view waypoint)
+   game.script()->setInstanceNPC("HERO",*npcPlayer);
+   }
+ 
++Npc* World::insertNpc(std::unique_ptr<Npc>&& npc, std::string_view waypoint) {
++  if(npc==nullptr)
++    return nullptr;
++  return wobj.insertPlayer(std::move(npc),waypoint);
++  }
++
+ void World::setPlayer(Npc* npc) {
+   if(npc==nullptr)
+     return;
+diff --git a/common/world/world.h b/common/world/world.h
+index ae2719e..5fbcc19 100644
+--- a/common/world/world.h
++++ b/common/world/world.h
+@@ -37,6 +37,8 @@ class World final {
+ 
+     void                 createPlayer(std::string_view cls);
+     void                 insertPlayer(std::unique_ptr<Npc>&& npc, std::string_view waypoint);
++    // Gothic II Mobile: NPC, пришедший из другого мира (напарник с героем), - у точки, как герой
++    Npc*                 insertNpc   (std::unique_ptr<Npc>&& npc, std::string_view waypoint);
+     void                 setPlayer(Npc* npc);
+     void                 postInit();
+     std::string_view     name() const { return wname; }
 diff --git a/common/world/worldobjects.cpp b/common/world/worldobjects.cpp
 index 4877c70..27c52de 100644
 --- a/common/world/worldobjects.cpp
