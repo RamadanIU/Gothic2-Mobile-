@@ -15,15 +15,31 @@ final class GameFolder {
         return compiled != null && child(dir, "data") != null;
     }
 
+    /**
+     * В копии есть классическая Gothic II без дополнения: в Золотом издании GOG её скрипты лежат отдельно —
+     * _work/Data/Scripts/_compiled_GII/Gothic.dat (так её запускает Gothic2c.bat).
+     */
+    static boolean hasClassic(File dir) {
+        File compiled = child(child(child(child(dir, "_work"), "data"), "scripts"), "_compiled_GII");
+        return file(compiled, "gothic.dat") != null;
+    }
+
     private static File child(File dir, String name) {
+        File f = entry(dir, name);
+        return f != null && f.isDirectory() ? f : null;
+    }
+
+    private static File file(File dir, String name) {
+        File f = entry(dir, name);
+        return f != null && f.isFile() ? f : null;
+    }
+
+    private static File entry(File dir, String name) {
         if (dir == null) return null;
         String[] names = dir.list();
         if (names == null) return null;
         for (String n : names) {
-            if (n.equalsIgnoreCase(name)) {
-                File f = new File(dir, n);
-                return f.isDirectory() ? f : null;
-            }
+            if (n.equalsIgnoreCase(name)) return new File(dir, n);
         }
         return null;
     }

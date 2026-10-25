@@ -40,6 +40,17 @@ public class GameFolderTest {
     }
 
     @Test
+    public void classicNeedsItsOwnScripts() throws Exception {
+        File game = gameAt("Gold");
+        assertFalse(GameFolder.hasClassic(game));
+        File gii = new File(game, "_work/Data/Scripts/_COMPILED_GII");
+        assertTrue(gii.mkdirs());
+        assertFalse(GameFolder.hasClassic(game));
+        assertTrue(new File(gii, "GOTHIC.DAT").createNewFile());
+        assertTrue(GameFolder.hasClassic(game));
+    }
+
+    @Test
     public void findsGameFewLevelsDown() {
         File game = gameAt("Games/GOG/Gothic II");
         assertEquals(game, GameFolder.findGameDir(tmp.getRoot()));

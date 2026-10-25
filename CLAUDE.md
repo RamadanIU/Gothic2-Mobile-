@@ -15,8 +15,10 @@ Android-приложение «Gothic II»: запускает **лицензи�
   (Winlator: Wine + Box64 + D7VK, модули `:app`/`:core`/`:winlator` на Kotlin) убрана из сборки и лежит в
   истории git — коммит `b3f4769`, см. docs/LEGACY_WINLATOR.md. Не возвращать её без просьбы пользователя.
 - Игра — **Gothic II: Золотое издание / «Ночь Ворона»**, русская копия GOG игрока (проверена на телефоне).
-  Классика без аддона пока не поддерживается. Установщик GOG нужно сначала распаковать в папку с `System`,
-  `Data`, `_work` (docs/SUPPORTED_BUILDS.md).
+  **Классика без аддона** (2026-10-25) — вторая кнопка «Играть» на экране запуска: как `Gothic2c.bat` в GOG,
+  скрипты `_compiled_GII`, реплики `Cutscene_GII`, без `*_Addon*.vdf`, свои сохранения `files/classic/`
+  (`files/game_variant.txt` → `CommandLine::isClassic/saveFile`); ждёт проверки. Установщик GOG нужно сначала
+  распаковать в папку с `System`, `Data`, `_work` (docs/SUPPORTED_BUILDS.md).
 - **Пиратские копии не используем** (ни для тестов, ни для релиза): не скачивать, не предлагать, не
   поддерживать взломанные файлы. Игровых файлов у нас нет: проверяет на своём телефоне только пользователь.
   Скрипты игры для справки — восстановленные исходники MDK (github.com/VaanaCZ/gothic-2-addon-scripts,
@@ -54,7 +56,10 @@ docs/AI_NPC.md, «Сюжет игры в разговоре»); **«Путь» �
   папки игры (`GameFolder`), выбор вручную через SAF, «Играть», раздел «Графика» (`GraphicsSettings` →
   `files/g2m.ini`; на слабом телефоне при первом запуске — «Экономно», `DevicePerformance`), «Сохранить журнал в «Загрузки»» (`gothic2-log.txt`), «Сведения о лицензиях»
   (`LicensesActivity`). `GameActivity` — `NativeActivity` движка (`libGothic2Notr.so`) во весь экран, частота дисплея — под
-  ограничение кадров.
+  ограничение кадров; **в своём процессе `:game`** — экран запуска перезапускает игру (`LauncherActivity.restartGame`).
+  Кнопка «Приложение» в главном меню игры (`TouchInput` `C_App` → `AppLink` JNI → `GameActivity.openAppMenu`) — экран
+  запуска поверх игры. **Свёрнутая игра не закрывается** (патч Tempest `androidapi.cpp`: потеря окна — пауза, слот окна,
+  `VSwapchain::reset` по номеру окна; вернулись посреди игры — меню паузы; без фокуса звук на паузе).
 - **Движок** (`third_party/opengothic`, скачивает `tools/fetch-opengothic.sh`; патчи
   `third_party/opengothic.patch` и `opengothic-tempest.patch`):
   - меню игры (`GameMenu`, `MenuRoot`): сенсорный слой лежит поверх меню (`Ui::Menu`) и отдаёт ему касания мимо
@@ -159,7 +164,8 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
   git add -N common/game/companions.cpp common/game/travelpoints.cpp common/game/travelpoints.h common/utils/cp1251.h \
     common/game/travelcamera.cpp common/game/travelcamera.h common/game/ainpc.cpp common/game/ainpc.h \
     common/game/ailink.cpp common/game/ailink.h common/utils/mobileperf.cpp common/utils/mobileperf.h common/utils/perfstats.h \
-    common/ui/touchicons.cpp common/ui/touchicons.h common/game/cooking.cpp   # и другие новые файлы; не -A: build/ не в .gitignore движка
+    common/ui/touchicons.cpp common/ui/touchicons.h common/game/cooking.cpp \
+    common/utils/applink.cpp common/utils/applink.h   # и другие новые файлы; не -A: build/ не в .gitignore движка
   git diff --ignore-submodules=all > ../opengothic.patch && git reset -q
   git -C lib/Tempest diff > ../opengothic-tempest.patch
   ```

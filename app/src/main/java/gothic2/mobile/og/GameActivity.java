@@ -1,6 +1,7 @@
 package gothic2.mobile.og;
 
 import android.app.NativeActivity;
+import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.Display;
@@ -18,9 +19,18 @@ import gothic2.mobile.og.ai.AiBridge;
  * Частота дисплея подстраивается под ограничение кадров из настроек графики: при 30 FPS дисплею
  * незачем обновляться 120 раз в секунду (лишний расход и нагрев), а кадры ложатся на каждое
  * второе обновление ровно, без подёргиваний.
+ *
+ * Игра идёт в своём процессе (:game, манифест): движок после выхода завершает процесс, а экран запуска
+ * остаётся — из него игру можно перезапустить с другими настройками или другим вариантом. Кнопка
+ * «Приложение» в меню игры открывает экран запуска поверх игры ({@link #openAppMenu}); свёрнутая игра
+ * стоит на паузе и продолжается с того же места (патч Tempest: потеря окна — не выход).
  */
 public class GameActivity extends NativeActivity {
+    private static volatile GameActivity current;
+
     private int fpsLimit;
+
+    private static native void nativeAttachApp();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -32,6 +42,12 @@ public class GameActivity extends NativeActivity {
             // NativeActivity сообщит об ошибке сама
         }
         super.onCreate(savedInstanceState);
+        current = this;
+        try {
+            nativeAttachApp();
+        } catch (UnsatisfiedLinkError ignored) {
+            // движок без связи с приложением - не будет только кнопки «Приложение»
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemUi();
         fpsLimit = new GraphicsSettings(getSharedPreferences("launcher", MODE_PRIVATE)).fpsLimit();
@@ -41,8 +57,20 @@ public class GameActivity extends NativeActivity {
 
     @Override
     protected void onDestroy() {
+        if (current == this) current = null;
         AiBridge.stop();
         super.onDestroy();
+    }
+
+    /** Кнопка «Приложение» в меню игры (движок, поток игры): экран запуска поверх игры. */
+    static void openAppMenu() {
+        GameActivity a = current;
+        if (a == null) return;
+        a.runOnUiThread(() -> {
+            Intent i = new Intent(a, LauncherActivity.class);
+            i.putExtra(LauncherActivity.EXTRA_FROM_GAME, true);
+            a.startActivity(i);
+        });
     }
 
     @Override
