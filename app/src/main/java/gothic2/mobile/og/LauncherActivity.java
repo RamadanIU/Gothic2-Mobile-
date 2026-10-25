@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.net.Uri;
@@ -19,6 +20,7 @@ import android.provider.DocumentsContract;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -259,6 +261,10 @@ public class LauncherActivity extends Activity {
         List<GraphicsSettings.Option> options = new ArrayList<>(Arrays.asList(GraphicsSettings.ALL));
         options.addAll(Arrays.asList(GraphicsSettings.EXTRA));
         for (GraphicsSettings.Option o : options) {
+            if (o.check) {
+                col.addView(checkBox(o));
+                continue;
+            }
             Button b = button("", v -> {
                 graphics.cycle(o);
                 refreshGraphics();
@@ -267,6 +273,31 @@ public class LauncherActivity extends Activity {
             col.addView(b);
         }
         refreshGraphics();
+    }
+
+    /** Галочка настройки; регдолл у живых без регдолла не действует — тогда флажок неактивен. */
+    private CheckBox checkBox(GraphicsSettings.Option o) {
+        CheckBox c = new CheckBox(this);
+        c.setText(o.title);
+        c.setTextColor(GOLD);
+        c.setTextSize(15);
+        c.setButtonTintList(ColorStateList.valueOf(GOLD));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = (int) (8 * getResources().getDisplayMetrics().density);
+        c.setLayoutParams(lp);
+        graphicsRefresh.add(() -> {
+            c.setChecked(graphics.isOn(o));
+            boolean enabled = o != GraphicsSettings.RAGDOLL_FALL || graphics.isOn(GraphicsSettings.RAGDOLL);
+            c.setEnabled(enabled);
+            c.setAlpha(enabled ? 1f : 0.5f);
+        });
+        c.setOnCheckedChangeListener((v, on) -> {
+            if (on == graphics.isOn(o)) return;
+            graphics.setOn(o, on);
+            refreshGraphics();
+        });
+        return c;
     }
 
     private void refreshGraphics() {

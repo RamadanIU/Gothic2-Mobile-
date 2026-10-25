@@ -22,13 +22,20 @@ final class GraphicsSettings {
         final String title;
         final String[] labels;
         final String[] values;
+        /** Галочка: два варианта, первый — «включено»; на экране — флажок с подписью title. */
+        final boolean check;
 
         Option(String key, String iniKey, String title, String[] labels, String[] values) {
+            this(key, iniKey, title, labels, values, false);
+        }
+
+        Option(String key, String iniKey, String title, String[] labels, String[] values, boolean check) {
             this.key = key;
             this.iniKey = iniKey;
             this.title = title;
             this.labels = labels;
             this.values = values;
+            this.check = check;
         }
     }
 
@@ -60,10 +67,17 @@ final class GraphicsSettings {
     /** Не графика, а помощь в настройке: в наборы не входит, по умолчанию выключено. */
     static final Option SHOW_FPS = new Option("gfx_show_fps", "showFps", "Счётчик кадров на экране",
         new String[]{"скрыт", "показан"}, new String[]{"0", "1"});
-    /** Убитые и оглушённые падают по физике (регдолл движка); в наборы не входит, по умолчанию включено. */
-    static final Option RAGDOLL = new Option("gfx_ragdoll", "ragdoll", "Падение побеждённых",
-        new String[]{"по физике", "анимацией игры"}, new String[]{"1", "0"});
-    static final Option[] EXTRA = {SHOW_FPS, RAGDOLL};
+    /**
+     * Регдолл: убитые и оглушённые падают по физике; без галочки — анимацией смерти, как в обычной Gothic.
+     * В наборы не входит, по умолчанию включён.
+     */
+    static final Option RAGDOLL = new Option("gfx_ragdoll", "ragdoll", "Регдолл: побеждённые падают по физике",
+        new String[]{"включён", "выключен — смерть анимацией, как в Gothic"}, new String[]{"1", "0"}, true);
+    /** И живые: падение дольше секунды, удар тролля; встают сами. Действует только с {@link #RAGDOLL}. */
+    static final Option RAGDOLL_FALL = new Option("gfx_ragdoll_fall", "ragdollFall",
+        "Регдолл и у живых: долгое падение, удар тролля",
+        new String[]{"включён", "выключен"}, new String[]{"1", "0"}, true);
+    static final Option[] EXTRA = {SHOW_FPS, RAGDOLL, RAGDOLL_FALL};
 
     /** Готовые наборы: индексы вариантов в порядке {@link #ALL}. */
     static final String[] PRESET_NAMES = {"Экономно", "Сбалансированно", "Красиво"};
@@ -95,6 +109,15 @@ final class GraphicsSettings {
         // набор, на котором начали менять, - запомнить до изменения: остальные параметры остаются его
         if (!prefs.contains(PREF_PRESET)) e.putInt(PREF_PRESET, basePreset());
         e.putInt(o.key, (get(o) + 1) % o.labels.length).apply();
+    }
+
+    /** Галочка стоит (первый вариант). */
+    boolean isOn(Option o) {
+        return get(o) == 0;
+    }
+
+    void setOn(Option o, boolean on) {
+        prefs.edit().putInt(o.key, on ? 0 : 1).apply();
     }
 
     void applyPreset(int preset) {
