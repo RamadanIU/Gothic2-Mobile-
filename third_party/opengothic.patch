@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..6c455d4
+index 0000000..8426f02
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2828 @@
+@@ -0,0 +1,2840 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -799,8 +799,20 @@ index 0000000..6c455d4
 +void AiNpc::setup(Npc& npc, bool fresh) {
 +  auto& h = npc.handle();
 +  h.name[0] = toCp1251("Геральт");
-+  if(!fresh)
++  // Доспехи рудного барона (аддон). В старых сохранениях он ещё в лёгких доспехах охотника на драконов -
++  // переодеть, если доспехов барона у него нет (дальше своё снаряжение он меняет сам - equip/unequip)
++  const size_t baron = owner.findSymbolIndex("ITAR_OREBARON_ADDON");
++  if(!fresh) {
++    const size_t djg   = owner.findSymbolIndex("ITAR_DJG_L");
++    auto         armor = npc.currentArmor();
++    if(baron!=size_t(-1) && npc.itemCount(baron)==0 && armor!=nullptr && armor->clsId()==djg) {
++      npc.addItem(baron,1);
++      npc.useItem(baron,Item::NSLOT,true);
++      npc.delItem(djg,uint32_t(npc.itemCount(djg)));
++      Log::i("[g2m] ai: Geralt - ore baron armor instead of dragon hunter's");
++      }
 +    return;
++    }
 +
 +  // Ведьмак: сильный мечник-одиночка, без гильдии; безымянный тип - как нанятые напарники (отряд, не гибнет)
 +  h.guild        = GIL_NONE;
@@ -827,7 +839,7 @@ index 0000000..6c455d4
 +  h.aivar[AivStory] = std::max(story,1);
 +  h.aivar[AivToken] = 0;
 +
-+  // Внешность из моделей игры: голова с хвостом, седое лицо, светлая кожа, доспехи охотника на драконов
++  // Внешность из моделей игры: голова с хвостом, седое лицо, светлая кожа, доспехи рудного барона
 +  const int32_t face = owner.scriptConst("FACE_N_IMPORTANTGREY",59);
 +  npc.setVisualBody(face,0,1,0,"hum_body_Naked0","Hum_Head_Pony");
 +  npc.delOverlay("Humans_Militia.mds");
@@ -847,7 +859,7 @@ index 0000000..6c455d4
 +    if(id!=size_t(-1))
 +      npc.addItem(id,n);
 +    };
-+  equip("ITAR_DJG_L");
++  equip(baron!=size_t(-1) ? "ITAR_OREBARON_ADDON" : "ITAR_DJG_L");
 +  // Доспехи ополчения из скрипта Торуса - не его
 +  if(const size_t mil = owner.findSymbolIndex("ITAR_MIL_M"); mil!=size_t(-1) && npc.itemCount(mil)>0)
 +    npc.delItem(mil,uint32_t(npc.itemCount(mil)));
@@ -4873,6 +4885,147 @@ index 0e0008a..4199b94 100644
    ITM_RING       = 1 << 11,
    ITM_MISSION    = 1 << 12,
    ITM_DAG        = 1 << 13,
+diff --git a/common/game/cooking.cpp b/common/game/cooking.cpp
+new file mode 100644
+index 0000000..ac43c3a
+--- /dev/null
++++ b/common/game/cooking.cpp
+@@ -0,0 +1,135 @@
++#include "gamescript.h"
++
++#include <Tempest/Log>
++
++#include <algorithm>
++#include <string>
++
++#include "world/objects/interactive.h"
++#include "world/objects/npc.h"
++#include "world/aiqueue.h"
++#include "utils/cp1251.h"
++#include "gothic.h"
++
++// Gothic II Mobile: жарка мяса.
++// В игре сковорода (useWithItem = ItFoMuttonRaw) за один подход меняет один сырой кусок на жареный: анимация
++// с событием DEF_EXCHANGE_ITEM. Если сырых кусков несколько, у сковороды открывается диалог героя с собой - как
++// у кузницы и стола рун (AI_ProcessInfos(hero)): «один кусок», «5», «10», «всё мясо». Один кусок по-прежнему
++// жарит анимация, остальные меняются в сумке сразу после неё. Если анимация уже пожарила кусок до выбора -
++// он входит в выбранное число. «Назад» в диалоге - как в игре: один кусок.
++
++static std::string cookTitle(uint32_t n, uint32_t all) {
++  if(n==1)
++    return toCp1251("Пожарить один кусок");
++  if(n==all)
++    return toCp1251("Пожарить всё мясо (") + std::to_string(all) + toCp1251(" шт.)");
++  return toCp1251("Пожарить ") + std::to_string(n) + toCp1251(" кусков");
++  }
++
++void GameScript::cookOffer(Npc& player, Interactive& mob) {
++  const size_t raw = findSymbolIndex("ITFOMUTTONRAW");
++  if(raw==size_t(-1) || findSymbolIndex(mob.useItemName())!=raw)
++    return;
++  if(cooking.mob!=&mob) {
++    cooking     = Cooking();
++    cooking.mob = &mob;
++    cooking.raw = raw;
++    }
++  if(cooking.offered)
++    return;
++  cooking.offered = true;
++
++  const size_t all = player.itemCount(raw) + cooking.exchanged;
++  if(all<2)
++    return;
++  // Прежний выбор у другого места (кузница, алхимия) не должен подмешать свои реплики
++  if(auto s = vm.find_symbol_by_name("PLAYER_MOBSI_PRODUCTION"))
++    s->set_int(scriptConst("MOBSI_NONE",0));
++  player.aiPush(AiQueue::aiProcessInfo(player));
++  }
++
++void GameScript::cookChoices(Npc& player, std::vector<DlgChoice>& out) {
++  if(cooking.mob==nullptr || cooking.chosen || player.interactive()!=cooking.mob)
++    return;
++  const uint32_t all = uint32_t(std::min<size_t>(player.itemCount(cooking.raw) + cooking.exchanged, 0xFFFF));
++  if(all<2)
++    return;
++  auto add = [&out,all](uint32_t n) {
++    DlgChoice ch;
++    ch.title    = cookTitle(n,all);
++    ch.scriptFn = CookChoice + n;
++    ch.sort     = int32_t(n);
++    out.push_back(std::move(ch));
++    };
++  for(uint32_t n:{1u, 5u, 10u})
++    if(n<all)
++      add(n);
++  add(all);
++  }
++
++static uint32_t cookConvert(Npc& player, size_t raw, size_t product, uint32_t n) {
++  n = uint32_t(std::min<size_t>(n, player.itemCount(raw)));
++  if(n==0 || product==size_t(-1))
++    return 0;
++  player.delItem(raw,n);
++  player.addItem(product,n);
++  return n;
++  }
++
++bool GameScript::execCook(const DlgChoice& dlg, Npc& player) {
++  if((dlg.scriptFn & 0xFFFF0000u)!=CookChoice || cooking.mob==nullptr)
++    return false;
++  const uint32_t n = std::max<uint32_t>(dlg.scriptFn & 0xFFFFu, 1);
++  cooking.chosen = true;
++  if(cooking.exchanged>0) {
++    // Анимация уже пожарила свой кусок: остальное - сразу
++    const size_t product = cooking.product!=size_t(-1) ? cooking.product : findSymbolIndex("ITFOMUTTON");
++    if(n>cooking.exchanged)
++      cooking.done += cookConvert(player,cooking.raw,product,n-cooking.exchanged);
++    } else {
++    cooking.extra = n-1;
++    }
++  Tempest::Log::i("[g2m] cooking: ",n," of ",player.itemCount(cooking.raw)+cooking.exchanged);
++  // Конец диалога, как B_ENDPRODUCTIONDIALOG: DialogMenu::close уводит героя от сковороды
++  player.aiPush(AiQueue::aiStopProcessInfo(aiOutOrderId));
++  ++aiOutOrderId;
++  return true;
++  }
++
++void GameScript::cookExchanged(Npc& player, std::string_view product) {
++  auto mob = player.interactive();
++  if(mob==nullptr)
++    return;
++  const size_t raw = findSymbolIndex("ITFOMUTTONRAW");
++  if(raw==size_t(-1) || findSymbolIndex(mob->useItemName())!=raw)
++    return;
++  if(cooking.mob!=mob) {
++    // Кусок пожарен ещё до выбора (событие в анимации подхода)
++    cooking     = Cooking();
++    cooking.mob = mob;
++    cooking.raw = raw;
++    }
++  cooking.exchanged++;
++  cooking.product = findSymbolIndex(product);
++  if(cooking.extra>0) {
++    cooking.done += cookConvert(player,cooking.raw,cooking.product,cooking.extra);
++    cooking.extra = 0;
++    }
++  }
++
++void GameScript::cookFinish(Npc& player) {
++  if(cooking.mob==nullptr)
++    return;
++  if(player.interactive()!=cooking.mob) {
++    cooking = Cooking();
++    return;
++    }
++  if(cooking.chosen && cooking.exchanged==0) {
++    // Анимация кусок так и не поменяла - всё выбранное сразу
++    cooking.done += cookConvert(player,cooking.raw,findSymbolIndex("ITFOMUTTON"),cooking.extra+1);
++    }
++  const uint32_t total = cooking.exchanged + cooking.done;
++  if(cooking.chosen && total>1)
++    Gothic::inst().onPrint(toCp1251("Пожарено мяса: ") + std::to_string(total) + toCp1251(" шт."));
++  cooking = Cooking();
++  }
 diff --git a/common/game/fightalgo.cpp b/common/game/fightalgo.cpp
 index b1d951f..8d5f5cd 100644
 --- a/common/game/fightalgo.cpp
@@ -4887,7 +5040,7 @@ index b1d951f..8d5f5cd 100644
  
    if(hitFlg) {
 diff --git a/common/game/gamescript.cpp b/common/game/gamescript.cpp
-index 4b32af2..8500e62 100644
+index 4b32af2..0435e41 100644
 --- a/common/game/gamescript.cpp
 +++ b/common/game/gamescript.cpp
 @@ -6,6 +6,7 @@
@@ -4921,7 +5074,7 @@ index 4b32af2..8500e62 100644
    ScopeVar self (*vm.global_self(),  hnpc);
    ScopeVar other(*vm.global_other(), player);
    std::vector<zenkit::IInfo*> hDialog;
-@@ -920,6 +930,12 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
+@@ -920,6 +930,15 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
        ch.sort     = info.nr;
        choice.emplace_back(std::move(ch));
        }
@@ -4930,11 +5083,14 @@ index 4b32af2..8500e62 100644
 +      auto npc = findNpc(hnpc);
 +      if(pl!=nullptr && npc!=nullptr)
 +        companionChoices(*pl,*npc,choice);
++      // Gothic II Mobile: диалог героя с собой у сковороды - сколько мяса пожарить
++      if(pl!=nullptr && pl==npc)
++        cookChoices(*pl,choice);
 +      }
      if(!choice.empty()){
        sort(choice);
        return choice;
-@@ -954,6 +970,13 @@ std::vector<GameScript::DlgChoice> GameScript::updateDialog(const GameScript::Dl
+@@ -954,6 +973,15 @@ std::vector<GameScript::DlgChoice> GameScript::updateDialog(const GameScript::Dl
    }
  
  void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
@@ -4942,13 +5098,15 @@ index 4b32af2..8500e62 100644
 +    // Gothic II Mobile: реплика без скрипта - живой NPC или найм напарника
 +    if(aiNpcPtr->exec(dlg,player,npc))
 +      return;
++    if(&player==&npc && execCook(dlg,player))
++      return;
 +    execCompanion(dlg,player,npc);
 +    return;
 +    }
    ScopeVar self (*vm.global_self(), npc.handlePtr());
    ScopeVar other(*vm.global_other(), player.handlePtr());
  
-@@ -975,6 +998,83 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
+@@ -975,6 +1003,83 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
    vm.call_function(vm.find_symbol_by_index(dlg.scriptFn));
    }
  
@@ -5032,7 +5190,7 @@ index 4b32af2..8500e62 100644
  void GameScript::printCannotUseError(Npc& npc, int32_t atr, int32_t nValue) {
    auto id = vm.find_symbol_by_name("G_CanNotUse");
    if(id==nullptr)
-@@ -1118,6 +1218,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
+@@ -1118,6 +1223,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
    return ret;
    }
  
@@ -5062,7 +5220,7 @@ index 4b32af2..8500e62 100644
  void GameScript::invokeItem(Npc *npc, ScriptFn fn) {
    if(fn==size_t(-1) || fn == 0)
      return;
-@@ -1281,6 +1404,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
+@@ -1281,6 +1409,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
    }
  
  bool GameScript::aiOutput(Npc &npc, std::string_view outputname, bool overlay) {
@@ -5074,7 +5232,7 @@ index 4b32af2..8500e62 100644
    string_frm name(outputname,".WAV");
    uint64_t   dt = 0;
  
-@@ -1323,6 +1451,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
+@@ -1323,6 +1456,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
    }
  
  std::string_view GameScript::messageByName(std::string_view id) const {
@@ -5085,7 +5243,7 @@ index 4b32af2..8500e62 100644
    auto blk = dialogs.block_by_name(id);
    if(blk == nullptr)
      return "";
-@@ -1333,6 +1465,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
+@@ -1333,6 +1470,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
    }
  
  uint32_t GameScript::messageTime(std::string_view id) const {
@@ -5096,7 +5254,7 @@ index 4b32af2..8500e62 100644
    static std::string tmp;
    tmp.assign(id);
  
-@@ -1472,6 +1608,10 @@ uint64_t GameScript::tickCount() const {
+@@ -1472,6 +1613,10 @@ uint64_t GameScript::tickCount() const {
  void GameScript::tick(uint64_t dt) {
    if(dma!=nullptr)
      dma->tick(dt);
@@ -5107,7 +5265,7 @@ index 4b32af2..8500e62 100644
    }
  
  uint32_t GameScript::rand(uint32_t max) {
-@@ -2022,6 +2162,9 @@ void GameScript::npc_settofistmode(std::shared_ptr<zenkit::INpc> npcRef) {
+@@ -2022,6 +2167,9 @@ void GameScript::npc_settofistmode(std::shared_ptr<zenkit::INpc> npcRef) {
  
  bool GameScript::npc_isinstate(std::shared_ptr<zenkit::INpc> npcRef, int stateFn) {
    auto npc = findNpc(npcRef);
@@ -5117,7 +5275,7 @@ index 4b32af2..8500e62 100644
    if(npc!=nullptr)
      return npc->isInState(uint32_t(stateFn));
    return false;
-@@ -2876,6 +3019,9 @@ int GameScript::npc_getactivespelllevel(std::shared_ptr<zenkit::INpc> npcRef) {
+@@ -2876,6 +3024,9 @@ int GameScript::npc_getactivespelllevel(std::shared_ptr<zenkit::INpc> npcRef) {
  void GameScript::ai_processinfos(std::shared_ptr<zenkit::INpc> npcRef) {
    auto npc = findNpc(npcRef);
    auto pl  = owner.player();
@@ -5127,7 +5285,7 @@ index 4b32af2..8500e62 100644
    if(pl!=nullptr && npc!=nullptr) {
      aiOutOrderId=0;
      npc->aiPush(AiQueue::aiProcessInfo(*pl));
-@@ -2889,6 +3035,13 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
+@@ -2889,6 +3040,13 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -5141,7 +5299,7 @@ index 4b32af2..8500e62 100644
    if(self!=nullptr && target!=nullptr) {
      self->aiPush(AiQueue::aiOutput(*target,outputname,aiOutOrderId));
      ++aiOutOrderId;
-@@ -2897,6 +3050,11 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
+@@ -2897,6 +3055,11 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
  
  void GameScript::ai_stopprocessinfos(std::shared_ptr<zenkit::INpc> selfRef) {
    auto self = findNpc(selfRef);
@@ -5153,7 +5311,7 @@ index 4b32af2..8500e62 100644
    if(self) {
      self->aiPush(AiQueue::aiStopProcessInfo(aiOutOrderId));
      ++aiOutOrderId;
-@@ -2981,6 +3139,13 @@ void GameScript::ai_outputsvm(std::shared_ptr<zenkit::INpc> selfRef, std::shared
+@@ -2981,6 +3144,13 @@ void GameScript::ai_outputsvm(std::shared_ptr<zenkit::INpc> selfRef, std::shared
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -5167,7 +5325,7 @@ index 4b32af2..8500e62 100644
    if(self!=nullptr && target!=nullptr) {
      self->aiPush(AiQueue::aiOutputSvm(*target,name,aiOutOrderId));
      ++aiOutOrderId;
-@@ -2994,6 +3159,13 @@ void GameScript::ai_outputsvm_overlay(std::shared_ptr<zenkit::INpc> selfRef, std
+@@ -2994,6 +3164,13 @@ void GameScript::ai_outputsvm_overlay(std::shared_ptr<zenkit::INpc> selfRef, std
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -5182,21 +5340,22 @@ index 4b32af2..8500e62 100644
      self->aiPush(AiQueue::aiOutputSvmOverlay(*target,name,aiOutOrderId));
      ++aiOutOrderId;
 diff --git a/common/game/gamescript.h b/common/game/gamescript.h
-index 2cccb63..8e42353 100644
+index 2cccb63..b89286a 100644
 --- a/common/game/gamescript.h
 +++ b/common/game/gamescript.h
-@@ -25,8 +25,10 @@ class Npc;
+@@ -25,8 +25,11 @@ class Npc;
  class Item;
  class VisualFx;
  class ParticleFx;
 +class WayPoint;
  class Serialize;
  class Gothic;
++class Interactive;
 +class AiNpc;
  
  class ScriptFn final {
    public:
-@@ -43,6 +45,8 @@ class ScriptFn final {
+@@ -43,6 +46,8 @@ class ScriptFn final {
    };
  
  class GameScript final {
@@ -5205,7 +5364,7 @@ index 2cccb63..8e42353 100644
    public:
      GameScript(GameSession &owner);
      ~GameScript();
-@@ -52,6 +56,8 @@ class GameScript final {
+@@ -52,6 +57,8 @@ class GameScript final {
        int32_t          sort     = 0;
        uint32_t         scriptFn = 0;
        bool             isTrade  = false;
@@ -5214,13 +5373,20 @@ index 2cccb63..8e42353 100644
        zenkit::IInfo*   handle   = nullptr;
        };
  
-@@ -121,6 +127,49 @@ class GameScript final {
+@@ -121,6 +128,56 @@ class GameScript final {
      auto updateDialog (const GameScript::DlgChoice &dlg, Npc &player, Npc &npc) -> std::vector<GameScript::DlgChoice>;
      void exec(const DlgChoice &dlg, Npc &player, Npc &npc);
  
 +    // Gothic II Mobile: напарники - «Пойдём со мной» в диалоге с безымянными людьми (companions.cpp)
 +    void companionChoices(Npc& player, Npc& npc, std::vector<DlgChoice>& out);
 +    void execCompanion   (const DlgChoice& dlg, Npc& player, Npc& npc);
++
++    // Gothic II Mobile: жарка мяса - на сковороде выбор «1 / 5 / 10 / всё» вместо куска за подход (cooking.cpp)
++    void cookOffer    (Npc& player, Interactive& mob);
++    void cookChoices  (Npc& player, std::vector<DlgChoice>& out);
++    bool execCook     (const DlgChoice& dlg, Npc& player);
++    void cookExchanged(Npc& player, std::string_view product);
++    void cookFinish   (Npc& player);
 +
 +    // Gothic II Mobile: отряд - приказы нанятым напарникам с кнопки «Отряд» (companions.cpp)
 +    enum class SquadOrder : uint8_t {
@@ -5264,7 +5430,7 @@ index 2cccb63..8e42353 100644
      void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
      void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
      void  printCannotBuyError         (Npc &npc);
-@@ -445,6 +494,60 @@ class GameScript final {
+@@ -445,6 +502,62 @@ class GameScript final {
      void exitsession         ();
  
      void sort(std::vector<DlgChoice>& dlg);
@@ -5275,6 +5441,8 @@ index 2cccb63..8e42353 100644
 +      CompanionFollow  = 0xFFFFFF03u,
 +      CompanionDismiss = 0xFFFFFF04u,
 +      CompanionTrade   = 0xFFFFFF05u,
++      // Жарка: младшие 16 бит - сколько кусков
++      CookChoice       = 0xFFFE0000u,
 +      };
 +  public:
 +    // Gothic II Mobile: точка-метка распорядка лагеря «Ждать здесь» - такой точки нет, никуда не идти
@@ -5325,7 +5493,7 @@ index 2cccb63..8e42353 100644
      void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
      bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
  
-@@ -460,6 +563,7 @@ class GameScript final {
+@@ -460,6 +573,7 @@ class GameScript final {
      NpcProcessPolicy                                            aiProcessPolicy = NpcProcessPolicy::AiNormal;
  
      std::unique_ptr<DirectMemory>                               dma;
@@ -5333,7 +5501,7 @@ index 2cccb63..8e42353 100644
  
      std::unique_ptr<SpellDefinitions>                           spells;
      std::unique_ptr<SvmDefinitions>                             svm;
-@@ -486,6 +590,21 @@ class GameScript final {
+@@ -486,6 +600,33 @@ class GameScript final {
      size_t                                                      gilCount=0;
      std::vector<int32_t>                                        gilAttitudes;
      int                                                         aiOutOrderId=0;
@@ -5352,6 +5520,18 @@ index 2cccb63..8e42353 100644
 +    Tempest::Vec3                                               squadDir;
 +    Tempest::Vec3                                               squadHeroPos;
 +    uint64_t                                                    squadHeroStill=0;
++    // Жарка мяса у сковороды: сессия от подхода героя до ухода (cooking.cpp)
++    struct Cooking {
++      const Interactive* mob       = nullptr;
++      size_t             raw       = size_t(-1);
++      size_t             product   = size_t(-1);
++      uint32_t           exchanged = 0; // сколько кусков пожарила анимация
++      uint32_t           extra     = 0; // сколько дожарить после анимации
++      uint32_t           done      = 0; // сколько дожарено в сумке
++      bool               offered   = false;
++      bool               chosen    = false;
++      };
++    Cooking                                                     cooking;
  
      PerDist                                                     perceptionRanges;
  
@@ -13669,8 +13849,35 @@ index f8badbd..a918201 100644
  
    while(true) {
      {
+diff --git a/common/world/objects/interactive.cpp b/common/world/objects/interactive.cpp
+index b0c1612..eddd52f 100644
+--- a/common/world/objects/interactive.cpp
++++ b/common/world/objects/interactive.cpp
+@@ -496,6 +496,9 @@ bool Interactive::setMobState(std::string_view scheme, int32_t st) {
+   }
+ 
+ void Interactive::invokeStateFunc(Npc& npc) {
++  // Gothic II Mobile: герой у сковороды с несколькими кусками сырого мяса - спросить, сколько пожарить
++  if(npc.isPlayer() && state==stateNum && !loopState && !useWithItem.empty())
++    npc.world().script().cookOffer(npc,*this);
+   if(onStateFunc.empty() || state<0)
+     return;
+   if(loopState)
+diff --git a/common/world/objects/interactive.h b/common/world/objects/interactive.h
+index b45a9bd..35a566d 100644
+--- a/common/world/objects/interactive.h
++++ b/common/world/objects/interactive.h
+@@ -64,6 +64,8 @@ class Interactive : public Vob {
+     bool                isTrueDoor(const Npc& npc) const;
+     bool                isLadder() const;
+     std::string_view    pickLockCode() const { return pickLockStr; }
++    // Gothic II Mobile: предмет, без которого не начать (сковорода - сырое мясо)
++    std::string_view    useItemName() const { return useWithItem; }
+     void                setAsCracked(bool c) { isLockCracked = c; }
+     bool                isCracked() const { return isLockCracked; }
+     bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..b072561 100644
+index e015398..0a74b3d 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -4,10 +4,12 @@
@@ -13825,7 +14032,17 @@ index e015398..b072561 100644
      fghAlgo.onTakeHit();
      implFaiWait(0);
      }
-@@ -2529,6 +2583,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2247,6 +2301,9 @@ void Npc::tickTimedEvt(Animation::EvCount& ev) {
+         if(auto it = invent.addItem(i.item,1,world())) {
+           invent.putToSlot(*this,it->clsId(),i.slot[0]);
+           }
++        // Gothic II Mobile: жарка мяса - остальные выбранные куски
++        if(isPlayer())
++          owner.script().cookExchanged(*this,i.item);
+         break;
+         }
+       case zenkit::MdsEventType::SET_FIGHT_MODE:
+@@ -2529,6 +2586,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -13837,7 +14054,7 @@ index e015398..b072561 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -2593,14 +2652,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2593,14 +2655,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_EquipArmor:
        invent.equipArmor(act.i0,*this);
        break;
@@ -13860,7 +14077,7 @@ index e015398..b072561 100644
        break;
      case AI_UseMob: {
        if(act.i0<0) {
-@@ -3504,6 +3568,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -3504,6 +3571,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -13869,7 +14086,7 @@ index e015398..b072561 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +3859,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +3862,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
@@ -13880,7 +14097,7 @@ index e015398..b072561 100644
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -4158,10 +4228,69 @@ bool Npc::isPrehit() const {
+@@ -4158,10 +4231,69 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -13950,7 +14167,7 @@ index e015398..b072561 100644
  void Npc::setPerceptionTime(uint64_t time) {
    perceptionTime = time;
    }
-@@ -4238,6 +4367,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4370,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -13961,7 +14178,17 @@ index e015398..b072561 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4356,6 +4489,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4292,6 +4428,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
+ void Npc::quitInteraction() {
+   if(currentInteract==nullptr)
+     return;
++  // Gothic II Mobile: жарка мяса - если анимация так и не поменяла кусок, дожарить выбранное
++  if(isPlayer())
++    owner.script().cookFinish(*this);
+   if(invTorch)
+     processDefInvTorch();
+   setDirectionY(0);
+@@ -4356,6 +4495,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -13999,7 +14226,7 @@ index e015398..b072561 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4822,3 +4986,40 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4822,3 +4992,40 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
    if(syncAtt)
      visual.syncAttaches();
    }
