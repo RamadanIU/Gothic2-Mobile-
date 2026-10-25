@@ -340,10 +340,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..c06a9bf
+index 0000000..cfc52d7
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2886 @@
+@@ -0,0 +1,2887 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -980,10 +980,11 @@ index 0000000..c06a9bf
 +    if(id!=size_t(-1))
 +      npc.addItem(id,n);
 +    };
-+  dressArmor(npc);
-+  // Доспехи ополчения из скрипта Торуса - не его
++  // Доспехи ополчения из скрипта Торуса - не его. Убрать до переодевания: скрипт (B_SetNpcVisual) их уже надел,
++  // и dressArmor принимал их за доспехи, надетые им самим, а удаление следом снимало их - Геральт оставался голым
 +  if(const size_t mil = owner.findSymbolIndex("ITAR_MIL_M"); mil!=size_t(-1) && npc.itemCount(mil)>0)
 +    npc.delItem(mil,uint32_t(npc.itemCount(mil)));
++  dressArmor(npc);
 +  equip("ITMW_SCHWERT5");       // «стальной» - на людей
 +  give ("ITMW_1H_SPECIAL_01",1); // рудный - вместо серебряного, на нечисть
 +  give ("ITPO_HEALTH_02",5);
@@ -15162,10 +15163,15 @@ index 59470b9..fe8f94c 100644
      std::vector<AbstractTrigger*>      triggers;
      std::vector<AbstractTrigger*>      triggersTk;
 diff --git a/game/main.cpp b/game/main.cpp
-index dc4d2dd..059429f 100644
+index dc4d2dd..5409178 100644
 --- a/game/main.cpp
 +++ b/game/main.cpp
-@@ -20,6 +20,8 @@
+@@ -16,10 +16,13 @@
+ 
+ #if defined(__IOS__) || defined(__ANDROID__)
+ #include "utils/installdetect.h"
++#include <cstring>
+ #include <filesystem>
  #endif
  
  #include "utils/crashlog.h"
@@ -15174,7 +15180,23 @@ index dc4d2dd..059429f 100644
  #include "mainwindow.h"
  #include "gothic.h"
  #include "build.h"
-@@ -132,8 +134,19 @@ int main(int argc,const char** argv) {
+@@ -86,8 +89,15 @@ int main(int argc,const char** argv) {
+     Tempest::Log::setOutputCallback([](Tempest::Log::Mode mode, const char* text) {
+       logFile.write(text,std::strlen(text));
+       logFile.write("\n",1);
++#if defined(__ANDROID__)
++      // Gothic II Mobile: на телефоне процесс игры завершается без закрытия файла - строки в буфере пропадали,
++      // и в журнале не было ни [g2m], ни [perf]. Сразу на диск - всё, кроме потока разбора файлов zenkit
++      if(mode==Tempest::Log::Error || std::strncmp(text,"[zenkit]",8)!=0)
++        logFile.flush();
++#else
+       if(mode==Tempest::Log::Error)
+         logFile.flush();
++#endif
+       });
+     }
+   catch(...) {
+@@ -132,8 +142,19 @@ int main(int argc,const char** argv) {
  
    Tempest::Log::i(appBuild);
    Workers::setThreadName("Main thread");
