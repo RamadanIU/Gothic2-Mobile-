@@ -340,10 +340,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..4034d44
+index 0000000..1b4593f
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2856 @@
+@@ -0,0 +1,2859 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -974,27 +974,30 @@ index 0000000..4034d44
 +
 +void AiNpc::dressArmor(Npc& npc) {
 +  // Доспехи рудного барона (аддон) - при появлении и при каждой загрузке: без доспехов или в лёгких доспехах
-+  // охотника на драконов (их он носил раньше) - переодеть. Другие доспехи он надел сам (equip_item) - не трогать
++  // охотника на драконов (их он носил раньше) - переодеть. Другие доспехи он надел сам (equip_item) - не трогать.
++  // Gothic II без дополнения: доспехов барона в её скриптах нет - запасные, лёгкие доспехи охотника на драконов
 +  const size_t baron = owner.findSymbolIndex("ITAR_OREBARON_ADDON");
 +  const size_t djg   = owner.findSymbolIndex("ITAR_DJG_L");
++  const size_t want  = baron!=size_t(-1) ? baron : djg;
 +  auto*        armor = npc.currentArmor();
 +  const size_t was   = armor!=nullptr ? armor->clsId() : size_t(-1);
-+  if(baron==size_t(-1)) {
-+    Log::e("[g2m] ai: Geralt armor - no ITAR_OREBARON_ADDON in scripts, wears ",
++  if(want==size_t(-1)) {
++    Log::e("[g2m] ai: Geralt armor - no ITAR_OREBARON_ADDON and ITAR_DJG_L in scripts, wears ",
 +           armor!=nullptr ? fromCp1251(armor->displayName()) : std::string("nothing"));
 +    return;
 +    }
-+  if(was==baron || (armor!=nullptr && was!=djg)) {
++  if(was==want || (armor!=nullptr && was!=djg)) {
 +    Log::i("[g2m] ai: Geralt armor - ",fromCp1251(armor->displayName()));
 +    return;
 +    }
-+  if(npc.itemCount(baron)==0)
-+    npc.addItem(baron,1);
-+  npc.useItem(baron,Item::NSLOT,true);
-+  if(djg!=size_t(-1) && npc.itemCount(djg)>0)
++  if(npc.itemCount(want)==0)
++    npc.addItem(want,1);
++  npc.useItem(want,Item::NSLOT,true);
++  if(want!=djg && djg!=size_t(-1) && npc.itemCount(djg)>0)
 +    npc.delItem(djg,uint32_t(npc.itemCount(djg)));
 +  armor = npc.currentArmor();
-+  Log::i("[g2m] ai: Geralt armor - ore baron: ",armor!=nullptr && armor->clsId()==baron ? "ok" : "FAILED",
++  Log::i("[g2m] ai: Geralt armor - ",want==baron ? "ore baron: " : "dragon hunter's (no ore baron's in scripts): ",
++         armor!=nullptr && armor->clsId()==want ? "ok" : "FAILED",
 +         " (was ",was==djg ? "dragon hunter's" : (was==size_t(-1) ? "none" : "other"),")");
 +  }
 +
