@@ -234,10 +234,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..8426f02
+index 0000000..4034d44
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2840 @@
+@@ -0,0 +1,2856 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -799,18 +799,8 @@ index 0000000..8426f02
 +void AiNpc::setup(Npc& npc, bool fresh) {
 +  auto& h = npc.handle();
 +  h.name[0] = toCp1251("Геральт");
-+  // Доспехи рудного барона (аддон). В старых сохранениях он ещё в лёгких доспехах охотника на драконов -
-+  // переодеть, если доспехов барона у него нет (дальше своё снаряжение он меняет сам - equip/unequip)
-+  const size_t baron = owner.findSymbolIndex("ITAR_OREBARON_ADDON");
 +  if(!fresh) {
-+    const size_t djg   = owner.findSymbolIndex("ITAR_DJG_L");
-+    auto         armor = npc.currentArmor();
-+    if(baron!=size_t(-1) && npc.itemCount(baron)==0 && armor!=nullptr && armor->clsId()==djg) {
-+      npc.addItem(baron,1);
-+      npc.useItem(baron,Item::NSLOT,true);
-+      npc.delItem(djg,uint32_t(npc.itemCount(djg)));
-+      Log::i("[g2m] ai: Geralt - ore baron armor instead of dragon hunter's");
-+      }
++    dressArmor(npc);
 +    return;
 +    }
 +
@@ -859,7 +849,7 @@ index 0000000..8426f02
 +    if(id!=size_t(-1))
 +      npc.addItem(id,n);
 +    };
-+  equip(baron!=size_t(-1) ? "ITAR_OREBARON_ADDON" : "ITAR_DJG_L");
++  dressArmor(npc);
 +  // Доспехи ополчения из скрипта Торуса - не его
 +  if(const size_t mil = owner.findSymbolIndex("ITAR_MIL_M"); mil!=size_t(-1) && npc.itemCount(mil)>0)
 +    npc.delItem(mil,uint32_t(npc.itemCount(mil)));
@@ -874,6 +864,32 @@ index 0000000..8426f02
 +  npc.setAttitude(ATT_FRIENDLY);
 +  npc.setTempAttitude(ATT_FRIENDLY);
 +  setActivity(npc,"ZS_STAND_ARMSCROSSED");
++  }
++
++void AiNpc::dressArmor(Npc& npc) {
++  // Доспехи рудного барона (аддон) - при появлении и при каждой загрузке: без доспехов или в лёгких доспехах
++  // охотника на драконов (их он носил раньше) - переодеть. Другие доспехи он надел сам (equip_item) - не трогать
++  const size_t baron = owner.findSymbolIndex("ITAR_OREBARON_ADDON");
++  const size_t djg   = owner.findSymbolIndex("ITAR_DJG_L");
++  auto*        armor = npc.currentArmor();
++  const size_t was   = armor!=nullptr ? armor->clsId() : size_t(-1);
++  if(baron==size_t(-1)) {
++    Log::e("[g2m] ai: Geralt armor - no ITAR_OREBARON_ADDON in scripts, wears ",
++           armor!=nullptr ? fromCp1251(armor->displayName()) : std::string("nothing"));
++    return;
++    }
++  if(was==baron || (armor!=nullptr && was!=djg)) {
++    Log::i("[g2m] ai: Geralt armor - ",fromCp1251(armor->displayName()));
++    return;
++    }
++  if(npc.itemCount(baron)==0)
++    npc.addItem(baron,1);
++  npc.useItem(baron,Item::NSLOT,true);
++  if(djg!=size_t(-1) && npc.itemCount(djg)>0)
++    npc.delItem(djg,uint32_t(npc.itemCount(djg)));
++  armor = npc.currentArmor();
++  Log::i("[g2m] ai: Geralt armor - ore baron: ",armor!=nullptr && armor->clsId()==baron ? "ok" : "FAILED",
++         " (was ",was==djg ? "dragon hunter's" : (was==size_t(-1) ? "none" : "other"),")");
 +  }
 +
 +void AiNpc::setActivity(Npc& npc, std::string_view zs) {
@@ -3080,10 +3096,10 @@ index 0000000..8426f02
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..c1479ca
+index 0000000..002813b
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,248 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -3206,6 +3222,7 @@ index 0000000..c1479ca
 +    Npc*   resolve();
 +    void   insert(World& w);
 +    void   setup(Npc& npc, bool fresh);
++    void   dressArmor(Npc& npc);
 +    bool   isTargetWorld(World& w) const;
 +    const WayPoint* spawnPoint(World& w);
 +    void   seat(Npc& npc, World& w);
