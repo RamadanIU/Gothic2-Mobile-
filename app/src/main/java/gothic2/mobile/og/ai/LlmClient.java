@@ -243,7 +243,7 @@ public final class LlmClient {
         if (msg.trim().startsWith("<")) msg = msg.replaceAll("(?s)<title>.*?</title>", " ").replaceAll("<[^>]*>", " ");
         msg = msg.replaceAll("\\s+", " ").trim();
         if (msg.length() > 300) msg = msg.substring(0, 300);
-        String hint = code == 401 ? " — ключ не подходит" : code == 403 ? " — доступ запрещён" : code == 404 ? " — нет такого адреса или модели" : "";
+        String hint = code == 401 ? " — ключ не подходит" : code == 402 ? " — кончились средства или знаки тарифа" : code == 403 ? " — доступ запрещён" : code == 404 ? " — нет такого адреса или модели" : "";
         return "HTTP " + code + hint + (msg.isEmpty() ? "" : ": " + msg);
     }
 

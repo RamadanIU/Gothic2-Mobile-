@@ -41,6 +41,7 @@ public interface Tts {
     static Tts create(AiSettings s, android.content.Context ctx) {
         switch (s.ttsProvider()) {
             case AiSettings.TTS_GEMINI: return new Gemini(s);
+            case AiSettings.TTS_SPEECHIFY: return new Speechify(s);
             case AiSettings.TTS_AZURE: return new Azure(s);
             case AiSettings.TTS_ELEVENLABS: return new ElevenLabs(s);
             case AiSettings.TTS_OPENAI: return new OpenAi(s);

@@ -81,7 +81,7 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
 `gothic2.mobile.og.ai` (Java, без зависимостей): `AiBridge` — JNI (`System.loadLibrary` в `GameActivity`,
 иначе Java-методы движка не находятся), голос и микрофон — сразу, остальные события — в очередь
 `GeraltBrain`; `LlmClient` — `/chat/completions` с инструментами, запасной ключ при 429; `Tts` — Gemini,
-Azure, ElevenLabs, свой адрес, голос телефона (`AndroidTts`); `VoicePlayer` — AudioTrack; `AiOverlay` —
+Speechify (`Speechify`: синтез, списки моделей и голосов), Azure, ElevenLabs, свой адрес, голос телефона (`AndroidTts`); `VoicePlayer` — AudioTrack; `AiOverlay` —
 PopupWindow над экраном движка (микрофон, ввод текста, «думает…», ошибки); `Memory` — файлы
 `files/ai/memory/<прохождение>_<метка>.json`; `Observation`, `Persona`, `Speech`, `Tools`, `Json`.
 Настройки — `AiSettingsActivity` (SharedPreferences `ai`). Тесты чистой логики — `AiLogicTest`.
