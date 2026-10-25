@@ -112,4 +112,17 @@ public class GraphicsSettingsTest {
         prefs.values.put(GraphicsSettings.FPS.key, 99);
         assertEquals("Частота кадров: 30", new GraphicsSettings(prefs).label(GraphicsSettings.FPS));
     }
+
+    @Test
+    public void ragdollIsOnByDefaultAndNotPartOfPresets() {
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        // ключ читает Gothic::Gothic (patch движка): ragdoll=1 - тела падают по физике
+        assertTrue(g.iniText().contains("\nragdoll=1\n"));
+        assertEquals("Падение побеждённых: по физике", g.label(GraphicsSettings.RAGDOLL));
+        g.applyPreset(GraphicsSettings.ECONOMY_PRESET);
+        assertTrue(g.iniText().contains("\nragdoll=1\n"));
+        g.cycle(GraphicsSettings.RAGDOLL);
+        assertTrue(g.iniText().contains("\nragdoll=0\n"));
+        assertEquals(GraphicsSettings.ECONOMY_PRESET, g.currentPreset());
+    }
 }
