@@ -102,6 +102,112 @@ index 3696b46..96ff5a5 100644
  
      Tempest::Vec3         clampRotation(Tempest::Vec3 spin);
      float                 calcCameraColision(const Tempest::Vec3& target, const Tempest::Vec3& dir, const Tempest::Vec3& rotSpin, float dist) const;
+diff --git a/common/commandline.cpp b/common/commandline.cpp
+index d3acfab..7357772 100644
+--- a/common/commandline.cpp
++++ b/common/commandline.cpp
+@@ -5,9 +5,12 @@
+ #include <cstring>
+ #include <cassert>
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__ANDROID__)
+ #include <filesystem>
+ #endif
++#if defined(__ANDROID__)
++#include <fstream>
++#endif
+ 
+ #include <algorithm>
+ 
+@@ -182,6 +185,35 @@ CommandLine::CommandLine(int argc, const char** argv) {
+ 
+   gscript   = nestedPath({u"_work",u"Data",u"Scripts",   u"_compiled"},Dir::FT_Dir);
+   gcutscene = nestedPath({u"_work",u"Data",u"Scripts",   u"content",u"CUTSCENE"},Dir::FT_Dir);
++  gscriptBase = gscript;
++
++#if defined(__ANDROID__)
++  {
++  // Gothic II Mobile: вариант игры выбирает экран запуска (files/game_variant.txt). «classic» - Gothic II без
++  // дополнения из Золотого издания, как Gothic2c.bat в GOG (Paths_GII.d): свои скрипты (_compiled_GII) и
++  // ролики (Cutscene_GII), без архивов аддона (GameModDescriptor), сохранения отдельно (saveFile)
++  std::ifstream fin("game_variant.txt");
++  std::string   line;
++  if(fin && std::getline(fin,line) && line.rfind("classic",0)==0) {
++    const auto script = nestedPath({u"_work",u"Data",u"Scripts",u"_compiled_GII"},Dir::FT_Dir);
++    const auto cs     = nestedPath({u"_work",u"Data",u"Scripts",u"content",u"Cutscene_GII"},Dir::FT_Dir);
++    if(FileUtil::exists(script)) {
++      classic = true;
++      forceG2 = true; // Gothic II без аддона (VersionInfo::patch=0)
++      gscript = script;
++      if(FileUtil::exists(cs))
++        gcutscene = cs;
++      std::error_code ec;
++      std::filesystem::create_directories("classic",ec);
++      Log::i("[g2m] variant: classic (Gothic II without addon)");
++      } else {
++      Log::e("[g2m] variant: classic requested, but no _work/Data/Scripts/_compiled_GII - starting Night of the Raven");
++      }
++    } else {
++    Log::i("[g2m] variant: Night of the Raven");
++    }
++  }
++#endif
+ 
+   gmod    = TextCodec::toUtf16(mod);
+   if(!gmod.empty())
+@@ -214,6 +246,12 @@ std::u16string CommandLine::scriptPath() const {
+   return gscript;
+   }
+ 
++std::string CommandLine::saveFile(std::string_view slot) const {
++  if(!classic)
++    return std::string(slot);
++  return "classic/" + std::string(slot);
++  }
++
+ std::u16string CommandLine::scriptPath(ScriptLang lang) const {
+   const char16_t* scripts = toString(lang);
+   return nestedPath({u"_work",u"Data",scripts,u"_compiled"},Dir::FT_Dir);
+diff --git a/common/commandline.h b/common/commandline.h
+index 0f6c113..7aa5f2c 100644
+--- a/common/commandline.h
++++ b/common/commandline.h
+@@ -26,6 +26,7 @@ class CommandLine {
+     auto                graphicsApi() const -> GraphicBackend;
+     std::u16string_view rootPath() const;
+     std::u16string      scriptPath() const;
++    std::u16string      baseScriptPath() const { return gscriptBase; }
+     std::u16string      scriptPath(ScriptLang lang) const;
+     std::u16string      cutscenePath() const;
+     std::u16string      cutscenePath(ScriptLang lang) const;
+@@ -48,6 +49,10 @@ class CommandLine {
+     bool                doForceG2NR()      const { return forceG2NR;    }
+     bool                aaPreset()         const { return aaPresetId;   }
+     std::string_view    defaultSave()      const { return saveDef;    }
++    // Gothic II Mobile: классическая Gothic II без дополнения из Золотого издания (выбор экрана запуска)
++    bool                isClassic()        const { return classic;      }
++    // Файл ячейки сохранения: у классики - свои, в папке classic/ (сохранения «Ночи Ворона» ей не подходят)
++    std::string         saveFile(std::string_view slot) const;
+ 
+     std::string         wrldDef;
+ 
+@@ -57,6 +62,7 @@ class CommandLine {
+     GraphicBackend      graphics = GraphicBackend::Vulkan;
+     std::u16string      gpath, gmod;
+     std::u16string      gscript;
++    std::u16string      gscriptBase;
+     std::u16string      gcutscene;
+     std::string         saveDef;
+     bool                devmode      = false;
+@@ -78,6 +84,7 @@ class CommandLine {
+     bool                forceG1      = false;
+     bool                forceG2      = false;
+     bool                forceG2NR    = false;
++    bool                classic      = false;
+     uint32_t            aaPresetId = 0;
+   };
+ 
 diff --git a/common/game/ailink.cpp b/common/game/ailink.cpp
 new file mode 100644
 index 0000000..7df68b4
@@ -5057,7 +5163,7 @@ index b1d951f..8d5f5cd 100644
  
    if(hitFlg) {
 diff --git a/common/game/gamescript.cpp b/common/game/gamescript.cpp
-index 4b32af2..0435e41 100644
+index 4b32af2..d36acab 100644
 --- a/common/game/gamescript.cpp
 +++ b/common/game/gamescript.cpp
 @@ -6,6 +6,7 @@
@@ -5076,7 +5182,41 @@ index 4b32af2..0435e41 100644
    initCommon();
    initSettings();
    Gothic::inst().onSettingsChanged.bind(this,&GameScript::initSettings);
-@@ -872,6 +874,14 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
+@@ -457,8 +459,11 @@ void GameScript::loadDialogOU() {
+   const auto version = Gothic::inst().version().game==1 ? zenkit::GameVersion::GOTHIC_1
+                                                         : zenkit::GameVersion::GOTHIC_2;
+ 
++  // Gothic II Mobile: у классики реплики свои (Cutscene_GII), а поиск по архивам и общему дереву _work
++  // находит одноимённый файл аддона - только по пути
++  const bool classic = CommandLine::inst().isClassic();
+   for(auto& OU:names) {
+-    if(Resources::hasFile(OU)) {
++    if(!classic && Resources::hasFile(OU)) {
+       std::unique_ptr<zenkit::Read> read;
+       auto zen = Resources::openReader(OU, read);
+       dialogs = std::move(*zen->read_object<zenkit::CutsceneLibrary>(version));
+@@ -466,7 +471,7 @@ void GameScript::loadDialogOU() {
+       }
+ 
+     const size_t segment = OU.find_last_of("\\/");
+-    if(segment!=std::string::npos && Resources::hasFile(OU.substr(segment+1))) {
++    if(!classic && segment!=std::string::npos && Resources::hasFile(OU.substr(segment+1))) {
+       std::unique_ptr<zenkit::Read> read;
+       auto zen = Resources::openReader(OU.substr(segment+1), read);
+       dialogs = std::move(*zen->read_object<zenkit::CutsceneLibrary>(version));
+@@ -479,6 +484,11 @@ void GameScript::loadDialogOU() {
+ 
+     auto gcutscene = CommandLine::inst().cutscenePath();
+     auto full      = FileUtil::caseInsensitiveSegment(gcutscene,str16,Dir::FT_File);
++    if(!FileUtil::exists(std::u16string(full)) && CommandLine::inst().isClassic()) {
++      // Gothic II Mobile: у классики нет своих реплик (Cutscene_GII) - общие
++      auto base = CommandLine::inst().nestedPath({u"_work",u"Data",u"Scripts",u"content",u"CUTSCENE"},Dir::FT_Dir);
++      full      = FileUtil::caseInsensitiveSegment(base,str16,Dir::FT_File);
++      }
+     if(!FileUtil::exists(std::u16string(full)) && vmLang>=0) {
+       gcutscene = CommandLine::inst().cutscenePath(ScriptLang(vmLang));
+       full      = FileUtil::caseInsensitiveSegment(gcutscene,str16,Dir::FT_File);
+@@ -872,6 +882,14 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
                                                               std::shared_ptr<zenkit::INpc> hnpc,
                                                               const std::vector<uint32_t>& except,
                                                               bool includeImp) {
@@ -5091,7 +5231,7 @@ index 4b32af2..0435e41 100644
    ScopeVar self (*vm.global_self(),  hnpc);
    ScopeVar other(*vm.global_other(), player);
    std::vector<zenkit::IInfo*> hDialog;
-@@ -920,6 +930,15 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
+@@ -920,6 +938,15 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
        ch.sort     = info.nr;
        choice.emplace_back(std::move(ch));
        }
@@ -5107,7 +5247,7 @@ index 4b32af2..0435e41 100644
      if(!choice.empty()){
        sort(choice);
        return choice;
-@@ -954,6 +973,15 @@ std::vector<GameScript::DlgChoice> GameScript::updateDialog(const GameScript::Dl
+@@ -954,6 +981,15 @@ std::vector<GameScript::DlgChoice> GameScript::updateDialog(const GameScript::Dl
    }
  
  void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
@@ -5123,7 +5263,7 @@ index 4b32af2..0435e41 100644
    ScopeVar self (*vm.global_self(), npc.handlePtr());
    ScopeVar other(*vm.global_other(), player.handlePtr());
  
-@@ -975,6 +1003,83 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
+@@ -975,6 +1011,83 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
    vm.call_function(vm.find_symbol_by_index(dlg.scriptFn));
    }
  
@@ -5207,7 +5347,7 @@ index 4b32af2..0435e41 100644
  void GameScript::printCannotUseError(Npc& npc, int32_t atr, int32_t nValue) {
    auto id = vm.find_symbol_by_name("G_CanNotUse");
    if(id==nullptr)
-@@ -1118,6 +1223,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
+@@ -1118,6 +1231,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
    return ret;
    }
  
@@ -5237,7 +5377,7 @@ index 4b32af2..0435e41 100644
  void GameScript::invokeItem(Npc *npc, ScriptFn fn) {
    if(fn==size_t(-1) || fn == 0)
      return;
-@@ -1281,6 +1409,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
+@@ -1281,6 +1417,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
    }
  
  bool GameScript::aiOutput(Npc &npc, std::string_view outputname, bool overlay) {
@@ -5249,7 +5389,7 @@ index 4b32af2..0435e41 100644
    string_frm name(outputname,".WAV");
    uint64_t   dt = 0;
  
-@@ -1323,6 +1456,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
+@@ -1323,6 +1464,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
    }
  
  std::string_view GameScript::messageByName(std::string_view id) const {
@@ -5260,7 +5400,7 @@ index 4b32af2..0435e41 100644
    auto blk = dialogs.block_by_name(id);
    if(blk == nullptr)
      return "";
-@@ -1333,6 +1470,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
+@@ -1333,6 +1478,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
    }
  
  uint32_t GameScript::messageTime(std::string_view id) const {
@@ -5271,7 +5411,7 @@ index 4b32af2..0435e41 100644
    static std::string tmp;
    tmp.assign(id);
  
-@@ -1472,6 +1613,10 @@ uint64_t GameScript::tickCount() const {
+@@ -1472,6 +1621,10 @@ uint64_t GameScript::tickCount() const {
  void GameScript::tick(uint64_t dt) {
    if(dma!=nullptr)
      dma->tick(dt);
@@ -5282,7 +5422,7 @@ index 4b32af2..0435e41 100644
    }
  
  uint32_t GameScript::rand(uint32_t max) {
-@@ -2022,6 +2167,9 @@ void GameScript::npc_settofistmode(std::shared_ptr<zenkit::INpc> npcRef) {
+@@ -2022,6 +2175,9 @@ void GameScript::npc_settofistmode(std::shared_ptr<zenkit::INpc> npcRef) {
  
  bool GameScript::npc_isinstate(std::shared_ptr<zenkit::INpc> npcRef, int stateFn) {
    auto npc = findNpc(npcRef);
@@ -5292,7 +5432,7 @@ index 4b32af2..0435e41 100644
    if(npc!=nullptr)
      return npc->isInState(uint32_t(stateFn));
    return false;
-@@ -2876,6 +3024,9 @@ int GameScript::npc_getactivespelllevel(std::shared_ptr<zenkit::INpc> npcRef) {
+@@ -2876,6 +3032,9 @@ int GameScript::npc_getactivespelllevel(std::shared_ptr<zenkit::INpc> npcRef) {
  void GameScript::ai_processinfos(std::shared_ptr<zenkit::INpc> npcRef) {
    auto npc = findNpc(npcRef);
    auto pl  = owner.player();
@@ -5302,7 +5442,7 @@ index 4b32af2..0435e41 100644
    if(pl!=nullptr && npc!=nullptr) {
      aiOutOrderId=0;
      npc->aiPush(AiQueue::aiProcessInfo(*pl));
-@@ -2889,6 +3040,13 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
+@@ -2889,6 +3048,13 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -5316,7 +5456,7 @@ index 4b32af2..0435e41 100644
    if(self!=nullptr && target!=nullptr) {
      self->aiPush(AiQueue::aiOutput(*target,outputname,aiOutOrderId));
      ++aiOutOrderId;
-@@ -2897,6 +3055,11 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
+@@ -2897,6 +3063,11 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
  
  void GameScript::ai_stopprocessinfos(std::shared_ptr<zenkit::INpc> selfRef) {
    auto self = findNpc(selfRef);
@@ -5328,7 +5468,7 @@ index 4b32af2..0435e41 100644
    if(self) {
      self->aiPush(AiQueue::aiStopProcessInfo(aiOutOrderId));
      ++aiOutOrderId;
-@@ -2981,6 +3144,13 @@ void GameScript::ai_outputsvm(std::shared_ptr<zenkit::INpc> selfRef, std::shared
+@@ -2981,6 +3152,13 @@ void GameScript::ai_outputsvm(std::shared_ptr<zenkit::INpc> selfRef, std::shared
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -5342,7 +5482,7 @@ index 4b32af2..0435e41 100644
    if(self!=nullptr && target!=nullptr) {
      self->aiPush(AiQueue::aiOutputSvm(*target,name,aiOutOrderId));
      ++aiOutOrderId;
-@@ -2994,6 +3164,13 @@ void GameScript::ai_outputsvm_overlay(std::shared_ptr<zenkit::INpc> selfRef, std
+@@ -2994,6 +3172,13 @@ void GameScript::ai_outputsvm_overlay(std::shared_ptr<zenkit::INpc> selfRef, std
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -7750,7 +7890,7 @@ index 0000000..915c632
 +    static void             resolve(World& w, std::vector<Spot>& out);
 +  };
 diff --git a/common/gothic.cpp b/common/gothic.cpp
-index 56c5d58..bbc1188 100644
+index 56c5d58..a87949a 100644
 --- a/common/gothic.cpp
 +++ b/common/gothic.cpp
 @@ -18,6 +18,7 @@
@@ -7761,7 +7901,33 @@ index 56c5d58..bbc1188 100644
  #include "utils/fileutil.h"
  #include "utils/fileext.h"
  #include "utils/inifile.h"
-@@ -149,6 +150,36 @@ Gothic::Gothic(GameModDescriptor desc) {
+@@ -28,6 +29,15 @@
+ using namespace Tempest;
+ using namespace FileUtil;
+ 
++// Gothic II Mobile: архив дополнения «Ночь Ворона» (Worlds_Addon.vdf, Textures_Addon_Menu_English.vdf, ...)
++static bool isAddonArchive(std::u16string_view file) {
++  std::u16string low(file);
++  for(auto& c:low)
++    if(c>=u'A' && c<=u'Z')
++      c = char16_t(c-u'A'+u'a');
++  return low.find(u"_addon")!=std::u16string::npos;
++  }
++
+ GameModDescriptor::GameModDescriptor()
+   : GameModDescriptor(CommandLine::inst().modPath(), CommandLine::inst().nestedPath({u"Data"},Dir::FT_Dir)) {
+   }
+@@ -60,7 +70,8 @@ GameModDescriptor::GameModDescriptor(std::u16string_view mod, std::u16string_vie
+ 
+   detectVdf(vdf, std::u16string(root), [&modvdfs, modFilter](std::u16string_view file) {
+       if(FileExt::hasExt(file, u"vdf")) {
+-        return true;
++        // Gothic II Mobile: классика - без архивов дополнения, как Gothic2c.bat в GOG
++        return !(CommandLine::inst().isClassic() && isAddonArchive(file));
+         }
+       if(FileExt::hasExt(file, u"mod")) {
+         // Remove all *.mod files, that are not listed in modvdfs
+@@ -149,6 +160,36 @@ Gothic::Gothic(GameModDescriptor desc) {
      iniFile->set("INTERNAL", "vidResIndex", 0); // full-res
      }
    {
@@ -7798,7 +7964,7 @@ index 56c5d58..bbc1188 100644
    defaults.reset(new IniFile());
    defaults->set("GAME", "enableMouse",         1);
    defaults->set("GAME", "mouseSensitivity",    0.5f);
-@@ -644,7 +675,12 @@ void Gothic::updateAnimation(uint64_t dt) {
+@@ -644,7 +685,12 @@ void Gothic::updateAnimation(uint64_t dt) {
    }
  
  void Gothic::quickSave() {
@@ -7811,6 +7977,38 @@ index 56c5d58..bbc1188 100644
    }
  
  void Gothic::quickLoad() {
+@@ -749,7 +795,10 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
+   }
+ 
+ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const ScriptLang lang) {
+-  if(Resources::hasFile(datFile)) {
++  // Gothic II Mobile: у классики скрипты свои (_compiled_GII), а поиск по общему дереву _work находит
++  // одноимённый скрипт аддона - только по пути
++  const bool classic = CommandLine::inst().isClassic();
++  if(!classic && Resources::hasFile(datFile)) {
+     auto buf = Resources::getFileBuffer(datFile);
+     zenkit::DaedalusScript script;
+     script.load(buf.get());
+@@ -757,7 +806,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
+     }
+ 
+   const size_t segment = datFile.find_last_of("\\/");
+-  if(segment!=std::string::npos && Resources::hasFile(datFile.substr(segment+1))) {
++  if(!classic && segment!=std::string::npos && Resources::hasFile(datFile.substr(segment+1))) {
+     auto buf = Resources::getFileBuffer(datFile.substr(segment+1));
+     zenkit::DaedalusScript script;
+     script.load(buf.get());
+@@ -770,6 +819,10 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
+ 
+   auto gscript = CommandLine::inst().scriptPath();
+   auto path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
++  if(!FileUtil::exists(path) && classic) {
++    // Gothic II Mobile: у классики нет своего скрипта (_compiled_GII) - общий
++    path = caseInsensitiveSegment(CommandLine::inst().baseScriptPath(),str16,Dir::FT_File);
++    }
+   if(!FileUtil::exists(path) && int(lang)>=0) {
+     gscript = CommandLine::inst().scriptPath(lang);
+     path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
 diff --git a/common/gothic.h b/common/gothic.h
 index 2654cc4..687159b 100644
 --- a/common/gothic.h
@@ -8258,7 +8456,7 @@ index 4c01505..36cb23a 100644
    }
  
 diff --git a/common/mainwindow.cpp b/common/mainwindow.cpp
-index 52b66d3..779e118 100644
+index 52b66d3..5b56dc4 100644
 --- a/common/mainwindow.cpp
 +++ b/common/mainwindow.cpp
 @@ -1,5 +1,8 @@
@@ -8270,15 +8468,16 @@ index 52b66d3..779e118 100644
  #include <Tempest/Except>
  #include <Tempest/Painter>
  
-@@ -8,6 +11,7 @@
+@@ -8,6 +11,8 @@
  #include <Tempest/Layout>
  #include <Tempest/Application>
  #include <Tempest/Log>
 +#include <Tempest/TextCodec>
++#include <Tempest/SoundDevice>
  
  #include "ui/dialogmenu.h"
  #include "ui/menuroot.h"
-@@ -18,10 +22,17 @@
+@@ -18,10 +23,17 @@
  #include "utils/string_frm.h"
  #include "world/triggers/abstracttrigger.h"
  #include "world/objects/npc.h"
@@ -8296,7 +8495,7 @@ index 52b66d3..779e118 100644
  
  #include "commandline.h"
  #include "gothic.h"
-@@ -34,7 +45,7 @@ MainWindow::MainWindow(Device& device)
+@@ -34,7 +46,7 @@ MainWindow::MainWindow(Device& device)
      dialogs(inventory),document(keycodec),
      console(*this),
  #if defined(__MOBILE_PLATFORM__)
@@ -8305,7 +8504,7 @@ index 52b66d3..779e118 100644
  #endif
      player(dialogs,inventory) {
    Gothic::inst().onSettingsChanged.bind(this,&MainWindow::onSettings);
-@@ -142,10 +153,12 @@ void MainWindow::setupUi() {
+@@ -142,10 +154,12 @@ void MainWindow::setupUi() {
    addWidget(&inventory);
    addWidget(&chapter);
    addWidget(&video);
@@ -8319,7 +8518,7 @@ index 52b66d3..779e118 100644
  
    rootMenu.setMainMenu();
  
-@@ -210,6 +223,9 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -210,6 +224,9 @@ void MainWindow::paintEvent(PaintEvent& event) {
        p.setBrush(Color(1.0));
  
        drawMsg(p);
@@ -8329,7 +8528,7 @@ index 52b66d3..779e118 100644
  
        auto focus = world->validateFocus(player.focus());
        paintFocus(p,focus,vp);
-@@ -224,6 +240,32 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -224,6 +241,32 @@ void MainWindow::paintEvent(PaintEvent& event) {
            bool showManaBar   = (opt.showManaBar==2) || (opt.showManaBar==1 && (pl->weaponState()==WeaponState::Mage || inventory.isActive()));
            bool showSwimBar   = (opt.showSwimBar==2) || (opt.showSwimBar==1 && pl->isDive());
  
@@ -8362,7 +8561,7 @@ index 52b66d3..779e118 100644
            if(showHealthBar)
              drawBar(p,barHp, 10, h()-10, hp, AlignLeft | AlignBottom);
            if(showManaBar)
-@@ -236,6 +278,7 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -236,6 +279,7 @@ void MainWindow::paintEvent(PaintEvent& event) {
                drawBar(p,barMisc,w()/2,h()-10, (v-t)/(v), AlignHCenter | AlignBottom);
                }
              }
@@ -8370,7 +8569,7 @@ index 52b66d3..779e118 100644
            }
          }
        }
-@@ -257,10 +300,18 @@ void MainWindow::paintEvent(PaintEvent& event) {
+@@ -257,10 +301,18 @@ void MainWindow::paintEvent(PaintEvent& event) {
    const float scale = Gothic::interfaceScale(this);
    if(Gothic::inst().doFrate() && !Gothic::inst().isDesktop()) {
      char fpsT[64]={};
@@ -8389,7 +8588,28 @@ index 52b66d3..779e118 100644
      }
  
    if(!Gothic::inst().isDesktop() && world!=nullptr) {
-@@ -304,6 +355,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
+@@ -293,6 +345,20 @@ void MainWindow::resizeEvent(SizeEvent&) {
+   for(auto& i:fence)
+     i.wait();
+   swapchain.reset();
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: игру свернули (окна нет - нулевой размер) и вернули (AndroidApi). Свёрнутая игра не
++  // идёт; вернувшись посреди игры, игрок видит меню паузы, а не бой, который продолжился без него
++  if(swapchain.w()==0 || swapchain.h()==0) {
++    hiddenInGame = Gothic::inst().isInGameAndAlive();
++    return;
++    }
++  if(hiddenInGame) {
++    hiddenInGame = false;
++    if(!rootMenu.isActive() && !dialogs.isActive() && !inventory.isActive() && !document.isActive() &&
++       !video.isActive() && !mobileUi.isModal() && Gothic::inst().checkLoading()==Gothic::LoadState::Idle)
++      implMenuAction(KeyCodec::Escape);
++    }
++#endif
+   if(auto camera = Gothic::inst().camera())
+     camera->setViewport(swapchain.w(),swapchain.h());
+ 
+@@ -304,6 +370,11 @@ void MainWindow::resizeEvent(SizeEvent&) {
    }
  
  void MainWindow::mouseDownEvent(MouseEvent &event) {
@@ -8401,7 +8621,7 @@ index 52b66d3..779e118 100644
    if(event.button<sizeof(mouseP))
      mouseP[event.button]=true;
    auto act     = keycodec.tr(event);
-@@ -312,6 +368,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
+@@ -312,6 +383,10 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
    }
  
  void MainWindow::mouseUpEvent(MouseEvent &event) {
@@ -8412,7 +8632,7 @@ index 52b66d3..779e118 100644
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
    player.onKeyReleased(act,mapping);
-@@ -333,6 +393,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
+@@ -333,6 +408,12 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
    }
  
  void MainWindow::processMouse(MouseEvent& event, bool enable) {
@@ -8425,7 +8645,7 @@ index 52b66d3..779e118 100644
    auto center = Point(w()/2,h()/2);
    if(enable && event.pos()!=center && hasFocus()) {
      dMouse += (event.pos()-center);
-@@ -344,21 +410,23 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -344,21 +425,23 @@ void MainWindow::tickMouse(uint64_t dt) {
    auto camera = Gothic::inst().camera();
    if(dialogs.hasContent() || Gothic::inst().isPause() || camera==nullptr || camera->isCutscene()) {
      dMouse = Point();
@@ -8451,7 +8671,7 @@ index 52b66d3..779e118 100644
    dpScaled.x/=float(w());
    dpScaled.y/=float(h());
    if(camLookaroundInverse)
-@@ -375,12 +443,22 @@ void MainWindow::tickMouse(uint64_t dt) {
+@@ -375,12 +458,22 @@ void MainWindow::tickMouse(uint64_t dt) {
    // Log::d("mouse dMouse   = ", dMouse.x,   ", ", dMouse.y);
    // Log::d("mouse dpScaled = ", dpScaled.x, ", ", dpScaled.y);
  
@@ -8474,7 +8694,7 @@ index 52b66d3..779e118 100644
    }
  
  void MainWindow::onSettings() {
-@@ -390,7 +468,59 @@ void MainWindow::onSettings() {
+@@ -390,14 +483,74 @@ void MainWindow::onSettings() {
    if(zMaxFps>0)
      maxFpsInv = 1000u/uint64_t(zMaxFps); else
      maxFpsInv = 0;
@@ -8492,8 +8712,8 @@ index 52b66d3..779e118 100644
 +  if(!Gothic::inst().isInGame() && !video.isActive())
 +    fps = (fps>0) ? std::min(fps, 60) : 60;
 +  return fps;
-+  }
-+
+   }
+ 
 +void MainWindow::perfReport(uint64_t now) {
 +  if(perf.start==0) {
 +    perf = PerfWindow();
@@ -8529,12 +8749,12 @@ index 52b66d3..779e118 100644
 +
 +  perf = PerfWindow();
 +  perf.start = now;
-   }
++  }
 +#endif
- 
++
  void MainWindow::mouseWheelEvent(MouseEvent &event) {
    if(auto camera = Gothic::inst().camera())
-@@ -398,6 +528,14 @@ void MainWindow::mouseWheelEvent(MouseEvent &event) {
+     camera->changeZoom(event.delta);
    }
  
  void MainWindow::keyDownEvent(KeyEvent &event) {
@@ -8549,7 +8769,7 @@ index 52b66d3..779e118 100644
    if(video.isActive()){
      event.accept();
      video.keyDownEvent(event);
-@@ -495,6 +633,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
+@@ -495,6 +648,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
    }
  
  void MainWindow::keyUpEvent(KeyEvent &event) {
@@ -8565,7 +8785,7 @@ index 52b66d3..779e118 100644
    if(uiKeyUp==&video){
      video.keyUpEvent(event);
      if(event.isAccepted())
-@@ -529,6 +676,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -529,6 +691,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
  
@@ -8577,7 +8797,7 @@ index 52b66d3..779e118 100644
    std::string_view menuEv;
    if(act==KeyCodec::Escape)
      menuEv = Gothic::inst().menuMain();
-@@ -543,6 +695,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -543,6 +710,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
      if(auto pl = Gothic::inst().player())
        rootMenu.setPlayer(*pl);
      clearInput();
@@ -8585,7 +8805,7 @@ index 52b66d3..779e118 100644
      }
    else if(act==KeyCodec::Inventory && !dialogs.isActive()) {
      if(inventory.isActive()) {
-@@ -553,10 +706,141 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -553,11 +721,146 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
          inventory.open(*pl);
        }
      clearInput();
@@ -8632,8 +8852,8 @@ index 52b66d3..779e118 100644
 +
 +bool MainWindow::touchCanTakeAll() const {
 +  return inventory.canTakeAll();
-   }
- 
++  }
++
 +const char* MainWindow::touchQuickSave() {
 +  auto& g  = Gothic::inst();
 +  auto  pl = g.player();
@@ -8655,7 +8875,7 @@ index 52b66d3..779e118 100644
 +  }
 +
 +bool MainWindow::touchQuickSaveInfo(std::string& out) const {
-+  static const char* slot = "save_slot_0.sav";
++  const std::string slot = CommandLine::inst().saveFile("save_slot_0.sav");
 +  if(!FileUtil::exists(TextCodec::toUtf16(slot)))
 +    return false;
 +  SaveGameHeader hdr;
@@ -8678,7 +8898,7 @@ index 52b66d3..779e118 100644
 +
 +void MainWindow::touchQuickLoad() {
 +  player.stopTravel(nullptr);
-+  if(Gothic::inst().checkLoading()==Gothic::LoadState::Idle && FileUtil::exists(u"save_slot_0.sav"))
++  if(Gothic::inst().checkLoading()==Gothic::LoadState::Idle && FileUtil::exists(TextCodec::toUtf16(CommandLine::inst().saveFile("save_slot_0.sav"))))
 +    Gothic::inst().quickLoad();
 +  }
 +
@@ -8718,17 +8938,22 @@ index 52b66d3..779e118 100644
 +      y += int(destH) + 4;
 +    }
 +  return y;
-+  }
-+
+   }
+ 
 +void MainWindow::touchTakeAll() {
 +  inventory.takeAll();
 +  }
 +#endif
 +
  void MainWindow::focusEvent(FocusEvent &event) {
++#if defined(__MOBILE_PLATFORM__)
++  // Gothic II Mobile: без фокуса (свёрнуто, поверх - другое окно) игра стоит - и звук тоже
++  Tempest::SoundDevice::setPaused(!event.in);
++#endif
    if(!event.in)
      return;
-@@ -882,8 +1166,16 @@ uint64_t MainWindow::tick() {
+   dMouse = Point();
+@@ -882,8 +1185,16 @@ uint64_t MainWindow::tick() {
      Gothic::inst().finishLoading();
      if(st==Gothic::LoadState::FailedLoad)
        rootMenu.setMainMenu();
@@ -8745,7 +8970,7 @@ index 52b66d3..779e118 100644
      return 0;
      }
    else if(st!=Gothic::LoadState::Idle) {
-@@ -949,6 +1241,30 @@ void MainWindow::tickCamera(uint64_t dt) {
+@@ -949,6 +1260,30 @@ void MainWindow::tickCamera(uint64_t dt) {
                               ws==WeaponState::W2H);
    auto       pos          = pl!=nullptr ? pl->cameraBone(camera.isFirstPerson()) : Vec3();
  
@@ -8776,10 +9001,21 @@ index 52b66d3..779e118 100644
    if(!camera.isCutscene() && !camera.isFree()) {
      const bool fs = SystemApi::isFullscreen(hwnd());
      if(!fs && mouseP[Event::ButtonLeft]) {
-@@ -1102,20 +1418,49 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
+@@ -1056,7 +1391,8 @@ void MainWindow::loadGame(std::string_view slot) {
+     }
+ 
+   Gothic::inst().setBenchmarkMode(Benchmark::None);
+-  Gothic::inst().startLoad("LOADING.TGA",[slot=std::string(slot)](std::unique_ptr<GameSession>&& game){
++  // Gothic II Mobile: у классики свои ячейки (CommandLine::saveFile)
++  Gothic::inst().startLoad("LOADING.TGA",[slot=CommandLine::inst().saveFile(slot)](std::unique_ptr<GameSession>&& game){
+     game = nullptr; // clear world-memory now
+     Tempest::RFile file(slot);
+     Serialize      s(file);
+@@ -1102,20 +1438,50 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
    auto& thumb = lres.isEmpty() ? tex : lres;
    auto  pm    = device.readPixels(textureCast<const Texture2d&>(thumb));
  
+-  Gothic::inst().startSave(std::move(textureCast<Texture2d&>(tex)),[slot=std::string(slot),name=std::string(name),pm](std::unique_ptr<GameSession>&& game){
 +#if defined(__MOBILE_PLATFORM__)
 +  // Gothic II Mobile: путь и сбор ведут героя очередью ИИ - она не должна попасть в сохранение
 +  player.onSaveGame();
@@ -8787,7 +9023,8 @@ index 52b66d3..779e118 100644
 +  // Gothic II Mobile: метка памяти живого NPC - приложение пишет его память под ней (docs/AI_NPC.md)
 +  if(auto w = Gothic::inst().world())
 +    w->script().aiNpc().beforeSave();
-   Gothic::inst().startSave(std::move(textureCast<Texture2d&>(tex)),[slot=std::string(slot),name=std::string(name),pm](std::unique_ptr<GameSession>&& game){
++  // Gothic II Mobile: у классики свои ячейки (CommandLine::saveFile)
++  Gothic::inst().startSave(std::move(textureCast<Texture2d&>(tex)),[slot=CommandLine::inst().saveFile(slot),name=std::string(name),pm](std::unique_ptr<GameSession>&& game){
      if(!game)
        return std::move(game);
  
@@ -8826,7 +9063,7 @@ index 52b66d3..779e118 100644
  
    update();
    }
-@@ -1127,6 +1472,11 @@ void MainWindow::onVideo(std::string_view fname) {
+@@ -1127,6 +1493,11 @@ void MainWindow::onVideo(std::string_view fname) {
    }
  
  void MainWindow::onStartLoading() {
@@ -8838,7 +9075,7 @@ index 52b66d3..779e118 100644
    player   .clearInput();
    inventory.onWorldChanged();
    dialogs  .onWorldChanged();
-@@ -1240,16 +1590,37 @@ void MainWindow::render(){
+@@ -1240,16 +1611,37 @@ void MainWindow::render(){
        once player position is updated, animation bones(cameraBone in particular) can be updated
        lastly - camera position
        */
@@ -8876,7 +9113,7 @@ index 52b66d3..779e118 100644
      Resources::resetRecycled(cmdId);
  
      if(video.isActive()) {
-@@ -1274,9 +1645,47 @@ void MainWindow::render(){
+@@ -1274,9 +1666,47 @@ void MainWindow::render(){
      renderer.draw(swapchain[swapchain.currentImage()],enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
      }
      sync = device.submit(cmd);
@@ -8924,7 +9161,7 @@ index 52b66d3..779e118 100644
      auto t = Application::tickCount();
      auto frameTime = maxFpsInv;
      if(!Gothic::inst().isInGame() && !video.isActive())
-@@ -1286,6 +1695,7 @@ void MainWindow::render(){
+@@ -1286,6 +1716,7 @@ void MainWindow::render(){
        Application::sleep(delay);
        t += delay;
        }
@@ -8933,7 +9170,7 @@ index 52b66d3..779e118 100644
      if(Gothic::inst().isBenchmarkMode() && Gothic::inst().world()!=nullptr && Gothic::inst().world()->currentCs()!=nullptr)
        benchmark.push(t-time);
 diff --git a/common/mainwindow.h b/common/mainwindow.h
-index 3fb2713..8933790 100644
+index 3fb2713..2bc6dc1 100644
 --- a/common/mainwindow.h
 +++ b/common/mainwindow.h
 @@ -19,12 +19,14 @@
@@ -9009,7 +9246,7 @@ index 3fb2713..8933790 100644
      void tickMouse(uint64_t dt);
      void onSettings();
  
-@@ -152,11 +198,15 @@ class MainWindow : public Tempest::Window {
+@@ -152,11 +198,16 @@ class MainWindow : public Tempest::Window {
      ConsoleWidget             console;
  #if defined(__MOBILE_PLATFORM__)
      TouchInput                mobileUi;
@@ -9022,10 +9259,11 @@ index 3fb2713..8933790 100644
      Tempest::Point            dMouse;
 +    Tempest::Point            dTouch;
 +    bool                      savePending = false; // Gothic II Mobile: ждём итог сохранения - сообщить
++    bool                      hiddenInGame = false; // Gothic II Mobile: свернули посреди игры - вернулись в меню паузы
      PlayerControl             player;
      uint64_t                  lastTick=0;
  
-@@ -178,4 +228,27 @@ class MainWindow : public Tempest::Window {
+@@ -178,4 +229,27 @@ class MainWindow : public Tempest::Window {
      Fps           fps;
      BenchmarkData benchmark;
      uint64_t      maxFpsInv = 0;
@@ -9221,7 +9459,7 @@ index f08a36e..ecacc3a 100644
  
      std::vector<PScreen>                pscreen;
 diff --git a/common/ui/gamemenu.cpp b/common/ui/gamemenu.cpp
-index 17a2ec6..302e22e 100644
+index 17a2ec6..c1cfe74 100644
 --- a/common/ui/gamemenu.cpp
 +++ b/common/ui/gamemenu.cpp
 @@ -7,6 +7,7 @@
@@ -9232,7 +9470,15 @@ index 17a2ec6..302e22e 100644
  
  #include "utils/string_frm.h"
  #include "world/objects/npc.h"
-@@ -26,6 +27,16 @@ using namespace Tempest;
+@@ -18,6 +19,7 @@
+ #include "game/definitions/musicdefinitions.h"
+ #include "game/serialize.h"
+ #include "game/savegameheader.h"
++#include "commandline.h"
+ #include "gothic.h"
+ #include "resources.h"
+ #include "build.h"
+@@ -26,6 +28,16 @@ using namespace Tempest;
  
  static const float scriptDiv=8192.0f;
  
@@ -9249,7 +9495,7 @@ index 17a2ec6..302e22e 100644
  struct GameMenu::ListContentDialog : Dialog {
    ListContentDialog(Item& textView):textView(textView) {
      setFocusPolicy(ClickFocus);
-@@ -374,6 +385,25 @@ void GameMenu::initItems() {
+@@ -374,6 +386,25 @@ void GameMenu::initItems() {
        }
      updateItem(hItems[i]);
      }
@@ -9275,7 +9521,7 @@ index 17a2ec6..302e22e 100644
    }
  
  void GameMenu::paintEvent(PaintEvent &e) {
-@@ -408,6 +438,9 @@ void GameMenu::paintEvent(PaintEvent &e) {
+@@ -408,6 +439,9 @@ void GameMenu::paintEvent(PaintEvent &e) {
      auto&       fnt   = Resources::font(scale);
      fnt.drawText(p, w()-fnt.textSize(appBuild).w-int(25*scale), h()-int(25*scale), appBuild);
      }
@@ -9285,7 +9531,7 @@ index 17a2ec6..302e22e 100644
    }
  
  void GameMenu::drawItem(Painter& p, Item& hItem) {
-@@ -559,11 +592,13 @@ void GameMenu::drawQuestList(Painter& p, Item& it, int x, int y, int w, int h,
+@@ -559,11 +593,13 @@ void GameMenu::drawQuestList(Painter& p, Item& it, int x, int y, int w, int h,
      itY+=sz.h;
      }
  
@@ -9301,7 +9547,7 @@ index 17a2ec6..302e22e 100644
      it.scroll = std::min(it.scroll+1,listLen);
      update();
      }
-@@ -609,6 +644,361 @@ GameMenu::Item* GameMenu::touchHitTest(Item& p, Point pos) {
+@@ -609,6 +645,361 @@ GameMenu::Item* GameMenu::touchHitTest(Item& p, Point pos) {
    return nullptr;
    }
  
@@ -9663,7 +9909,7 @@ index 17a2ec6..302e22e 100644
  void GameMenu::onBeginTouch(Point pos) {
    touchSlider = nullptr;
    touchActive = false;
-@@ -666,7 +1056,108 @@ void GameMenu::onEndTouch(bool activate) {
+@@ -666,7 +1057,108 @@ void GameMenu::onEndTouch(bool activate) {
      onKeyboard(KeyCodec::ActionGeneric);
    }
  
@@ -9772,7 +10018,7 @@ index 17a2ec6..302e22e 100644
    auto sel = selectedItem();
    if(sel!=nullptr && isHorSelectable(sel->handle)) {
      if(key==KeyCodec::Left)
-@@ -777,7 +1268,7 @@ void GameMenu::setSelection(int desired, int seek) {
+@@ -777,7 +1269,7 @@ void GameMenu::setSelection(int desired, int seek) {
      cur%=zenkit::IMenu::item_count;
  
      auto& it=hItems[cur].handle;
@@ -9781,7 +10027,7 @@ index 17a2ec6..302e22e 100644
        curItem=cur;
        for(size_t i=0;i<zenkit::IMenuItem::select_action_count;++i)
          if(it->on_sel_action[i]==int(zenkit::MenuItemSelectAction::EXECUTE_COMMANDS))
-@@ -885,6 +1376,11 @@ void GameMenu::execSingle(Item &it, int slideDx, KeyCodec::Action hint) {
+@@ -885,6 +1377,11 @@ void GameMenu::execSingle(Item &it, int slideDx, KeyCodec::Action hint) {
    if(item->type==zenkit::MenuItemType::INPUT && slideDx==0) {
      ctrlInput = &it;
      if(item->on_chg_set_option.empty()) {
@@ -9793,7 +10039,7 @@ index 17a2ec6..302e22e 100644
        SavNameDialog dlg{item->text[0]};
        if(it.savHdr.version==0)
          dlg.text = "";
-@@ -893,6 +1389,7 @@ void GameMenu::execSingle(Item &it, int slideDx, KeyCodec::Action hint) {
+@@ -893,6 +1390,7 @@ void GameMenu::execSingle(Item &it, int slideDx, KeyCodec::Action hint) {
        ctrlInput = nullptr;
        if(!dlg.accepted)
          return;
@@ -9801,7 +10047,16 @@ index 17a2ec6..302e22e 100644
        }
      else if(hint==KeyCodec::K_Del) {
        keyCodec.clear(item->on_chg_set_option_section, item->on_chg_set_option);
-@@ -1035,6 +1532,12 @@ void GameMenu::execCommands(std::string str, bool isClick, KeyCodec::Action hint
+@@ -1021,7 +1519,7 @@ bool GameMenu::execLoadGame(const GameMenu::Item &item) {
+     return false;
+ 
+   string_frm fname("save_slot_",int(id),".sav");
+-  if(!FileUtil::exists(TextCodec::toUtf16(fname.c_str())))
++  if(!FileUtil::exists(TextCodec::toUtf16(CommandLine::inst().saveFile(fname))))
+     return false;
+   Gothic::inst().load(fname);
+   return true;
+@@ -1035,6 +1533,12 @@ void GameMenu::execCommands(std::string str, bool isClick, KeyCodec::Action hint
        auto& i = hItems[id];
        if(i.handle != nullptr && i.handle->type==zenkit::MenuItemType::LISTBOX) {
          i.visible = (i.name==arg0);
@@ -9814,7 +10069,7 @@ index 17a2ec6..302e22e 100644
          if(i.visible && isClick) {
            const uint32_t prev = curItem;
            curItem = id;
-@@ -1047,6 +1550,7 @@ void GameMenu::execCommands(std::string str, bool isClick, KeyCodec::Action hint
+@@ -1047,6 +1551,7 @@ void GameMenu::execCommands(std::string str, bool isClick, KeyCodec::Action hint
            dlg.exec();
            curItem = prev;
            }
@@ -9822,6 +10077,31 @@ index 17a2ec6..302e22e 100644
          }
        }
      }
+@@ -1083,8 +1588,10 @@ void GameMenu::updateSavTitle(GameMenu::Item& sel) {
+   if(id==size_t(-1))
+     return;
+ 
+-  char fname[64]={};
+-  std::snprintf(fname,sizeof(fname)-1,"save_slot_%d.sav",int(id));
++  char slot[64]={};
++  std::snprintf(slot,sizeof(slot)-1,"save_slot_%d.sav",int(id));
++  // Gothic II Mobile: у классики свои ячейки (CommandLine::saveFile)
++  const std::string fname = CommandLine::inst().saveFile(slot);
+ 
+   if(!FileUtil::exists(TextCodec::toUtf16(fname))) {
+     sel.handle->text[0] = "---";
+@@ -1148,8 +1655,9 @@ bool GameMenu::implUpdateSavThumb(GameMenu::Item& sel) {
+   if(id==size_t(-1))
+     return false;
+ 
+-  char fname[64]={};
+-  std::snprintf(fname,sizeof(fname)-1,"save_slot_%d.sav",int(id));
++  char slot[64]={};
++  std::snprintf(slot,sizeof(slot)-1,"save_slot_%d.sav",int(id));
++  const std::string fname = CommandLine::inst().saveFile(slot);
+ 
+   if(!FileUtil::exists(TextCodec::toUtf16(fname)))
+     return false;
 diff --git a/common/ui/gamemenu.h b/common/ui/gamemenu.h
 index 73b7c75..219a4b2 100644
 --- a/common/ui/gamemenu.h
@@ -10161,10 +10441,10 @@ index d4ddb41..e6cbee7 100644
      std::unique_ptr<Page>     pageOth, pagePl;
      PageLocal                 pageLocal[2];
 diff --git a/common/ui/menuroot.cpp b/common/ui/menuroot.cpp
-index 7286715..1579db8 100644
+index 7286715..099d2d6 100644
 --- a/common/ui/menuroot.cpp
 +++ b/common/ui/menuroot.cpp
-@@ -126,6 +126,28 @@ bool MenuRoot::hasVersionLine() const {
+@@ -126,6 +126,30 @@ bool MenuRoot::hasVersionLine() const {
    return showVersionHint;
    }
  
@@ -10186,6 +10466,8 @@ index 7286715..1579db8 100644
 +    ret.back = current->keyClose()==KeyCodec::Escape ? "К игре" : "Закрыть";
 +  else
 +    ret.back = nullptr; // главное меню до начала игры: возвращаться некуда
++  ret.top = !ret.sub && menuStack.empty() &&
++            (!Gothic::inst().isInGame() || current->keyClose()==KeyCodec::Escape);
 +  return ret;
 +  }
 +#endif
@@ -10193,7 +10475,7 @@ index 7286715..1579db8 100644
  void MenuRoot::mouseDownEvent(MouseEvent& event) {
    // Only the first pointer interacts; ignoring others keeps their drag and up events away.
    if(current==nullptr || event.mouseID!=0) {
-@@ -133,7 +155,7 @@ void MenuRoot::mouseDownEvent(MouseEvent& event) {
+@@ -133,7 +157,7 @@ void MenuRoot::mouseDownEvent(MouseEvent& event) {
      return;
      }
    if(event.button==Event::ButtonRight) {
@@ -10202,7 +10484,7 @@ index 7286715..1579db8 100644
      return;
      }
  #if defined(__MOBILE_PLATFORM__)
-@@ -233,7 +255,9 @@ void MenuRoot::keyDownEvent(KeyEvent &e) {
+@@ -233,7 +257,9 @@ void MenuRoot::keyDownEvent(KeyEvent &e) {
        current->onKeyboard(KeyCodec::ActionGeneric);
      else if(e.key==Event::K_Delete)
        current->onKeyboard(KeyCodec::K_Del);
@@ -10214,10 +10496,10 @@ index 7286715..1579db8 100644
      }
    }
 diff --git a/common/ui/menuroot.h b/common/ui/menuroot.h
-index fbb1b8a..807b708 100644
+index fbb1b8a..298f487 100644
 --- a/common/ui/menuroot.h
 +++ b/common/ui/menuroot.h
-@@ -10,6 +10,15 @@
+@@ -10,6 +10,16 @@
  class GameMenu;
  class Npc;
  
@@ -10228,12 +10510,13 @@ index fbb1b8a..807b708 100644
 +  bool        nav    = false;   // стрелки вверх-вниз: есть что выделять или листать
 +  bool        hor    = false;   // стрелки влево-вправо: выделен ползунок или переключатель
 +  bool        sub    = false;   // открыт список заданий или запись журнала
++  bool        top    = false;   // главное меню (Esc): здесь же кнопка «Приложение» - экран запуска
 +  };
 +
  class MenuRoot : public Tempest::Widget {
    public:
      MenuRoot(KeyCodec& keyCodec);
-@@ -27,6 +36,9 @@ class MenuRoot : public Tempest::Widget {
+@@ -27,6 +37,9 @@ class MenuRoot : public Tempest::Widget {
  
      void showVersion(bool s);
      bool hasVersionLine() const;
@@ -10243,7 +10526,7 @@ index fbb1b8a..807b708 100644
  
      void mouseWheelEvent(Tempest::MouseEvent& event) override;
      void keyRepeatEvent (Tempest::KeyEvent&   event) override;
-@@ -53,4 +65,6 @@ class MenuRoot : public Tempest::Widget {
+@@ -53,4 +66,6 @@ class MenuRoot : public Tempest::Widget {
      Tempest::Point                         touchStart;
      bool                                   touchMoved = false;
  #endif
@@ -11146,10 +11429,10 @@ index 0000000..8538a5a
 +    const Tempest::Texture2d& cached(uint64_t key, const std::function<Tempest::Texture2d()>& make);
 +  };
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f1730..45c5348 100644
+index d9f1730..f737b05 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,2057 @@
+@@ -1,41 +1,2072 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
@@ -11168,6 +11451,7 @@ index d9f1730..45c5348 100644
 +#include "world/objects/interactive.h"
 +#include "world/waypoint.h"
 +#include "world/world.h"
++#include "utils/applink.h"
 +#include "utils/cp1251.h"
 +#include "utils/gthfont.h"
 +#include "mainwindow.h"
@@ -11292,6 +11576,8 @@ index d9f1730..45c5348 100644
 +    // Над сеткой сундука, рядом с его названием: внизу справа - сетка сумки героя
 +    case C_TakeAll: return pill(m + 112*d, 10*d, pw, ph);
 +    case C_Skip:    return pill(W - m - pw, 12*d, pw, ph);
++    // Справа вверху, над пунктами меню; шире - подпись длинная
++    case C_App:     return pill(W - m - pw*1.25f, 12*d, pw*1.25f, ph);
 +    case C_Up:      return round(m + 26*d, H - m - ph - 16*d - 26*d - 62*d, 26*d);
 +    case C_Down:    return round(m + 26*d, H - m - ph - 16*d - 26*d, 26*d);
 +    // Взлом - слева внизу; в меню игры (ползунки, переключатели) - над «Выбрать», под правым пальцем
@@ -11375,6 +11661,8 @@ index d9f1730..45c5348 100644
 +      return ui==Ui::LockPick;
 +    case C_Skip:
 +      return ui==Ui::Skip;
++    case C_App:
++      return ui==Ui::Menu && owner.touchMenuInfo().top;
 +    case C_None:
 +    case C_Joy:
 +    case C_Look:
@@ -11642,6 +11930,9 @@ index d9f1730..45c5348 100644
 +        break;
 +      case C_Skip:
 +        drawPill(p,b.rect,TouchIcons::I_Skip,toCp1251("Пропустить"),pressed);
++        break;
++      case C_App:
++        drawPill(p,b.rect,TouchIcons::I_Menu,toCp1251("Приложение"),pressed);
 +        break;
 +      case C_None:
 +      case C_Joy:
@@ -12418,6 +12709,9 @@ index d9f1730..45c5348 100644
 +    case C_TakeAll:
 +      owner.touchTakeAll();
 +      break;
++    case C_App:
++      // по отпусканию: палец не попадёт на экран запуска
++      break;
 +    case C_None:
 +    case C_Joy:
 +    case C_Look:
@@ -12530,6 +12824,10 @@ index d9f1730..45c5348 100644
 +      break;
 +    case C_Menu:
 +      owner.touchKey(Event::K_ESCAPE);
++      break;
++    case C_App:
++      // Игра встаёт на паузу (окно уходит), вернуться - кнопкой экрана запуска или «Назад»
++      AppLink::openAppMenu();
 +      break;
 +    case C_Travel:
 +      // В пути - остановиться; иначе - карта с местами
@@ -13225,10 +13523,10 @@ index d9f1730..45c5348 100644
 +  drawPill(p, confirmButton(false), TouchIcons::I_Back, toCp1251("Отмена"),    false);
    }
 diff --git a/common/ui/touchinput.h b/common/ui/touchinput.h
-index f46becc..026ae7f 100644
+index f46becc..40b08c2 100644
 --- a/common/ui/touchinput.h
 +++ b/common/ui/touchinput.h
-@@ -1,21 +1,254 @@
+@@ -1,21 +1,256 @@
  #pragma once
  
  #include <Tempest/Widget>
@@ -13314,6 +13612,8 @@ index f46becc..026ae7f 100644
 +      C_TakeAll,
 +      // ролик
 +      C_Skip,
++      // главное меню игры: экран запуска приложения поверх игры (настройки, выбор игры)
++      C_App,
 +      C_Count
 +      };
  
@@ -13491,6 +13791,92 @@ index f46becc..026ae7f 100644
 +    void           drawConfirm (Tempest::Painter& p);
 +    void           drawText    (Tempest::Painter& p, std::string_view txt, int x, int y, bool hi, float scale);
 +  };
+diff --git a/common/utils/applink.cpp b/common/utils/applink.cpp
+new file mode 100644
+index 0000000..2c2b118
+--- /dev/null
++++ b/common/utils/applink.cpp
+@@ -0,0 +1,66 @@
++#include "applink.h"
++
++#include <Tempest/Log>
++
++#ifdef __ANDROID__
++#include <jni.h>
++#include <pthread.h>
++#endif
++
++namespace {
++#ifdef __ANDROID__
++  JavaVM*   jvm      = nullptr;
++  jclass    jcls     = nullptr;
++  jmethodID openMenu = nullptr;
++  // Поток, подключённый к Java, обязан отключиться перед концом - иначе ART роняет процесс (как в AiLink)
++  pthread_key_t  detachKey;
++  pthread_once_t detachOnce = PTHREAD_ONCE_INIT;
++
++  void detachThread(void*) {
++    if(jvm!=nullptr)
++      jvm->DetachCurrentThread();
++    }
++
++  void makeDetachKey() {
++    pthread_key_create(&detachKey,detachThread);
++    }
++
++  JNIEnv* attach() {
++    if(jvm==nullptr)
++      return nullptr;
++    JNIEnv* env = nullptr;
++    if(jvm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6)==JNI_OK)
++      return env;
++    if(jvm->AttachCurrentThread(&env,nullptr)!=JNI_OK)
++      return nullptr;
++    pthread_once(&detachOnce,makeDetachKey);
++    pthread_setspecific(detachKey,env);
++    return env;
++    }
++#endif
++  }
++
++void AppLink::openAppMenu() {
++#ifdef __ANDROID__
++  JNIEnv* env = attach();
++  if(env==nullptr || jcls==nullptr || openMenu==nullptr) {
++    Tempest::Log::e("[g2m] app menu: no link to the application");
++    return;
++    }
++  env->CallStaticVoidMethod(jcls,openMenu);
++  if(env->ExceptionCheck())
++    env->ExceptionClear();
++#endif
++  }
++
++#ifdef __ANDROID__
++// Java-методы движка находятся только после System.loadLibrary в GameActivity
++extern "C" JNIEXPORT void JNICALL Java_gothic2_mobile_og_GameActivity_nativeAttachApp(JNIEnv* env, jclass cls) {
++  env->GetJavaVM(&jvm);
++  if(jcls==nullptr)
++    jcls = reinterpret_cast<jclass>(env->NewGlobalRef(cls));
++  openMenu = env->GetStaticMethodID(jcls,"openAppMenu","()V");
++  if(openMenu==nullptr)
++    env->ExceptionClear();
++  }
++#endif
+diff --git a/common/utils/applink.h b/common/utils/applink.h
+new file mode 100644
+index 0000000..eca33e8
+--- /dev/null
++++ b/common/utils/applink.h
+@@ -0,0 +1,8 @@
++#pragma once
++
++// Gothic II Mobile: вызовы приложения (Java, gothic2.mobile.og.GameActivity) из движка. Без приложения
++// (сборка для компьютера) - ничего не делают.
++namespace AppLink {
++  // Экран запуска поверх игры: настройки приложения, выбор игры. Окно игры уходит - игра на паузе
++  void openAppMenu();
++  }
 diff --git a/common/utils/cp1251.h b/common/utils/cp1251.h
 new file mode 100644
 index 0000000..e0f2d62

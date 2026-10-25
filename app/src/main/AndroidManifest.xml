@@ -43,9 +43,12 @@
             android:screenOrientation="sensorLandscape"
             android:windowSoftInputMode="adjustResize" />
 
+        <!-- Игра - в своём процессе: движок после выхода завершает процесс, экран запуска остаётся
+             и перезапускает игру с другими настройками или вариантом (GameActivity) -->
         <activity
             android:name=".GameActivity"
             android:exported="false"
+            android:process=":game"
             android:screenOrientation="sensorLandscape"
             android:launchMode="singleTask"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode">

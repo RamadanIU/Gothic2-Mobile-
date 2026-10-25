@@ -10,14 +10,21 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
  ├─ журнал в «Загрузки»                  ├─ наш патч: TouchInput, бой, автобой, напарники, графика
  ├─ живой NPC (AiSettingsActivity)       └─ живой NPC: AiNpc ←JNI (AiLink)→ ai/AiBridge → GeraltBrain
  └─ лицензии (LicensesActivity)              (модель, голос, память — docs/AI_NPC.md)
-        │  files/gothic_path.txt (путь к папке игры)
-        └─ files/g2m.ini        (графика)  ──► читает движок при старте
+        │  files/gothic_path.txt  (путь к папке игры)
+        ├─ files/game_variant.txt (notr / classic — Gothic II без дополнения)
+        └─ files/g2m.ini          (графика)  ──► читает движок при старте
+  ▲   процесс приложения                   процесс :game (android:process)
+  └── кнопка «Приложение» в меню игры: AppLink (JNI) → GameActivity.openAppMenu → экран запуска поверх игры
 ```
 
 Игровые файлы читаются прямо из папки игрока (targetSdk 28 + разрешение «Файлы» = старое хранилище).
 Свои файлы движок держит в каталоге приложения (`files/`): `Gothic.ini` (его настройки), сохранения
 `save_slot_N.sav` (формат OpenGothic, с оригинальной игрой не совместим), `log.txt`, `crash.log`.
-Один запуск игры на процесс: после выхода из игры процесс завершается (так устроен Tempest).
+Один запуск игры на процесс: после выхода из игры процесс завершается (так устроен Tempest), поэтому игра идёт
+в своём процессе `:game`, а экран запуска — в процессе приложения: он может завершить игру и запустить заново
+(другая графика, другой вариант). Сворачивание — не выход: без окна Android игра на паузе, на новом окне
+цепочка кадров создаётся заново (патч Tempest `androidapi.cpp`, `VSwapchain::reset`). Сохранения Gothic II без
+дополнения — `files/classic/save_slot_N.sav`.
 
 ## Движок и патчи
 
