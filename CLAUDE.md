@@ -54,7 +54,9 @@ docs/AI_NPC.md, «Сюжет игры в разговоре»); **«Путь» �
 `AiNpc::calmHostility` (docs/PROGRESS.md, последний раздел). **Жители снова говорят друг с другом** — реплику слышит только герой,
 другому — `talk_to_npc` (`Persona.TALK_OTHERS`), слушающий отвечает и делом (`Tools.listener`, `Persona.reactions`);
 беседа NPC с NPC идёт несколько реплик внутри `talk_to_npc` (`GeraltBrain.converse`), слушающий может заговорить с
-третьим; ждёт проверки.
+третьим; ждёт проверки. 2026-10-25: **регдолл** — убитые и оглушённые люди и звери падают по физике Bullet (удар,
+разбег, склоны, вода), оглушённые встают с той стороны, как лежат; тела застывают и пишутся в сохранение
+(docs/PROGRESS.md, «Регдолл…»; проверено на стенде `tools/ragdoll-test`, на телефоне — ждёт проверки).
 
 - **Приложение** (`app/`, Java, пакет `gothic2.mobile.og`): `LauncherActivity` — разрешение «Файлы», поиск
   папки игры (`GameFolder`), выбор вручную через SAF, «Играть», раздел «Графика» (`GraphicsSettings` →
@@ -104,6 +106,11 @@ docs/AI_NPC.md, «Сюжет игры в разговоре»); **«Путь» �
     подсказки планировщику и перегрев (`utils/mobileperf.*`), охлаждение 30 FPS; **строка `[perf]` в журнале
     раз в 10 с** — по ней видно, во что упирается телефон (`gpu-wait` — видеокарта, `logic`/`anim` — процессор);
   - жарка мяса (`common/game/cooking.cpp`): у сковороды с 2+ кусками — диалог героя с собой «1 / 5 / 10 / всё»;
+  - **регдолл** (`common/physics/ragdoll.*`): кукла по скелету (капсулы, шарниры колен и локтей у людей, конусы),
+    своя категория `C_Ragdoll` — живые NPC, камера и лучи тела не видят; `Npc::startRagdoll` из `onNoHealth`, удар —
+    `ragHit` из `takeDamage`; позиция NPC за тазом, `MoveAlgo` у лежащего выключен; подъём — `AI_StandUp` →
+    `ragdollGetUp`; поза — `Pose::setRagdoll` (ведомые кости от куклы, прочие — в позе момента падения); сохранение —
+    запись `…/npc/<id>/ragdoll`; настройка `ragdoll` в `g2m.ini` («Падение побеждённых»);
   - «Взять всё» (`InventoryMenu::takeAll`), путь к игре из `gothic_path.txt` (`InstallDetect`), имя сохранения
     по умолчанию — дата, кнопка «Назад» телефона = Esc (Tempest);
   - **живой NPC** (`common/game/ainpc.*`, JNI — `ailink.*`): Геральт = `Vlk_2000_Thorus` с другим именем и
@@ -169,7 +176,8 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
     common/game/travelcamera.cpp common/game/travelcamera.h common/game/ainpc.cpp common/game/ainpc.h \
     common/game/ailink.cpp common/game/ailink.h common/utils/mobileperf.cpp common/utils/mobileperf.h common/utils/perfstats.h \
     common/ui/touchicons.cpp common/ui/touchicons.h common/game/cooking.cpp \
-    common/utils/applink.cpp common/utils/applink.h   # и другие новые файлы; не -A: build/ не в .gitignore движка
+    common/utils/applink.cpp common/utils/applink.h common/physics/ragdoll.cpp common/physics/ragdoll.h
+    # и другие новые файлы (все: git ls-files --others --exclude-standard | grep -v ^build/); не -A: build/ не в .gitignore
   git diff --ignore-submodules=all > ../opengothic.patch && git reset -q
   git -C lib/Tempest diff > ../opengothic-tempest.patch
   ```
@@ -200,6 +208,10 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
   `touchicons.cpp`, собранного на компьютере с заглушками Tempest): зазоры, перекрытия, полоски игры.
 - Новый `.cpp` в движке: CMake собирает исходники через `GLOB` — в готовом каталоге сборки
   (`app/.cxx/Release/*/arm64-v8a`) перезапустить `cmake .`, иначе файл не попадёт в сборку.
+- **Регдолл:** физику куклы проверять на компьютере стендом `tools/ragdoll-test` (настоящие `ragdoll.cpp` и Bullet,
+  скелеты человека и волка, земля; `build.sh`, затем `./ragtest` — «ALL OK»), а не только сборкой. Тела куклы —
+  категория `C_Ragdoll`: новая проверка столкновений или луч в `DynamicWorld` должен их пропускать (как
+  `needsCollision` с `C_Landscape/C_Object`), иначе живые NPC споткнутся о трупы.
 - Новая работа движка на кадр — с оглядкой на телефон: не перебирать каждый кадр все объекты мира (NPC, ветер,
   свет) без отсечения по дальности; счётчики — в `utils/perfstats.h` и строку `[perf]`. ИИ и движение дальних
   NPC реже не тикать: большой шаг движения проходит сквозь стены.

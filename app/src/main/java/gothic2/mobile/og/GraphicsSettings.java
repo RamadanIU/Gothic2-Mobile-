@@ -60,7 +60,10 @@ final class GraphicsSettings {
     /** Не графика, а помощь в настройке: в наборы не входит, по умолчанию выключено. */
     static final Option SHOW_FPS = new Option("gfx_show_fps", "showFps", "Счётчик кадров на экране",
         new String[]{"скрыт", "показан"}, new String[]{"0", "1"});
-    static final Option[] EXTRA = {SHOW_FPS};
+    /** Убитые и оглушённые падают по физике (регдолл движка); в наборы не входит, по умолчанию включено. */
+    static final Option RAGDOLL = new Option("gfx_ragdoll", "ragdoll", "Падение побеждённых",
+        new String[]{"по физике", "анимацией игры"}, new String[]{"1", "0"});
+    static final Option[] EXTRA = {SHOW_FPS, RAGDOLL};
 
     /** Готовые наборы: индексы вариантов в порядке {@link #ALL}. */
     static final String[] PRESET_NAMES = {"Экономно", "Сбалансированно", "Красиво"};

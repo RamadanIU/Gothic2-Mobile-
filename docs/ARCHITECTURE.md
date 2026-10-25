@@ -75,6 +75,9 @@ LauncherActivity (Java)            GameActivity (NativeActivity, Java)
 | Путь к заголовкам Vulkan параметром CMake | `Tempest Engine/CMakeLists.txt` (`TEMPEST_VULKAN_SDK`) |
 | Живой NPC Геральт (docs/AI_NPC.md): вставка в кабак Корагона (и переход туда из пещеры в старых сохранениях), снимок обстановки, действия (и надеть/снять), реплики модели в диалоге и вне его, кнопка «Сказать» (адресат — фокус, касание или Геральт), живые жители (действия и снимок любого NPC — `who`, `refSelf`, возврат распорядка `Npc::saveRoutines/restoreRoutines`), реплики жителя из игры (`sendLore`), итог торговли, метка памяти перед сохранением | `common/game/ainpc.*`, `common/game/ailink.*` (JNI), `GameScript::dialogChoices/exec/messageByName/messageTime/aiOutput`, `DialogMenu::aiOutput/onStart/close/haveToWaitOutput/skipPhrase`, `Npc::onNoHealth/canFinish/takeDamage/resetPositionToTA` и `AI_Equip*` (своё снаряжение), `TouchInput` (`C_Say`), `MainWindow::saveGame/paintEvent` |
 | Места «Кабак Корагона» и «Пещера у водопада» в «Пути» | `common/game/travelpoints.cpp` |
+| Регдолл: кукла по скелету (капсулы, шарниры колен и локтей, конусы), удар и разбег, «мышцы», застывание, не больше 6 тел в физике, в воде тонет | `common/physics/ragdoll.*`, `DynamicWorld::RagdollList`, `CollisionWorld::addRagdollBody` (группа и фильтр пар: живые NPC, камера и лучи тел не видят) |
+| Регдолл в позе: ведомые кости от куклы, прочие между ними — в позе момента падения; переход в анимацию подъёма | `Pose::setRagdoll/applyRagdoll/localOf/sampleObjectPose/replaceLayer`, `MdlVisual::setRagdollPose` |
+| Регдолл у NPC: запуск при смерти/оглушении, удар (`ragHit`), позиция за тазом, `MoveAlgo` выключен, подъём с нужной стороны (`AI_StandUp`), сохранение | `Npc::startRagdoll/followRagdoll/ragdollGetUp/pushRagdollPose/saveRagdoll/loadRagdoll`, `Npc::takeDamage`, `Npc::finishingMove`, `Bullet::position/direction` |
 
 ## Живой NPC: приложение
 
