@@ -94,10 +94,11 @@ docs/AI_NPC.md, «Сюжет игры в разговоре»); **«Путь» �
     тени без мелочи, предметы на земле видны втрое дальше, небо раз в 4 кадра, точный ограничитель кадров,
     подсказки планировщику и перегрев (`utils/mobileperf.*`), охлаждение 30 FPS; **строка `[perf]` в журнале
     раз в 10 с** — по ней видно, во что упирается телефон (`gpu-wait` — видеокарта, `logic`/`anim` — процессор);
+  - жарка мяса (`common/game/cooking.cpp`): у сковороды с 2+ кусками — диалог героя с собой «1 / 5 / 10 / всё»;
   - «Взять всё» (`InventoryMenu::takeAll`), путь к игре из `gothic_path.txt` (`InstallDetect`), имя сохранения
     по умолчанию — дата, кнопка «Назад» телефона = Esc (Tempest);
   - **живой NPC** (`common/game/ainpc.*`, JNI — `ailink.*`): Геральт = `Vlk_2000_Thorus` с другим именем и
-    внешностью, снимок обстановки, действия (и `equip`/`unequip`; своё снаряжение скрипты не меняют —
+    внешностью (доспехи рудного барона), снимок обстановки, действия (и `equip`/`unequip`; своё снаряжение скрипты не меняют —
     `keepsOwnGear`), реплики модели через `GameScript::messageByName/messageTime` и `DialogMenu`, кнопка
     «Сказать» (`TouchInput` `C_Say` → `AiNpc::addressee/heroSpeak`; живые жители — команды с `who`, `refSelf`,
     `Npc::saveRoutines`; сюжетные темы — `AiNpc::cmdStory`/`storyJson`, `GameScript::storyExec`, реплики темы — в
@@ -158,7 +159,7 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
   git add -N common/game/companions.cpp common/game/travelpoints.cpp common/game/travelpoints.h common/utils/cp1251.h \
     common/game/travelcamera.cpp common/game/travelcamera.h common/game/ainpc.cpp common/game/ainpc.h \
     common/game/ailink.cpp common/game/ailink.h common/utils/mobileperf.cpp common/utils/mobileperf.h common/utils/perfstats.h \
-    common/ui/touchicons.cpp common/ui/touchicons.h   # и другие новые файлы; не -A: build/ не в .gitignore движка
+    common/ui/touchicons.cpp common/ui/touchicons.h common/game/cooking.cpp   # и другие новые файлы; не -A: build/ не в .gitignore движка
   git diff --ignore-submodules=all > ../opengothic.patch && git reset -q
   git -C lib/Tempest diff > ../opengothic-tempest.patch
   ```
