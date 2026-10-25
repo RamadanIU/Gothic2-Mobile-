@@ -30,10 +30,25 @@ public class GameActivity extends NativeActivity {
 
     private int fpsLimit;
 
+    /** Экран запуска: «Настроить кнопки» — игра открывает настройку кнопок поверх меню. */
+    static final String EXTRA_EDIT_CONTROLS = "edit_controls";
+
     private static native void nativeAttachApp();
+
+    private static native void nativeEditControls();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Отчёт о сбое прошлого запуска — в crash.prev.log (один, старее удаляются): иначе в журнале навсегда
+        // оставался давний сбой, а log.txt движок и так начинает заново
+        if (savedInstanceState == null) {
+            java.io.File crash = new java.io.File(getFilesDir(), "crash.log");
+            java.io.File prev = new java.io.File(getFilesDir(), "crash.prev.log");
+            if (crash.isFile()) {
+                prev.delete();
+                crash.renameTo(prev);
+            }
+        }
         // Живой NPC: Java-методы движка (AiBridge.native*) находятся, только если библиотеку загрузил и
         // System.loadLibrary - NativeActivity грузит её сама, мимо Java. Тот же файл, второй загрузки нет.
         try {
@@ -53,6 +68,24 @@ public class GameActivity extends NativeActivity {
         fpsLimit = new GraphicsSettings(getSharedPreferences("launcher", MODE_PRIVATE)).fpsLimit();
         preferDisplayMode(fpsLimit);
         AiBridge.start(this);
+        takeEditRequest(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        takeEditRequest(intent);
+    }
+
+    private static void takeEditRequest(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_EDIT_CONTROLS, false)) return;
+        intent.removeExtra(EXTRA_EDIT_CONTROLS);
+        try {
+            nativeEditControls();
+        } catch (UnsatisfiedLinkError ignored) {
+            // движок без связи с приложением - настройка кнопок есть и в главном меню игры
+        }
     }
 
     @Override

@@ -63,6 +63,8 @@ final class GeraltBrain {
     private static final Actor GERALT = new Actor("self", "", Persona.NAME, "", false, 0);
 
     private static final int MAX_STEPS = 3;
+    /** Сколько ждать голос куска реплики, прежде чем сказать его субтитром. */
+    private static final long VOICE_WAIT_MS = 12000;
     /** Жест или занятие без слов на слова героя не исполняется — модель должна сначала ответить. */
     private static final String[] SILENT = {
         "не сделано: жест, взгляд и занятие — только вместе со словами. Сначала скажи вслух: герою — текстом ответа, "
@@ -207,6 +209,11 @@ final class GeraltBrain {
                     break;
                 }
                 lastActivity = now();
+                if (heroSpokeAgain()) {
+                    memory.add(stamp() + " Герой: «" + text + "»");
+                    AiLog.i("said superseded: «" + AiLog.cut(text, 120) + "»");
+                    break;
+                }
                 // «Сказать», обращённое к жителю (фокус или выбранный касанием) - отвечает модель этого жителя
                 String target = Json.str(ev, "target");
                 if (!target.isEmpty() && !"self".equals(target) && !talking) {
@@ -398,7 +405,7 @@ final class GeraltBrain {
                 }
             }
         } catch (IOException e) {
-            showError("модель — " + e.getMessage());
+            showError("модель — " + LlmClient.describe(e) + (heroAsked ? ". Скажи ещё раз" : ""));
         } finally {
             if (dialog) engine.send(Json.of("cmd", "think", "on", false));
             if (heroAsked) ui.hideStatus();
@@ -578,7 +585,7 @@ final class GeraltBrain {
                 }
             }
         } catch (IOException e) {
-            showError("модель — " + e.getMessage());
+            showError("модель — " + LlmClient.describe(e));
         } finally {
             ui.hideStatus();
             lastActivity = now();
@@ -754,7 +761,7 @@ final class GeraltBrain {
                 AiLog.i("npc " + key + " words: «" + AiLog.cut(reply, 200) + "»");
             }
         } catch (IOException e) {
-            showError("модель — " + e.getMessage());
+            showError("модель — " + LlmClient.describe(e));
             return null;
         }
         if (toGeralt) {
@@ -808,7 +815,7 @@ final class GeraltBrain {
         try {
             r = chat.chat(msgs, snap.isEmpty() ? null : listenerTools, 500);
         } catch (IOException e) {
-            showError("модель — " + e.getMessage());
+            showError("модель — " + LlmClient.describe(e));
             return new String[]{"", ""};
         }
         String said = Speech.clean(r.text);
@@ -869,7 +876,11 @@ final class GeraltBrain {
         return l;
     }
 
-    /** Реплика по кускам: голос готовится заранее, следующий кусок — когда кончился предыдущий. */
+    /**
+     * Реплика по кускам: голос готовится заранее, следующий кусок — когда кончился предыдущий. Голос, который не
+     * готов за VOICE_WAIT_MS, не ждём: реплика идёт субтитром, остальные куски этой реплики — тоже без голоса
+     * (прежде ждали по 40 с на кусок — Геральт «молчал» минутами, пока сервер озвучки тормозил).
+     */
     private void speak(String who, String to, String text, Tts.Voice voice) {
         List<String> parts = Speech.chunks(text);
         List<Future<Pcm>> pcm = new ArrayList<>();
@@ -880,15 +891,23 @@ final class GeraltBrain {
             }
             pcm.add(ttsPool.submit(() -> tts.synth(p, voice)));
         }
+        boolean mute = false;
         for (int i = 0; i < parts.size(); i++) {
             String part = parts.get(i);
             Pcm sound = null;
-            if (pcm.get(i) != null) {
+            Future<Pcm> f = pcm.get(i);
+            if (f != null && mute) {
+                f.cancel(true);
+            } else if (f != null) {
                 try {
-                    sound = pcm.get(i).get(40, TimeUnit.SECONDS);
+                    sound = f.get(VOICE_WAIT_MS, TimeUnit.MILLISECONDS);
+                } catch (java.util.concurrent.TimeoutException e) {
+                    f.cancel(true);
+                    mute = true;
+                    showError("озвучка не успела за " + VOICE_WAIT_MS / 1000 + " с — реплика без голоса");
                 } catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
-                    showError("озвучка — " + cause.getMessage());
+                    showError("озвучка — " + (cause instanceof IOException ? LlmClient.describe((IOException) cause) : String.valueOf(cause)));
                 }
             }
             String id = nextLine("L");
@@ -897,6 +916,20 @@ final class GeraltBrain {
             engine.send(Json.of("cmd", "say", "id", id, "who", who, "to", to, "text", part, "ms", ms, "mood", voice.mood));
             waitFor(e -> "line_end".equals(Json.str(e, "ev")) && id.equals(Json.str(e, "id")), ms + 20000L);
         }
+    }
+
+    /**
+     * Герой уже сказал что-то ещё, пока ждал ответа (не дождался и переспросил): прежние слова — только в память,
+     * отвечать на них отдельно не нужно — ответ пойдёт на последние.
+     */
+    private boolean heroSpokeAgain() {
+        for (Map<String, Object> e : queue) {
+            if ("said".equals(Json.str(e, "ev")) && !Json.str(e, "text").trim().isEmpty()) return true;
+        }
+        for (Map<String, Object> e : deferred) {
+            if ("said".equals(Json.str(e, "ev")) && !Json.str(e, "text").trim().isEmpty()) return true;
+        }
+        return false;
     }
 
     private Map<String, Object> requestSnapshot() {

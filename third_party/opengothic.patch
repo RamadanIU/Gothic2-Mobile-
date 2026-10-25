@@ -5935,7 +5935,7 @@ index bdae2eb..d2c1f5f 100644
  
      bool    testSlide(const Tempest::Vec3& p, DynamicWorld::CollisionTest& out) const;
 diff --git a/common/game/playercontrol.cpp b/common/game/playercontrol.cpp
-index aa16509..e0f230b 100644
+index aa16509..6c6d3cc 100644
 --- a/common/game/playercontrol.cpp
 +++ b/common/game/playercontrol.cpp
 @@ -1,13 +1,22 @@
@@ -5991,7 +5991,7 @@ index aa16509..e0f230b 100644
    setTarget(currentFocus.npc);
  
    if(!ctrl[Action::ActionGeneric])
-@@ -444,6 +462,1335 @@ void PlayerControl::clearInput() {
+@@ -444,6 +462,1399 @@ void PlayerControl::clearInput() {
    std::memset(ctrl, 0,sizeof(ctrl));
    std::memset(actrl,0,sizeof(actrl));
    std::memset(wctrl,0,sizeof(wctrl));
@@ -6104,6 +6104,70 @@ index aa16509..e0f230b 100644
 +
 +bool PlayerControl::drinkManaPotion() {
 +  return drinkPotion(manaPotions,std::size(manaPotions));
++  }
++
++int PlayerControl::potionValue(Npc& pl, size_t cls, bool mana) const {
++  // Сколько даёт зелье: строка «Здоровье»/«Мана» (NAME_BONUS_HP/MANA) и число при ней в описании предмета,
++  // как в окне сумки; «Чистое здоровье/мана» (ADDON_04) - всё
++  auto  w  = Gothic::inst().world();
++  auto& sc = w->script();
++  if(cls==sc.findSymbolIndex(mana ? "ITPO_MANA_ADDON_04" : "ITPO_HEALTH_ADDON_04"))
++    return pl.attribute(mana ? ATR_MANAMAX : ATR_HITPOINTSMAX);
++  auto* txt = sc.findSymbol(mana ? "NAME_BONUS_MANA" : "NAME_BONUS_HP");
++  if(txt==nullptr)
++    return 0;
++  for(auto it=pl.inventory().iterator(Inventory::T_Inventory); it.isValid(); ++it) {
++    const Item& itm = *it;
++    if(itm.clsId()!=cls)
++      continue;
++    const auto& h = itm.handle();
++    int v = 0;
++    for(size_t k=0; k<zenkit::IItem::text_count; ++k)
++      if(h.text[k]==txt->get_string())
++        v = std::max(v,h.count[k]);
++    return v;
++    }
++  return 0;
++  }
++
++bool PlayerControl::touchDrinkPotion(bool mana) {
++  auto w  = Gothic::inst().world();
++  auto pl = w ? w->player() : nullptr;
++  if(pl==nullptr || pl->isDown())
++    return false;
++  const char* const* names = mana ? manaPotions : healPotions;
++  size_t cls = size_t(-1);
++  for(size_t i=0; i<std::size(healPotions) && cls==size_t(-1); ++i) {
++    const size_t id = w->script().findSymbolIndex(names[i]);
++    if(id!=size_t(-1) && pl->itemCount(id)>0)
++      cls = id;
++    }
++  if(cls==size_t(-1)) {
++    Gothic::inst().onPrint(toCp1251(mana ? "Нет зелий маны" : "Нет зелий лечения"));
++    return false;
++    }
++  const int cur  = pl->attribute(mana ? ATR_MANA : ATR_HITPOINTS);
++  const int max  = pl->attribute(mana ? ATR_MANAMAX : ATR_HITPOINTSMAX);
++  const int need = max-cur;
++  if(need<=0) {
++    // Полное - никогда: тут и второе касание - случайность
++    Gothic::inst().onPrint(toCp1251(mana ? "Мана полная - зелье не нужно" : "Здоровье полное - лечение не нужно"));
++    return false;
++    }
++  // Больше половины зелья пропадёт зря (лечит 50, а не хватает 20) - сначала предупредить
++  const uint64_t now   = w->tickCount();
++  const int      value = potionValue(*pl,cls,mana);
++  const bool     again = potionConfirmMana==mana && now<potionConfirmUntil;
++  if(value>0 && need*2<value && !again) {
++    potionConfirmUntil = now+3000;
++    potionConfirmMana  = mana;
++    Gothic::inst().onPrint(toCp1251(mana ? "Мана почти полная - зелье пропадёт зря. Ещё раз - выпить всё равно"
++                                         : "Ты сейчас не нуждаешься в лечении. Ещё раз - выпить всё равно"));
++    return false;
++    }
++  potionConfirmUntil = 0;
++  pl->useItem(cls);
++  return true;
 +  }
 +
 +size_t PlayerControl::potionCount(bool mana) const {
@@ -7327,7 +7391,7 @@ index aa16509..e0f230b 100644
    }
  
  void PlayerControl::marvinF8(uint64_t dt) {
-@@ -579,6 +1926,10 @@ bool PlayerControl::tickMove(uint64_t dt) {
+@@ -579,6 +1990,10 @@ bool PlayerControl::tickMove(uint64_t dt) {
    if(pl==nullptr)
      return true;
  
@@ -7338,7 +7402,7 @@ index aa16509..e0f230b 100644
    implMove(dt);
  
    float runAngle = pl->runAngle();
-@@ -619,6 +1970,11 @@ void PlayerControl::implMove(uint64_t dt) {
+@@ -619,6 +2034,11 @@ void PlayerControl::implMove(uint64_t dt) {
      return;
    if(bs==BS_UNCONSCIOUS)
      return;
@@ -7350,7 +7414,7 @@ index aa16509..e0f230b 100644
  
    if(!pl.isAiQueueEmpty()) {
      runAngleDest = 0;
-@@ -675,6 +2031,12 @@ void PlayerControl::implMove(uint64_t dt) {
+@@ -675,6 +2095,12 @@ void PlayerControl::implMove(uint64_t dt) {
        }
      }
  
@@ -7364,7 +7428,7 @@ index aa16509..e0f230b 100644
      runAngleDest = 0;
      return;
 diff --git a/common/game/playercontrol.h b/common/game/playercontrol.h
-index fb8d625..ac74f4d 100644
+index fb8d625..9c55e54 100644
 --- a/common/game/playercontrol.h
 +++ b/common/game/playercontrol.h
 @@ -5,6 +5,9 @@
@@ -7385,7 +7449,7 @@ index fb8d625..ac74f4d 100644
  
  class PlayerControl final {
    public:
-@@ -48,6 +52,70 @@ class PlayerControl final {
+@@ -48,6 +52,73 @@ class PlayerControl final {
      bool  tickMove(uint64_t dt);
      bool  tickCameraMove(uint64_t dt);
  
@@ -7401,6 +7465,9 @@ index fb8d625..ac74f4d 100644
 +    bool  isAutoFight() const { return autoFight; }
 +    bool  drinkHealPotion();
 +    bool  drinkManaPotion();
++    // Кнопка «Зелье»: не пить при полном здоровье/мане и когда зелье намного больше недостачи (случайное
++    // касание); второе касание в течение 3 с после предупреждения - выпить всё равно
++    bool  touchDrinkPotion(bool mana);
 +    size_t potionCount(bool mana) const;
 +    void  toggleSneak();
 +    bool  isSneak() const;
@@ -7456,7 +7523,7 @@ index fb8d625..ac74f4d 100644
    private:
      enum WeaponAction : uint8_t {
        WeaponClose,
-@@ -153,6 +221,66 @@ class PlayerControl final {
+@@ -153,6 +224,66 @@ class PlayerControl final {
      int            rotationAni    = 0;
      bool           g2Ctrl         = false;
  
@@ -7523,7 +7590,7 @@ index fb8d625..ac74f4d 100644
      DialogMenu&    dlg;
      InventoryMenu& inv;
  
-@@ -177,6 +305,35 @@ class PlayerControl final {
+@@ -177,6 +308,38 @@ class PlayerControl final {
      void           setAnimRotate (Npc& pl, float rotation, int anim, bool force, uint64_t dt);
      void           processAutoRotate(Npc& pl, float& rot, uint64_t dt);
  
@@ -7551,6 +7618,9 @@ index fb8d625..ac74f4d 100644
 +    Npc*           travelEnemy(Npc& pl, bool& guard) const;
 +    bool           travelIgnored(const Npc& npc, uint64_t now) const;
 +    bool           drinkPotion(const char* const* names, size_t count);
++    int            potionValue(Npc& pl, size_t cls, bool mana) const;
++    uint64_t       potionConfirmUntil = 0;
++    bool           potionConfirmMana  = false;
 +    // Лечение в пути: зелья -> лечебные травы -> еда (docs/CONTROLS.md, «Путь»)
 +    enum class HealKind : uint8_t { Potion, Herb, Food };
 +    size_t         travelHealItem(Npc& pl, bool potionsOnly, int need, HealKind& kind) const;
@@ -8144,7 +8214,7 @@ index 0000000..915c632
 +    static void             resolve(World& w, std::vector<Spot>& out);
 +  };
 diff --git a/common/gothic.cpp b/common/gothic.cpp
-index 56c5d58..058e330 100644
+index 56c5d58..a2c6203 100644
 --- a/common/gothic.cpp
 +++ b/common/gothic.cpp
 @@ -18,6 +18,7 @@
@@ -8181,7 +8251,7 @@ index 56c5d58..058e330 100644
          }
        if(FileExt::hasExt(file, u"mod")) {
          // Remove all *.mod files, that are not listed in modvdfs
-@@ -149,6 +160,38 @@ Gothic::Gothic(GameModDescriptor desc) {
+@@ -149,6 +160,40 @@ Gothic::Gothic(GameModDescriptor desc) {
      iniFile->set("INTERNAL", "vidResIndex", 0); // full-res
      }
    {
@@ -8203,6 +8273,7 @@ index 56c5d58..058e330 100644
 +    opts.animLod          = g2m.getI("GRAPHICS","animLod",1)!=0;
 +    opts.ragdoll          = g2m.getI("GRAPHICS","ragdoll",1)!=0;
 +    opts.ragdollFall      = opts.ragdoll && g2m.getI("GRAPHICS","ragdollFall",1)!=0;
++    opts.occlusion        = g2m.getI("GRAPHICS","occlusion",1)!=0;
 +    if(g2m.getI("GRAPHICS","showFps",0)!=0)
 +      setFRate(true);
 +    if(g2m.has("GRAPHICS","windRange")) {
@@ -8213,6 +8284,7 @@ index 56c5d58..058e330 100644
 +    Tempest::Log::i("[g2m] graphics: fps=",opts.fpsLimit," res=",iniFile->getI("INTERNAL","vidResIndex"),
 +                    " shadows=",int(opts.shadowResolution)," view=",int(opts.viewDistance/100.f),"m detail=",opts.detailRatio,
 +                    " upscale=",(opts.sharpUpscale ? "sharp" : "bilinear")," animLod=",int(opts.animLod)," ragdoll=",int(opts.ragdoll),"/",int(opts.ragdollFall),
++                    " occlusion=",int(opts.occlusion),
 +                    " wind=",int(iniFile->getI("ENGINE","zWindEnabled")!=0 ? opts.windRange/100.f : 0.f),"m");
 +    }
 +  }
@@ -8220,7 +8292,7 @@ index 56c5d58..058e330 100644
    defaults.reset(new IniFile());
    defaults->set("GAME", "enableMouse",         1);
    defaults->set("GAME", "mouseSensitivity",    0.5f);
-@@ -644,7 +687,12 @@ void Gothic::updateAnimation(uint64_t dt) {
+@@ -644,7 +689,12 @@ void Gothic::updateAnimation(uint64_t dt) {
    }
  
  void Gothic::quickSave() {
@@ -8233,7 +8305,7 @@ index 56c5d58..058e330 100644
    }
  
  void Gothic::quickLoad() {
-@@ -749,27 +797,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
+@@ -749,27 +799,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
    }
  
  zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const ScriptLang lang) {
@@ -8281,7 +8353,7 @@ index 56c5d58..058e330 100644
    if(!FileUtil::exists(path) && int(lang)>=0) {
      gscript = CommandLine::inst().scriptPath(lang);
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
-@@ -783,6 +842,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
+@@ -783,6 +844,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
      }
  
@@ -8290,10 +8362,10 @@ index 56c5d58..058e330 100644
    zenkit::DaedalusScript script;
    script.load(buf.get());
 diff --git a/common/gothic.h b/common/gothic.h
-index 2654cc4..ef62c1d 100644
+index 2654cc4..48b2670 100644
 --- a/common/gothic.h
 +++ b/common/gothic.h
-@@ -71,11 +71,25 @@ class Gothic final {
+@@ -71,11 +71,26 @@ class Gothic final {
        bool     showHealthBar     = true;
        uint8_t  showManaBar       = 2;
        uint8_t  showSwimBar       = 1;
@@ -8307,6 +8379,7 @@ index 2654cc4..ef62c1d 100644
 +      bool     sharpUpscale      = true; // масштабирование до экрана: Ланцош (чётче) или билинейное
 +      bool     ragdoll           = true; // убитые и оглушённые падают по физике (physics/ragdoll.h)
 +      bool     ragdollFall       = true; // и живые: долгое падение (больше 1 с), удар, отбрасывающий тело (тролль)
++      bool     occlusion         = true; // не рисовать заслонённое (HiZ); выключить - проверить пропадающие стены
        };
  
      auto         version() const -> const VersionInfo&;
@@ -8319,7 +8392,7 @@ index 2654cc4..ef62c1d 100644
      bool         isInGameAndAlive() const;
  
      std::string_view defaultWorld()       const;
-@@ -257,6 +271,7 @@ class Gothic final {
+@@ -257,6 +272,7 @@ class Gothic final {
  
      std::mutex                              syncSnd;
      Tempest::SoundDevice                    sndDev;
@@ -8328,15 +8401,15 @@ index 2654cc4..ef62c1d 100644
      std::unordered_map<std::string,SoundFx> sndWavCache;
      std::vector<Tempest::SoundEffect>       sndStorage;
 diff --git a/common/graphics/drawcommands.cpp b/common/graphics/drawcommands.cpp
-index 1bf7897..06ad0da 100644
+index 1bf7897..a6854f8 100644
 --- a/common/graphics/drawcommands.cpp
 +++ b/common/graphics/drawcommands.cpp
-@@ -286,10 +286,17 @@ void DrawCommands::visibilityPass(Encoder<CommandBuffer>& cmd, int pass) {
+@@ -286,10 +286,20 @@ void DrawCommands::visibilityPass(Encoder<CommandBuffer>& cmd, int pass) {
      const size_t visClustersSz = maxPayload*sizeof(uint32_t)*4;
      usesSsbo(view.visClusters, visClustersSz);
  
 -    struct Push { uint32_t firstMeshlet; uint32_t meshletCount; float znear; } push = {};
-+    struct Push { uint32_t firstMeshlet; uint32_t meshletCount; float znear; float viewDist; float detailRatio; } push = {};
++    struct Push { uint32_t firstMeshlet; uint32_t meshletCount; float znear; float viewDist; float detailRatio; uint32_t noHiZ; } push = {};
      push.firstMeshlet = 0;
      push.meshletCount = uint32_t(clusters.size());
      push.znear        = scene.znear;
@@ -8347,6 +8420,9 @@ index 1bf7897..06ad0da 100644
 +    push.detailRatio  = Gothic::options().detailRatio;
 +    if(SceneGlobals::isShadowView(viewport))
 +      push.detailRatio = std::max(push.detailRatio*2.f, 0.004f);
++    // Gothic II Mobile: «Отсечение невидимого» выключено - всё в кадре рисуется, даже заслонённое (дороже для
++    // видеокарты, но стены и тела не пропадают, если карта перекрытий врёт)
++    push.noHiZ        = Gothic::options().occlusion ? 0 : 1;
  
      auto* pso = &Shaders::inst().visibilityPassSh;
      if(viewport==SceneGlobals::V_Main)
@@ -8793,7 +8869,7 @@ index b002cf6..243ff9b 100644
          bool   isEmpty()    const { return subCount==0; }
          size_t nodesCount() const { return subCount;    }
 diff --git a/common/graphics/renderer.cpp b/common/graphics/renderer.cpp
-index 03a64b2..a72ab35 100644
+index 03a64b2..fdb3582 100644
 --- a/common/graphics/renderer.cpp
 +++ b/common/graphics/renderer.cpp
 @@ -111,6 +111,7 @@ Renderer::~Renderer() {
@@ -8875,7 +8951,45 @@ index 03a64b2..a72ab35 100644
    cmd.draw(nullptr, 0, 3);
    }
  
-@@ -1768,7 +1799,7 @@ void Renderer::drawUnderwater(Encoder<CommandBuffer>& cmd, const WorldView& wvie
+@@ -1145,6 +1176,29 @@ void Renderer::buildHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
+   push.numGroups = uint32_t(wgW * wgH);
+   push.mip       = mip;
+ 
++#if defined(__ANDROID__)
++  // Gothic II Mobile: мелкие уровни (с 4-го) шейдер достраивает в последней закончившей группе, читая то, что
++  // записали другие группы того же запуска (coherent + счётчик). На Adreno эти записи бывают ещё не видны - в
++  // крупных уровнях остаётся глубина прошлых кадров, и большие объекты (стена рядом, тело героя) считаются
++  // заслонёнными и пропадают, а мелкие вдали видны. Здесь - по три уровня за запуск, каждый следующий запуск
++  // начинает с уже готового уровня (привязки сдвинуты), между запусками - барьер Tempest; ветка со счётчиком
++  // не выполняется (mipCount<=4)
++  (void)wgH;
++  cmd.setBinding(0, hiz.counter);
++  for(uint32_t base=0; base+1<mip; ) {
++    const uint32_t levels = std::min(mip-base, 4u);
++    for(uint32_t i=0; i<maxBind; ++i)
++      cmd.setBinding(1+i, hiz.hiZ, Sampler::nearest(), std::min(base+i, mip-1));
++    const int w = std::max(std::max(int(hiz.hiZ.w()>>base)/2, 1) / int(wgSz.x), 1);
++    const int h = std::max(std::max(int(hiz.hiZ.h()>>base)/2, 1) / int(wgSz.y), 1);
++    push.numGroups = uint32_t(w*h);
++    push.mip       = levels;
++    cmd.setPushData(push);
++    cmd.setPipeline(shaders.hiZMip);
++    cmd.dispatch(size_t(w), size_t(h));
++    base += levels-1;
++    }
++#else
+   cmd.setBinding(0, hiz.counter);
+   for(uint32_t i=0; i<maxBind; ++i)
+     cmd.setBinding(1+i, hiz.hiZ, Sampler::nearest(), std::min(i, mip-1));
+@@ -1152,6 +1206,7 @@ void Renderer::buildHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
+   cmd.setPipeline(shaders.hiZMip);
+   //cmd.dispatchThreads(std::max(uint32_t(hiz.hiZ.w())/2u, 1u), std::max(uint32_t(hiz.hiZ.h())/2u, 1u));
+   cmd.dispatch(size_t(wgW), size_t(wgH));
++#endif
+   }
+ 
+ void Renderer::drawVsm(Tempest::Encoder<Tempest::CommandBuffer>& cmd, WorldView& wview) {
+@@ -1768,7 +1823,7 @@ void Renderer::drawUnderwater(Encoder<CommandBuffer>& cmd, const WorldView& wvie
  
  void Renderer::drawShadowMap(Encoder<CommandBuffer>& cmd, uint8_t fId, WorldView& view) {
    for(uint8_t i=0; i<Resources::ShadowLayers; ++i) {
@@ -8884,7 +8998,7 @@ index 03a64b2..a72ab35 100644
        continue;
      cmd.setDebugMarker(string_frm("ShadowMap #",i));
      cmd.setFramebuffer({}, {shadowMap[i], 0.f, Tempest::Preserve});
-@@ -1816,7 +1847,8 @@ void Renderer::drawShadowResolve(Encoder<CommandBuffer>& cmd, const WorldView& w
+@@ -1816,7 +1871,8 @@ void Renderer::drawShadowResolve(Encoder<CommandBuffer>& cmd, const WorldView& w
      }
    else {
      for(size_t r=0; r<Resources::ShadowLayers; ++r) {
@@ -8894,7 +9008,7 @@ index 03a64b2..a72ab35 100644
          continue;
        cmd.setBinding(4+r, shadowMap[r], Resources::shadowSampler());
        }
-@@ -1859,9 +1891,10 @@ void Renderer::drawLights(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
+@@ -1859,9 +1915,10 @@ void Renderer::drawLights(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
      cmd.setBinding(11,scene.rtScene.rtDesc);
      }
  
@@ -9098,7 +9212,7 @@ index 4c01505..36cb23a 100644
    }
  
 diff --git a/common/mainwindow.cpp b/common/mainwindow.cpp
-index 52b66d3..4f46c65 100644
+index 52b66d3..c0156c3 100644
 --- a/common/mainwindow.cpp
 +++ b/common/mainwindow.cpp
 @@ -1,5 +1,8 @@
@@ -9336,7 +9450,7 @@ index 52b66d3..4f46c65 100644
    }
  
  void MainWindow::onSettings() {
-@@ -390,14 +483,79 @@ void MainWindow::onSettings() {
+@@ -390,14 +483,80 @@ void MainWindow::onSettings() {
    if(zMaxFps>0)
      maxFpsInv = 1000u/uint64_t(zMaxFps); else
      maxFpsInv = 0;
@@ -9407,7 +9521,8 @@ index 52b66d3..4f46c65 100644
  void MainWindow::keyDownEvent(KeyEvent &event) {
 +#if defined(__MOBILE_PLATFORM__)
 +  // Gothic II Mobile: карта «Путь», подтверждение, затемнение - клавиши не идут в игру, «Назад» закрывает окно
-+  if(!rootMenu.isActive() && mobileUi.isModal()) {
++  // Настройка кнопок открыта и поверх меню игры: «Назад» закрывает её, а не меню
++  if(mobileUi.isEditing() || (!rootMenu.isActive() && mobileUi.isModal())) {
 +    uiKeyUp = &mobileUi;
 +    event.accept();
 +    return;
@@ -9416,7 +9531,7 @@ index 52b66d3..4f46c65 100644
    if(video.isActive()){
      event.accept();
      video.keyDownEvent(event);
-@@ -495,6 +653,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
+@@ -495,6 +654,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
    }
  
  void MainWindow::keyUpEvent(KeyEvent &event) {
@@ -9432,7 +9547,7 @@ index 52b66d3..4f46c65 100644
    if(uiKeyUp==&video){
      video.keyUpEvent(event);
      if(event.isAccepted())
-@@ -529,6 +696,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -529,6 +697,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
  
@@ -9444,7 +9559,7 @@ index 52b66d3..4f46c65 100644
    std::string_view menuEv;
    if(act==KeyCodec::Escape)
      menuEv = Gothic::inst().menuMain();
-@@ -543,6 +715,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -543,6 +716,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
      if(auto pl = Gothic::inst().player())
        rootMenu.setPlayer(*pl);
      clearInput();
@@ -9452,7 +9567,7 @@ index 52b66d3..4f46c65 100644
      }
    else if(act==KeyCodec::Inventory && !dialogs.isActive()) {
      if(inventory.isActive()) {
-@@ -553,11 +726,146 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -553,11 +727,146 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
          inventory.open(*pl);
        }
      clearInput();
@@ -9600,7 +9715,7 @@ index 52b66d3..4f46c65 100644
    if(!event.in)
      return;
    dMouse = Point();
-@@ -882,8 +1190,16 @@ uint64_t MainWindow::tick() {
+@@ -882,8 +1191,16 @@ uint64_t MainWindow::tick() {
      Gothic::inst().finishLoading();
      if(st==Gothic::LoadState::FailedLoad)
        rootMenu.setMainMenu();
@@ -9617,7 +9732,7 @@ index 52b66d3..4f46c65 100644
      return 0;
      }
    else if(st!=Gothic::LoadState::Idle) {
-@@ -949,6 +1265,30 @@ void MainWindow::tickCamera(uint64_t dt) {
+@@ -949,6 +1266,30 @@ void MainWindow::tickCamera(uint64_t dt) {
                               ws==WeaponState::W2H);
    auto       pos          = pl!=nullptr ? pl->cameraBone(camera.isFirstPerson()) : Vec3();
  
@@ -9648,7 +9763,7 @@ index 52b66d3..4f46c65 100644
    if(!camera.isCutscene() && !camera.isFree()) {
      const bool fs = SystemApi::isFullscreen(hwnd());
      if(!fs && mouseP[Event::ButtonLeft]) {
-@@ -1056,7 +1396,8 @@ void MainWindow::loadGame(std::string_view slot) {
+@@ -1056,7 +1397,8 @@ void MainWindow::loadGame(std::string_view slot) {
      }
  
    Gothic::inst().setBenchmarkMode(Benchmark::None);
@@ -9658,7 +9773,7 @@ index 52b66d3..4f46c65 100644
      game = nullptr; // clear world-memory now
      Tempest::RFile file(slot);
      Serialize      s(file);
-@@ -1102,20 +1443,50 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
+@@ -1102,20 +1444,50 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
    auto& thumb = lres.isEmpty() ? tex : lres;
    auto  pm    = device.readPixels(textureCast<const Texture2d&>(thumb));
  
@@ -9710,7 +9825,7 @@ index 52b66d3..4f46c65 100644
  
    update();
    }
-@@ -1127,6 +1498,11 @@ void MainWindow::onVideo(std::string_view fname) {
+@@ -1127,6 +1499,11 @@ void MainWindow::onVideo(std::string_view fname) {
    }
  
  void MainWindow::onStartLoading() {
@@ -9722,7 +9837,7 @@ index 52b66d3..4f46c65 100644
    player   .clearInput();
    inventory.onWorldChanged();
    dialogs  .onWorldChanged();
-@@ -1240,16 +1616,37 @@ void MainWindow::render(){
+@@ -1240,16 +1617,37 @@ void MainWindow::render(){
        once player position is updated, animation bones(cameraBone in particular) can be updated
        lastly - camera position
        */
@@ -9760,7 +9875,7 @@ index 52b66d3..4f46c65 100644
      Resources::resetRecycled(cmdId);
  
      if(video.isActive()) {
-@@ -1274,9 +1671,47 @@ void MainWindow::render(){
+@@ -1274,9 +1672,47 @@ void MainWindow::render(){
      renderer.draw(swapchain[swapchain.currentImage()],enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
      }
      sync = device.submit(cmd);
@@ -9808,7 +9923,7 @@ index 52b66d3..4f46c65 100644
      auto t = Application::tickCount();
      auto frameTime = maxFpsInv;
      if(!Gothic::inst().isInGame() && !video.isActive())
-@@ -1286,6 +1721,7 @@ void MainWindow::render(){
+@@ -1286,6 +1722,7 @@ void MainWindow::render(){
        Application::sleep(delay);
        t += delay;
        }
@@ -13781,10 +13896,10 @@ index 0000000..8538a5a
 +    const Tempest::Texture2d& cached(uint64_t key, const std::function<Tempest::Texture2d()>& make);
 +  };
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f1730..f737b05 100644
+index d9f1730..81dd9f8 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,2072 @@
+@@ -1,41 +1,2474 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
@@ -13794,6 +13909,7 @@ index d9f1730..f737b05 100644
 +#include <algorithm>
 +#include <cmath>
 +#include <cstdio>
++#include <cstring>
 +
 +#include "game/ainpc.h"
  #include "game/playercontrol.h"
@@ -13836,6 +13952,7 @@ index d9f1730..f737b05 100644
 +
 +TouchInput::TouchInput(MainWindow& owner, PlayerControl& ctrl) : owner(owner), ctrl(ctrl) {
 +  timer.timeout.bind(this,&TouchInput::onTimer);
++  loadLayout();
 +  }
 +
 +float TouchInput::dp() const {
@@ -13844,6 +13961,8 @@ index d9f1730..f737b05 100644
 +
 +TouchInput::Ui TouchInput::currentUi() const {
 +  using M = MainWindow::TouchMode;
++  if(editOpen)
++    return Ui::Edit;
 +  const auto m = owner.touchMode();
 +  if(m==M::Hidden)
 +    return Ui::Hidden;
@@ -13868,10 +13987,35 @@ index d9f1730..f737b05 100644
 +  if(owner.touchIsDialog())
 +    return Ui::Dialog;
 +  return Ui::Document;
-   }
- 
--void TouchInput::paintEvent(Tempest::PaintEvent& e) {
++  }
++
 +TouchInput::Button TouchInput::buttonOf(Ctl c) const {
++  // Место по умолчанию, затем настройка игрока: общий размер - от ближнего угла экрана (дуга под пальцем
++  // остаётся в углу и растёт вся), сдвиг и размер кнопки; кнопка не уходит за край
++  Button b = baseButtonOf(c);
++  if(!isMovable(c) || b.r<=0)
++    return b;
++  const float d  = dp();
++  const auto  s  = scaledCenter(b);
++  const auto& pl = place[c];
++  const float r  = std::clamp(float(b.r)*layScale*pl.scale, 10*d, 90*d);
++  const float cx = std::clamp(float(s.x)+pl.dx*d, r, std::max(r, float(w())-r));
++  const float cy = std::clamp(float(s.y)+pl.dy*d, r, std::max(r, float(h())-r));
++  b.c = Point(int(cx),int(cy));
++  b.r = int(r);
++  return b;
++  }
++
++Point TouchInput::scaledCenter(const Button& b) const {
++  const float W  = float(w()), H = float(h());
++  const float bx = float(b.c.x), by = float(b.c.y);
++  // Кнопка посередине (камера в пути) остаётся посередине
++  const float ax = std::abs(bx-W*0.5f)<W*0.05f ? bx : (bx<W*0.5f ? 0.f : W);
++  const float ay = std::abs(by-H*0.5f)<H*0.05f ? by : (by<H*0.5f ? 0.f : H);
++  return Point(int(ax+(bx-ax)*layScale), int(ay+(by-ay)*layScale));
++  }
++
++TouchInput::Button TouchInput::baseButtonOf(Ctl c) const {
 +  const float d = dp();
 +  const float W = float(w());
 +  const float H = float(h());
@@ -13930,6 +14074,7 @@ index d9f1730..f737b05 100644
 +    case C_Skip:    return pill(W - m - pw, 12*d, pw, ph);
 +    // Справа вверху, над пунктами меню; шире - подпись длинная
 +    case C_App:     return pill(W - m - pw*1.25f, 12*d, pw*1.25f, ph);
++    case C_Edit:    return pill(W - m - pw*1.25f - 10*d - pw*0.9f, 12*d, pw*0.9f, ph);
 +    case C_Up:      return round(m + 26*d, H - m - ph - 16*d - 26*d - 62*d, 26*d);
 +    case C_Down:    return round(m + 26*d, H - m - ph - 16*d - 26*d, 26*d);
 +    // Взлом - слева внизу; в меню игры (ползунки, переключатели) - над «Выбрать», под правым пальцем
@@ -14014,6 +14159,7 @@ index d9f1730..f737b05 100644
 +    case C_Skip:
 +      return ui==Ui::Skip;
 +    case C_App:
++    case C_Edit:
 +      return ui==Ui::Menu && owner.touchMenuInfo().top;
 +    case C_None:
 +    case C_Joy:
@@ -14126,8 +14272,9 @@ index d9f1730..f737b05 100644
 +  if(f.npc!=nullptr && !f.npc->isDown() && std::find(squad.begin(),squad.end(),f.npc)==squad.end())
 +    return f.npc;
 +  return nullptr;
-+  }
-+
+   }
+ 
+-void TouchInput::paintEvent(Tempest::PaintEvent& e) {
 +Npc* TouchInput::sayTarget() const {
 +  // Кому «Сказать»: выбранный касанием, иначе тот, на кого смотрит герой, иначе Геральт рядом (AiNpc::addressee)
 +  auto w  = Gothic::inst().world();
@@ -14150,6 +14297,8 @@ index d9f1730..f737b05 100644
 +  }
 +
 +void TouchInput::paintEvent(PaintEvent& e) {
++  if(AppLink::takeEditRequest())
++    openEditor();
 +  const Ui ui = currentUi();
 +  if(ui!=lastUi) {
 +    // Экран сменился (открылся диалог, сумка, меню) - всё, что держали пальцы, отпускается
@@ -14163,6 +14312,13 @@ index d9f1730..f737b05 100644
 +    closeConfirm();
 +  if(ui==Ui::Hidden)
 +    return;
++
++  paintAlpha = (ui==Ui::World || ui==Ui::Edit) ? layAlpha : 1.f;
++  if(ui==Ui::Edit) {
++    Painter p(e);
++    drawEditor(p);
++    return;
++    }
 +
 +  if(ui==Ui::Travel || ui==Ui::Confirm || ui==Ui::Fade) {
 +    Painter p(e);
@@ -14286,6 +14442,9 @@ index d9f1730..f737b05 100644
 +      case C_App:
 +        drawPill(p,b.rect,TouchIcons::I_Menu,toCp1251("Приложение"),pressed);
 +        break;
++      case C_Edit:
++        drawPill(p,b.rect,TouchIcons::I_Hand,toCp1251("Кнопки"),pressed);
++        break;
 +      case C_None:
 +      case C_Joy:
 +      case C_Look:
@@ -14333,6 +14492,7 @@ index d9f1730..f737b05 100644
 +  }
 +
 +void TouchInput::drawRound(Painter& p, const Button& b, TouchIcons::Icon ic, bool pressed, bool active, float alpha) {
++  alpha *= paintAlpha;
 +  // Видимый круг подложки занимает 88% текстуры: по краям - тень
 +  const int ds = int(float(2*b.r)/0.88f);
 +  if(active || pressed) {
@@ -14381,11 +14541,12 @@ index d9f1730..f737b05 100644
 +    drawGlow(p, Rect(b.c.x-gs/2, b.c.y-gs/2, gs, gs), ds, 0.6f);
 +    }
 +  auto& d = icons.disc(ds);
-+  p.setBrush(Brush(d,Color(1.f,1.f,1.f,pressed ? 1.f : 0.92f)));
++  p.setBrush(Brush(d,Color(1.f,1.f,1.f,(pressed ? 1.f : 0.92f)*paintAlpha)));
 +  p.drawRect(b.c.x-ds/2, b.c.y-ds/2, ds, ds, 0,0,d.w(),d.h());
 +
 +  // Значок выше центра, подпись - внизу круга: что кнопка сделает сейчас
-+  const Color cl = ctx.dim ? GoldDim : (pressed ? GoldBright : GoldIdle);
++  Color cl = ctx.dim ? GoldDim : (pressed ? GoldBright : GoldIdle);
++  cl.set(cl.r(), cl.g(), cl.b(), cl.a()*paintAlpha);
 +  drawGlyph(p, ctx.icon, Point(b.c.x, b.c.y-int(float(b.r)*0.16f)), int(float(b.r)*0.95f), cl);
 +  if(!ctx.label.empty()) {
 +    const auto txt = fit(ctx.label, int(float(b.r)*1.6f), 0.85f);
@@ -14404,9 +14565,7 @@ index d9f1730..f737b05 100644
 +  p.drawRect(c.x-ds/2, c.y-ds/2, ds, ds, 0,0,d.w(),d.h());
 +  drawLabel(p, std::to_string(std::min<size_t>(n,99)), c, true, 0.75f);
 +  }
- 
--  p.setBrush(Color(1,1,1, 0.2f));
--  p.drawRect(10, h()-10 - 100, 100, 100);
++
 +void TouchInput::drawHoldRing(Painter& p, const Button& b, float k) {
 +  k = std::clamp(k,0.f,1.f);
 +  const int   n   = 28;
@@ -14461,7 +14620,9 @@ index d9f1730..f737b05 100644
 +  kb.r = kr;
 +  drawRound(p, kb, TouchIcons::I_Dot, false, active && joyRun, alpha+0.15f);
 +  }
-+
+ 
+-  p.setBrush(Color(1,1,1, 0.2f));
+-  p.drawRect(10, h()-10 - 100, 100, 100);
 +void TouchInput::drawTarget(Painter& p) {
 +  auto tg  = ctrl.touchTarget();
 +  auto cam = Gothic::inst().camera();
@@ -14745,17 +14906,22 @@ index d9f1730..f737b05 100644
 +void TouchInput::mouseDownEvent(MouseEvent& e) {
 +  const Ui ui = currentUi();
 +  if(ui==Ui::Hidden || e.mouseID<0 || size_t(e.mouseID)>=fingers.size()) {
-     e.ignore();
-     return;
-     }
- 
--  mpos = e.pos();
--  ctrl.onKeyPressed(KeyCodec::Forward, KeyEvent::K_NoKey, KeyCodec::Mapping::Primary);
++    e.ignore();
++    return;
++    }
++
 +  auto& f  = fingers[size_t(e.mouseID)];
 +  f        = Finger();
 +  f.start  = e.pos();
 +  f.last   = e.pos();
 +  f.downAt = Application::tickCount();
++
++  if(ui==Ui::Edit) {
++    f.ctl = C_Absorb;
++    editDown(e.mouseID, e.pos());
++    update();
++    return;
++    }
 +
 +  // Карта «Путь», подтверждение, затемнение: касание - только им (выбор - на отпускание)
 +  if(ui==Ui::Travel || ui==Ui::Confirm || ui==Ui::Fade) {
@@ -14780,9 +14946,9 @@ index d9f1730..f737b05 100644
 +  if(c==C_None && ui==Ui::Menu) {
 +    // Меню игры: касание по пунктам, журналу, ползункам - у самого меню (слой под нами)
 +    f = Finger();
-+    e.ignore();
-+    return;
-+    }
+     e.ignore();
+     return;
+     }
 +  if(c==C_None) {
 +    switch(ui) {
 +      case Ui::World: {
@@ -14805,6 +14971,7 @@ index d9f1730..f737b05 100644
 +      case Ui::Confirm:
 +      case Ui::Fade:
 +      case Ui::Menu:
++      case Ui::Edit:
 +        // Касание мимо кнопок поглощается: случайный тап ничего не сделает
 +        c = C_Absorb;
 +        break;
@@ -14818,14 +14985,8 @@ index d9f1730..f737b05 100644
 +  if(c!=C_Joy && c!=C_Look && c!=C_List && c!=C_Absorb)
 +    timer.start(40);
 +  update();
-   }
- 
--void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
--  auto dp = e.pos() - mpos;
--  mpos = e.pos();
--  if(std::abs(dp.x)>0) {
--    const float scale = 4.f;
--    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
++  }
++
 +void TouchInput::mouseDragEvent(MouseEvent& e) {
 +  if(e.mouseID<0 || size_t(e.mouseID)>=fingers.size())
 +    return;
@@ -14836,6 +14997,13 @@ index d9f1730..f737b05 100644
 +  const int  dy  = pos.y-f.start.y;
 +  if(!f.moved && dx*dx+dy*dy>int(12*d)*int(12*d))
 +    f.moved = true;
++
++  if(editOpen) {
++    editDrag(e.mouseID, pos);
++    f.last = pos;
++    update();
++    return;
++    }
 +
 +  if(mapOpen && e.mouseID==mapFinger) {
 +    // Палец вверх-вниз по списку мест - листать
@@ -14909,6 +15077,13 @@ index d9f1730..f737b05 100644
 +  if(e.mouseID<0 || size_t(e.mouseID)>=fingers.size())
 +    return;
 +  auto& f = fingers[size_t(e.mouseID)];
++  if(editOpen) {
++    if(f.ctl==C_Absorb)
++      editUp(e.mouseID, e.pos(), f.moved);
++    f = Finger();
++    update();
++    return;
++    }
 +  if(mapOpen && e.mouseID==mapFinger) {
 +    mapFinger = -1;
 +    if(!f.moved)
@@ -15062,6 +15237,7 @@ index d9f1730..f737b05 100644
 +      owner.touchTakeAll();
 +      break;
 +    case C_App:
++    case C_Edit:
 +      // по отпусканию: палец не попадёт на экран запуска
 +      break;
 +    case C_None:
@@ -15167,8 +15343,8 @@ index d9f1730..f737b05 100644
 +          w->script().aiNpc().heroSpeak(*to);
 +      break;
 +    case C_Potion:
-+      if(!f.held && !ctrl.drinkHealPotion())
-+        Gothic::inst().onPrint(toCp1251("Нет зелий лечения"));
++      if(!f.held)
++        ctrl.touchDrinkPotion(false);
 +      break;
 +    case C_Map:
 +      ctrl.onKeyPressed (KeyCodec::Map, Event::K_NoKey, KeyCodec::Mapping::Primary);
@@ -15180,6 +15356,10 @@ index d9f1730..f737b05 100644
 +    case C_App:
 +      // Игра встаёт на паузу (окно уходит), вернуться - кнопкой экрана запуска или «Назад»
 +      AppLink::openAppMenu();
++      break;
++    case C_Edit:
++      if(!f.moved)
++        openEditor();
 +      break;
 +    case C_Travel:
 +      // В пути - остановиться; иначе - карта с местами
@@ -15232,6 +15412,8 @@ index d9f1730..f737b05 100644
 +      case C_Camera:
 +      case C_Look:
 +      case C_List:
++      case C_App:
++      case C_Edit:
 +        break;
 +      default:
 +        release(f.ctl, f, f.last);
@@ -15273,7 +15455,7 @@ index d9f1730..f737b05 100644
 +      busy = true;
 +      if(now-f.downAt>=450 && ctrl.potionCount(true)>0) {
 +        f.held = true;
-+        ctrl.drinkManaPotion();
++        ctrl.touchDrinkPotion(true);
 +        }
 +      }
 +    if(f.ctl==C_Save && !f.moved) {
@@ -15310,11 +15492,13 @@ index d9f1730..f737b05 100644
 +// Gothic II Mobile: «Путь» - карта с местами быстрого перемещения (docs/CONTROLS.md, «Путь»)
 +
 +bool TouchInput::isModal() const {
-+  return mapOpen || confirmOpen || ctrl.travelMode()==PlayerControl::TravelMode::Instant;
++  return editOpen || mapOpen || confirmOpen || ctrl.travelMode()==PlayerControl::TravelMode::Instant;
 +  }
 +
 +void TouchInput::touchBack() {
-+  if(confirmOpen)
++  if(editOpen)
++    closeEditor();
++  else if(confirmOpen)
 +    closeConfirm();
 +  else if(mapOpen)
 +    closeTravelMap();
@@ -15854,13 +16038,11 @@ index d9f1730..f737b05 100644
 +    closeConfirm();
 +    owner.touchQuickLoad();
 +    return;
-     }
++    }
 +  if(confirmButton(false).contains(p) || !confirmRect().contains(p))
 +    closeConfirm();
-   }
- 
--void TouchInput::mouseUpEvent(Tempest::MouseEvent& e) {
--  ctrl.onKeyReleased(KeyCodec::Forward, KeyCodec::Mapping::Primary);
++  }
++
 +void TouchInput::drawConfirm(Painter& p) {
 +  const float d   = dp();
 +  const auto  r   = confirmRect();
@@ -15873,12 +16055,347 @@ index d9f1730..f737b05 100644
 +  drawText(p, fit(toCp1251("Всё, что после него, будет потеряно"), r.w-2*pad, 0.8f), r.x+pad, r.y+pad+int(58*d), false, 0.8f);
 +  drawPill(p, confirmButton(true),  TouchIcons::I_Load, toCp1251("Загрузить"), false);
 +  drawPill(p, confirmButton(false), TouchIcons::I_Back, toCp1251("Отмена"),    false);
++  }
++
++// Gothic II Mobile: настройка кнопок (docs/CONTROLS.md, «Настройка кнопок»)
++
++bool TouchInput::isMovable(Ctl c) {
++  switch(c) {
++    case C_Main:
++    case C_Block:
++    case C_Jump:
++    case C_Weapon:
++    case C_Potion:
++    case C_Auto:
++    case C_Gather:
++    case C_Squad:
++    case C_Say:
++    case C_Sneak:
++    case C_Bag:
++    case C_Map:
++    case C_Log:
++    case C_Hero:
++    case C_Menu:
++    case C_Travel:
++    case C_Save:
++    case C_Camera:
++      return true;
++    default:
++      return false;
++    }
++  }
++
++const char* TouchInput::ctlKey(Ctl c) {
++  // Имена в files/touch_layout.ini: не зависят от порядка кнопок в коде
++  switch(c) {
++    case C_Main:   return "main";
++    case C_Block:  return "block";
++    case C_Jump:   return "jump";
++    case C_Weapon: return "weapon";
++    case C_Potion: return "potion";
++    case C_Auto:   return "auto";
++    case C_Gather: return "gather";
++    case C_Squad:  return "squad";
++    case C_Say:    return "say";
++    case C_Sneak:  return "sneak";
++    case C_Bag:    return "bag";
++    case C_Map:    return "map";
++    case C_Log:    return "log";
++    case C_Hero:   return "hero";
++    case C_Menu:   return "menu";
++    case C_Travel: return "travel";
++    case C_Save:   return "save";
++    case C_Camera: return "camera";
++    default:       return "";
++    }
++  }
++
++const char* TouchInput::ctlName(Ctl c) {
++  switch(c) {
++    case C_Main:   return "Главная";
++    case C_Block:  return "Блок";
++    case C_Jump:   return "Прыжок";
++    case C_Weapon: return "Оружие";
++    case C_Potion: return "Зелье";
++    case C_Auto:   return "Автобой";
++    case C_Gather: return "Собрать";
++    case C_Squad:  return "Отряд";
++    case C_Say:    return "Сказать";
++    case C_Sneak:  return "Красться";
++    case C_Bag:    return "Сумка";
++    case C_Map:    return "Карта";
++    case C_Log:    return "Журнал";
++    case C_Hero:   return "Герой";
++    case C_Menu:   return "Меню";
++    case C_Travel: return "Путь";
++    case C_Save:   return "Сохранить";
++    case C_Camera: return "Камера";
++    default:       return "";
++    }
++  }
++
++TouchIcons::Icon TouchInput::ctlIcon(Ctl c) {
++  switch(c) {
++    case C_Main:   return TouchIcons::I_Hand;
++    case C_Block:  return TouchIcons::I_Shield;
++    case C_Jump:   return TouchIcons::I_Jump;
++    case C_Weapon: return TouchIcons::I_Weapons;
++    case C_Potion: return TouchIcons::I_Potion;
++    case C_Auto:   return TouchIcons::I_Auto;
++    case C_Gather: return TouchIcons::I_Gather;
++    case C_Squad:  return TouchIcons::I_Squad;
++    case C_Say:    return TouchIcons::I_Mic;
++    case C_Sneak:  return TouchIcons::I_Sneak;
++    case C_Bag:    return TouchIcons::I_Sack;
++    case C_Map:    return TouchIcons::I_Map;
++    case C_Log:    return TouchIcons::I_Log;
++    case C_Hero:   return TouchIcons::I_Hero;
++    case C_Menu:   return TouchIcons::I_Menu;
++    case C_Travel: return TouchIcons::I_Travel;
++    case C_Save:   return TouchIcons::I_Save;
++    case C_Camera: return TouchIcons::I_Camera;
++    default:       return TouchIcons::I_Dot;
++    }
++  }
++
++void TouchInput::loadLayout() {
++  // Строки: «scale 1.1», «alpha 0.8», «btn potion 12.5 -30 1.2» (сдвиг в dp, размер)
++  std::FILE* f = std::fopen("touch_layout.ini","r");
++  if(f==nullptr)
++    return;
++  char line[128] = {};
++  while(std::fgets(line,sizeof(line),f)!=nullptr) {
++    char  key[32] = {};
++    float a = 0, b = 0, k = 1;
++    if(std::sscanf(line,"scale %f",&a)==1)
++      layScale = std::clamp(a,0.6f,1.6f);
++    else if(std::sscanf(line,"alpha %f",&a)==1)
++      layAlpha = std::clamp(a,0.3f,1.f);
++    else if(std::sscanf(line,"btn %31s %f %f %f",key,&a,&b,&k)==4) {
++      for(uint8_t i=C_Main; i<C_Count; ++i) {
++        if(!isMovable(Ctl(i)) || std::strcmp(key,ctlKey(Ctl(i)))!=0)
++          continue;
++        place[i].dx    = std::clamp(a,-2000.f,2000.f);
++        place[i].dy    = std::clamp(b,-2000.f,2000.f);
++        place[i].scale = std::clamp(k,0.6f,1.8f);
++        }
++      }
++    }
++  std::fclose(f);
++  }
++
++void TouchInput::saveLayout() const {
++  // Во временный файл и замена одним шагом: оборванная запись не портит раскладку
++  std::FILE* f = std::fopen("touch_layout.ini.tmp","w");
++  if(f==nullptr) {
++    Tempest::Log::e("[g2m] touch layout: unable to save");
++    return;
++    }
++  std::fprintf(f,"scale %.3f\nalpha %.3f\n",double(layScale),double(layAlpha));
++  for(uint8_t i=C_Main; i<C_Count; ++i) {
++    const auto& pl = place[i];
++    if(!isMovable(Ctl(i)) || (pl.dx==0 && pl.dy==0 && pl.scale==1))
++      continue;
++    std::fprintf(f,"btn %s %.1f %.1f %.3f\n",ctlKey(Ctl(i)),double(pl.dx),double(pl.dy),double(pl.scale));
++    }
++  std::fclose(f);
++  std::rename("touch_layout.ini.tmp","touch_layout.ini");
++  }
++
++void TouchInput::openEditor() {
++  if(editOpen)
++    return;
++  // Пальцы отпускаются при смене экрана (paintEvent); вызов идёт из release - здесь их не трогать
++  if(wheel!=Wheel::None)
++    closeWheel();
++  // Посреди игры (просьба с экрана запуска) - сначала меню паузы: пока настраивают, мир стоит
++  if(owner.touchMode()==MainWindow::TouchMode::World && !mapOpen && !confirmOpen)
++    owner.touchMenu(KeyCodec::Escape);
++  editOpen   = true;
++  editSel    = C_None;
++  editFinger = -1;
++  update();
++  }
++
++void TouchInput::closeEditor() {
++  if(!editOpen)
++    return;
++  editOpen   = false;
++  editSel    = C_None;
++  editFinger = -1;
++  for(auto& f:fingers)
++    f = Finger();
++  saveLayout();
++  Gothic::inst().onPrint(toCp1251("Раскладка кнопок сохранена"));
++  update();
++  }
++
++Rect TouchInput::editPanel() const {
++  // Слева, где в игре только джойстик: справа и вверху - кнопки, их нужно видеть и двигать («Красться» - у
++  // самого края, панель правее)
++  const float d  = dp();
++  const int   x  = int(16*d + 100*d);
++  const int   pw = std::clamp(w()/2 - int(8*d) - x, int(260*d), std::min(int(400*d), w()-x-int(16*d)));
++  const int   ph = int(16*d + 24*d + 22*d + 3*(40*d + 8*d) + 8*d);
++  return Rect(x, (h()-ph)/2, pw, ph);
++  }
++
++Rect TouchInput::editButton(int k) const {
++  // Три ряда по две: «Меньше»/«Больше», «Прозрачнее»/«Ярче», «Сбросить»/«Готово»
++  const float d   = dp();
++  const auto  r   = editPanel();
++  const int   pad = int(12*d), gap = int(8*d), bh = int(40*d);
++  const int   bw  = (r.w-2*pad-gap)/2;
++  const int   y0  = r.y + int(16*d + 24*d + 22*d);
++  return Rect(r.x+pad+(k%2)*(bw+gap), y0+(k/2)*(bh+gap), bw, bh);
++  }
++
++TouchInput::Ctl TouchInput::editHit(Point p) const {
++  // Сверху - то, что нарисовано последним; запас - палец крупнее круга
++  const int slop = int(6*dp());
++  for(int i=int(C_Count)-1; i>=int(C_Main); --i) {
++    const Ctl c = Ctl(i);
++    if(!isMovable(c))
++      continue;
++    const auto b  = buttonOf(c);
++    const int  dx = p.x-b.c.x, dy = p.y-b.c.y, r = b.r+slop;
++    if(dx*dx+dy*dy<=r*r)
++      return c;
++    }
++  return C_None;
++  }
++
++void TouchInput::editDown(int id, Point p) {
++  if(editPanel().contains(p) || editFinger>=0)
++    return;
++  const Ctl c = editHit(p);
++  if(c==C_None)
++    return;
++  editSel    = c;
++  editFinger = id;
++  editGrab   = p-buttonOf(c).c;
++  }
++
++void TouchInput::editDrag(int id, Point p) {
++  if(id!=editFinger || editSel==C_None)
++    return;
++  // Новый центр - под пальцем; сдвиг хранится от места по умолчанию (с общим размером), в dp
++  const float d  = dp();
++  const auto  b  = buttonOf(editSel);
++  const auto  s  = scaledCenter(baseButtonOf(editSel));
++  const float r  = float(b.r);
++  const float cx = std::clamp(float(p.x-editGrab.x), r, std::max(r, float(w())-r));
++  const float cy = std::clamp(float(p.y-editGrab.y), r, std::max(r, float(h())-r));
++  place[editSel].dx = (cx-float(s.x))/d;
++  place[editSel].dy = (cy-float(s.y))/d;
++  }
+ 
+-  mpos = e.pos();
+-  ctrl.onKeyPressed(KeyCodec::Forward, KeyEvent::K_NoKey, KeyCodec::Mapping::Primary);
++void TouchInput::editUp(int id, Point p, bool moved) {
++  if(id==editFinger) {
++    editFinger = -1;
++    return;
++    }
++  if(moved)
++    return;
++  if(editPanel().contains(p)) {
++    editTap(p);
++    return;
++    }
++  // Касание мимо кнопок - настраиваются все сразу
++  if(editHit(p)==C_None)
++    editSel = C_None;
+   }
+ 
+-void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
+-  auto dp = e.pos() - mpos;
+-  mpos = e.pos();
+-  if(std::abs(dp.x)>0) {
+-    const float scale = 4.f;
+-    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
++void TouchInput::editTap(Point p) {
++  int k = -1;
++  for(int i=0; i<6; ++i)
++    if(editButton(i).contains(p))
++      k = i;
++  switch(k) {
++    case 0:
++    case 1: {
++      const float f = (k==0 ? 1.f/1.1f : 1.1f);
++      if(editSel!=C_None)
++        place[editSel].scale = std::clamp(place[editSel].scale*f, 0.6f, 1.8f); else
++        layScale = std::clamp(layScale*f, 0.6f, 1.6f);
++      break;
++      }
++    case 2:
++      layAlpha = std::max(0.3f, layAlpha-0.1f);
++      break;
++    case 3:
++      layAlpha = std::min(1.f, layAlpha+0.1f);
++      break;
++    case 4:
++      if(editSel!=C_None) {
++        place[editSel] = Place();
++        } else {
++        place    = {};
++        layScale = 1;
++        layAlpha = 1;
++        }
++      break;
++    case 5:
++      closeEditor();
++      break;
++    default:
++      break;
+     }
+   }
+ 
+-void TouchInput::mouseUpEvent(Tempest::MouseEvent& e) {
+-  ctrl.onKeyReleased(KeyCodec::Forward, KeyCodec::Mapping::Primary);
++void TouchInput::drawEditor(Painter& p) {
++  const float d = dp();
++  p.setBrush(Color(0.f,0.f,0.f,0.45f));
++  p.drawRect(0,0,w(),h());
++
++  for(uint8_t i=C_Main; i<C_Count; ++i) {
++    const Ctl c = Ctl(i);
++    if(!isMovable(c))
++      continue;
++    const auto b   = buttonOf(c);
++    const bool sel = (c==editSel);
++    drawRound(p,b,ctlIcon(c),false,sel || editSel==C_None,1.f);
++    // Подпись - под кнопкой, у нижнего края - над ней
++    const int ly = b.c.y > h()*3/4 ? b.c.y-b.r-int(9*d) : b.c.y+b.r+int(9*d);
++    drawLabel(p,toCp1251(ctlName(c)),Point(b.c.x,ly),sel,0.7f);
++    }
++
++  const auto r = editPanel();
++  drawPanel(p,r);
++  const int pad = int(12*d);
++  drawText(p,fit(toCp1251("Кнопки: перетащи пальцем, коснись - выбрать"),r.w-2*pad,1.f),r.x+pad,r.y+int(10*d),true,1.f);
++  char buf[160] = {};
++  if(editSel!=C_None)
++    std::snprintf(buf,sizeof(buf),"«%s»: размер %d %%. Видимость %d %%",ctlName(editSel),
++                  int(std::lround(place[editSel].scale*100.f)),int(std::lround(layAlpha*100.f))); else
++    std::snprintf(buf,sizeof(buf),"Все кнопки: размер %d %%. Видимость %d %%",
++                  int(std::lround(layScale*100.f)),int(std::lround(layAlpha*100.f)));
++  drawText(p,fit(toCp1251(buf),r.w-2*pad,0.8f),r.x+pad,r.y+int(16*d+24*d),false,0.8f);
++
++  static const char* const names[6] = {"Меньше","Больше","Прозрачнее","Ярче","Сбросить","Готово"};
++  static const TouchIcons::Icon ic[6] = {TouchIcons::I_Down,TouchIcons::I_Up,TouchIcons::I_Left,
++                                         TouchIcons::I_Right,TouchIcons::I_Back,TouchIcons::I_Ok};
++  const float saved = paintAlpha;
++  paintAlpha = 1;
++  for(int i=0; i<6; ++i)
++    drawPill(p,editButton(i),ic[i],toCp1251(names[i]),false);
++  paintAlpha = saved;
    }
 diff --git a/common/ui/touchinput.h b/common/ui/touchinput.h
-index f46becc..40b08c2 100644
+index f46becc..fa210e1 100644
 --- a/common/ui/touchinput.h
 +++ b/common/ui/touchinput.h
-@@ -1,21 +1,256 @@
+@@ -1,21 +1,293 @@
  #pragma once
  
  #include <Tempest/Widget>
@@ -15917,6 +16434,10 @@ index f46becc..40b08c2 100644
 +    bool isModal() const;
 +    // Кнопка «Назад» телефона в таком окне
 +    void touchBack();
++    // Настройка кнопок (docs/CONTROLS.md, «Настройка кнопок»): положение и размер каждой кнопки мира, общий
++    // размер и видимость; files/touch_layout.ini. Открывается кнопкой «Кнопки» в главном меню и с экрана запуска
++    void openEditor();
++    bool isEditing() const { return editOpen; }
  
 -    void paintEvent(Tempest::PaintEvent& e);
 -    void mouseDownEvent(Tempest::MouseEvent& e);
@@ -15966,6 +16487,7 @@ index f46becc..40b08c2 100644
 +      C_Skip,
 +      // главное меню игры: экран запуска приложения поверх игры (настройки, выбор игры)
 +      C_App,
++      C_Edit,   // главное меню игры: настройка кнопок
 +      C_Count
 +      };
  
@@ -15983,6 +16505,7 @@ index f46becc..40b08c2 100644
 +      Confirm, // подтверждение быстрой загрузки
 +      Fade,    // мгновенное перемещение: экран темнеет
 +      Menu,    // меню игры, журнал, герой: пункты - касанием по меню, здесь - стрелки, «Выбрать», «Назад»
++      Edit,    // настройка кнопок
 +      };
 +
 +    // Карта «Путь»: где что на экране
@@ -16077,6 +16600,20 @@ index f46becc..40b08c2 100644
 +    const TravelPoints::Point* lastTravel = nullptr; // куда шли в прошлый раз - выбрано при открытии
 +    bool                   mapFight   = true;  // бегом: драться с напавшими и зверями у дороги
 +    bool                   mapLoot    = true;  // бегом: собирать добычу
++    // Настройка кнопок: сдвиг центра (dp от места по умолчанию) и размер каждой кнопки, общий размер и видимость
++    struct Place {
++      float dx    = 0;
++      float dy    = 0;
++      float scale = 1;
++      };
++    std::array<Place,C_Count> place    = {};
++    float                  layScale    = 1;
++    float                  layAlpha    = 1;
++    float                  paintAlpha  = 1;  // видимость кнопок в этом кадре (мир и настройка - layAlpha)
++    bool                   editOpen    = false;
++    Ctl                    editSel     = C_None;
++    int                    editFinger  = -1;
++    Tempest::Point         editGrab;
 +    // Подтверждение быстрой загрузки
 +    bool                   confirmOpen = false;
 +    std::string            confirmInfo;      // Windows-1251
@@ -16084,6 +16621,23 @@ index f46becc..40b08c2 100644
 +    float          dp() const;
 +    Ui             currentUi() const;
 +    Button         buttonOf(Ctl c) const;
++    Button         baseButtonOf(Ctl c) const;
++    Tempest::Point scaledCenter(const Button& b) const;
++    static bool    isMovable(Ctl c);
++    static const char* ctlKey(Ctl c);
++    static const char* ctlName(Ctl c);
++    static TouchIcons::Icon ctlIcon(Ctl c);
++    void           loadLayout();
++    void           saveLayout() const;
++    void           closeEditor();
++    Tempest::Rect  editPanel() const;
++    Tempest::Rect  editButton(int k) const;
++    Ctl            editHit(Tempest::Point p) const;
++    void           editTap(Tempest::Point p);
++    void           editDown(int id, Tempest::Point p);
++    void           editDrag(int id, Tempest::Point p);
++    void           editUp(int id, Tempest::Point p, bool moved);
++    void           drawEditor(Tempest::Painter& p);
 +    bool           isShown(Ctl c) const;
 +    Ctl            hitTest(Tempest::Point p) const;
 +    bool           isPressed(Ctl c) const;
@@ -16145,13 +16699,15 @@ index f46becc..40b08c2 100644
 +  };
 diff --git a/common/utils/applink.cpp b/common/utils/applink.cpp
 new file mode 100644
-index 0000000..2c2b118
+index 0000000..1651c62
 --- /dev/null
 +++ b/common/utils/applink.cpp
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,77 @@
 +#include "applink.h"
 +
 +#include <Tempest/Log>
++
++#include <atomic>
 +
 +#ifdef __ANDROID__
 +#include <jni.h>
@@ -16159,6 +16715,7 @@ index 0000000..2c2b118
 +#endif
 +
 +namespace {
++  std::atomic_bool editRequest{false};
 +#ifdef __ANDROID__
 +  JavaVM*   jvm      = nullptr;
 +  jclass    jcls     = nullptr;
@@ -16204,7 +16761,15 @@ index 0000000..2c2b118
 +#endif
 +  }
 +
++bool AppLink::takeEditRequest() {
++  return editRequest.exchange(false);
++  }
++
 +#ifdef __ANDROID__
++extern "C" JNIEXPORT void JNICALL Java_gothic2_mobile_og_GameActivity_nativeEditControls(JNIEnv*, jclass) {
++  editRequest = true;
++  }
++
 +// Java-методы движка находятся только после System.loadLibrary в GameActivity
 +extern "C" JNIEXPORT void JNICALL Java_gothic2_mobile_og_GameActivity_nativeAttachApp(JNIEnv* env, jclass cls) {
 +  env->GetJavaVM(&jvm);
@@ -16217,10 +16782,10 @@ index 0000000..2c2b118
 +#endif
 diff --git a/common/utils/applink.h b/common/utils/applink.h
 new file mode 100644
-index 0000000..eca33e8
+index 0000000..de9237c
 --- /dev/null
 +++ b/common/utils/applink.h
-@@ -0,0 +1,8 @@
+@@ -0,0 +1,10 @@
 +#pragma once
 +
 +// Gothic II Mobile: вызовы приложения (Java, gothic2.mobile.og.GameActivity) из движка. Без приложения
@@ -16228,6 +16793,8 @@ index 0000000..eca33e8
 +namespace AppLink {
 +  // Экран запуска поверх игры: настройки приложения, выбор игры. Окно игры уходит - игра на паузе
 +  void openAppMenu();
++  // «Настроить кнопки» на экране запуска: игра открывает настройку кнопок (один раз за просьбу)
++  bool takeEditRequest();
 +  }
 diff --git a/common/utils/cp1251.h b/common/utils/cp1251.h
 new file mode 100644
@@ -18001,19 +18568,20 @@ index 0fb903f..c096e45 100644
      gl_Position = vec4(0.0,0.0,-1.0,1.0);
      cenPosition = vec4(0.0);
 diff --git a/shader/materials/visibility_pass.comp b/shader/materials/visibility_pass.comp
-index 378d837..657ea67 100644
+index 378d837..0089ba4 100644
 --- a/shader/materials/visibility_pass.comp
 +++ b/shader/materials/visibility_pass.comp
-@@ -23,6 +23,8 @@ layout(push_constant, std430) uniform UboPush {
+@@ -23,6 +23,9 @@ layout(push_constant, std430) uniform UboPush {
    uint      firstMeshlet;
    int       meshletCount;
    float     znear;
 +  float     viewDist;
 +  float     detailRatio;
++  uint      noHiZ;
    } push;
  
  Instance pullInstance(uint i) {
-@@ -161,6 +163,16 @@ bool projectCluster(const Cluster cluster, out vec4 aabb, out float depthMin) {
+@@ -161,6 +164,16 @@ bool projectCluster(const Cluster cluster, out vec4 aabb, out float depthMin) {
    }
  #endif
  
@@ -18030,7 +18598,7 @@ index 378d837..657ea67 100644
  bool frustrumTest(const vec4 sphere) {
    if(sphere.w<0.f)
      return false;
-@@ -182,6 +194,17 @@ void runCluster(const uint clusterId) {
+@@ -182,6 +195,17 @@ void runCluster(const uint clusterId) {
    if(!frustrumTest(cluster.sphere))
      return;
  
@@ -18048,6 +18616,16 @@ index 378d837..657ea67 100644
  #if defined(MAIN_VIEW)
    vec4  aabb     = vec4(0);
    float depthMin = 1;
+@@ -200,7 +224,8 @@ void runCluster(const uint clusterId) {
+ #endif
+ 
+ #if defined(HIZ)
+-  if(!hiZTest(aabb, depthMin))
++  // Gothic II Mobile: проверку перекрытия можно выключить (настройка «Отсечение невидимого»)
++  if(push.noHiZ==0 && !hiZTest(aabb, depthMin))
+     return;
+ #endif
+ 
 diff --git a/shader/sky/fog.frag b/shader/sky/fog.frag
 index be1c08b..f8a2606 100644
 --- a/shader/sky/fog.frag

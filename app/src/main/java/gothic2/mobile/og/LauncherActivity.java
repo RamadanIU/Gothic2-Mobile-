@@ -40,9 +40,10 @@ import java.util.List;
 import gothic2.mobile.og.ai.AiSettings;
 
 /**
- * Экран запуска: разрешение «Файлы», поиск папки игры (System, Data, _work), выбор вручную,
- * «Играть» — «Ночь Ворона» или Gothic II без дополнения, графика, сохранение журнала в «Загрузки»,
- * сведения о лицензиях. Путь к игре движок читает из files/gothic_path.txt (патч InstallDetect),
+ * Экран запуска: разрешение «Файлы», поиск папки игры (System, Data, _work), «Играть» — «Ночь Ворона» или
+ * Gothic II без дополнения. Настройки — по разделам, каждый на своей странице: «Графика», «Управление»
+ * (настройка кнопок в игре, как играть), «Живые NPC» (AiSettingsActivity), «Папка игры», «Журнал и сведения»;
+ * «Назад» телефона возвращает на главную. Путь к игре движок читает из files/gothic_path.txt (патч InstallDetect),
  * вариант игры — из files/game_variant.txt (патч CommandLine).
  *
  * Открывается и из меню игры (кнопка «Приложение»): игра идёт в своём процессе и стоит на паузе,
@@ -63,8 +64,23 @@ public class LauncherActivity extends Activity {
     private static final int GOLD = Color.rgb(0xD9, 0xB6, 0x6A);
     private static final int TEXT = Color.rgb(0xE6, 0xDC, 0xC8);
     private static final int DIM = Color.rgb(0xA8, 0x9C, 0x86);
+    private static final int BG = Color.rgb(0x12, 0x0E, 0x0A);
+    private static final int PANEL = Color.rgb(0x2E, 0x22, 0x14);
 
+    private static final int PAGE_MAIN = 0;
+    private static final int PAGE_GRAPHICS = 1;
+    private static final int PAGE_CONTROLS = 2;
+    private static final int PAGE_GAME = 3;
+    private static final int PAGE_INFO = 4;
+
+    private ScrollView scroll;
+    private LinearLayout mainPage;
+    private int page = PAGE_MAIN;
+    private int pad;
     private TextView status;
+    private TextView graphicsNav;
+    private TextView folderNav;
+    private TextView gameFolder;
     private Button resume;
     private Button playNotr;
     private Button playClassic;
@@ -74,7 +90,7 @@ public class LauncherActivity extends Activity {
     private boolean searching;
     private GraphicsSettings graphics;
     private TextView graphicsSummary;
-    private Button aiButton;
+    private TextView aiNav;
     private final List<Runnable> graphicsRefresh = new ArrayList<>();
 
     @Override
@@ -88,38 +104,7 @@ public class LauncherActivity extends Activity {
             finish();
             return;
         }
-        float d = getResources().getDisplayMetrics().density;
-        int pad = (int) (24 * d);
-
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(pad, pad, pad, pad);
-        col.setBackgroundColor(Color.rgb(0x12, 0x0E, 0x0A));
-
-        TextView title = text("Gothic II", 30, GOLD);
-        title.setTypeface(Typeface.SERIF, Typeface.BOLD);
-        col.addView(title);
-        col.addView(text("Твоя Gothic II прямо на телефоне: сенсорное управление, автобой, напарники.", 15, DIM));
-
-        status = text("", 16, TEXT);
-        status.setPadding(0, pad / 2, 0, pad / 2);
-        col.addView(status);
-
-        permission = button("Разрешить доступ к файлам", v -> requestPermissions(
-            new String[]{Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE},
-            REQ_PERMISSION));
-        col.addView(permission);
-        resume = button("Вернуться в игру", v -> resumeGame());
-        col.addView(resume);
-        playNotr = button("Играть: Ночь Ворона", v -> play(VARIANT_NOTR));
-        col.addView(playNotr);
-        playClassic = button("", v -> play(VARIANT_CLASSIC));
-        col.addView(playClassic);
-        col.addView(button("Выбрать папку игры", v -> startActivityForResult(
-            new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER)));
-        col.addView(button("Сохранить журнал в «Загрузки»", v -> saveLog()));
-        aiButton = button("", v -> startActivity(new Intent(this, AiSettingsActivity.class)));
-        col.addView(aiButton);
+        pad = (int) (24 * getResources().getDisplayMetrics().density);
 
         graphics = new GraphicsSettings(prefs());
         // Первый запуск: на слабом телефоне сразу «Экономно» (оценка самого быстрого ядра процессора)
@@ -131,44 +116,42 @@ public class LauncherActivity extends Activity {
                 Toast.makeText(this, "Телефон слабее, чем нужно игре: графика — «Экономно».", Toast.LENGTH_LONG).show();
             }
         }
-        addGraphicsSection(col, pad);
 
-        TextView help = text(
-            "Управление\n"
-                + "• Слева — джойстик: вперёд/назад; вбок — поворот, с оружием — шаг в сторону.\n"
-                + "• Справа — обзор пальцем.\n"
-                + "• «Удар» — разговор, подобрать, открыть; с мечом держать — серия ударов, "
-                + "каждый в своё окно комбо; свайп по «Удару» влево/вправо — боковой удар.\n"
-                + "• «Блок» — держать. «Оружие» — меч; подержать — лук.\n"
-                + "• «Автобой» — герой сам дерётся с тем, кто на него напал (и с хищником рядом). "
-                + "Тронул джойстик или «Удар» — управляешь сам, отпустил — автобой продолжает. "
-                + "Здоровья меньше четверти — пьёт зелье лечения.\n"
-                + "• Напарник: в разговоре с безымянным жителем, стражником или наёмником — "
-                + "«Пойдём со мной — поможешь в бою?». Цена — 10 золотых за уровень, не больше трёх напарников. "
-                + "Напарник идёт следом и дерётся с врагами, опыт за убитых им — тебе. "
-                + "Ещё раз заговорить — «Подожди меня здесь» или «Дальше я сам».\n"
-                + "• Диалог и сумка: стрелки, «Выбрать», «Назад»; у сундука и тела — «Взять всё». "
-                + "Кнопка «Назад» телефона — Esc.\n"
-                + "• Графика задаётся здесь, на экране запуска: настройки видео в меню самой игры "
-                + "написаны для старого движка и почти не действуют.\n"
-                + "• Кнопка «Приложение» в меню игры открывает этот экран, игра ждёт на паузе. "
-                + "Новые настройки и другой вариант игры — после перезапуска игры.\n\n"
-                + "Варианты игры. «Ночь Ворона» — Gothic II с дополнением (Яркендар, новые гильдии и задания). "
-                + "Без дополнения — классическая Gothic II, как Gothic2c.exe в Золотом издании GOG; "
-                + "у неё свои ячейки сохранений.\n\n"
-                + "Сохранения хранятся в самом приложении (удаление приложения их удалит) "
-                + "и с сохранениями оригинальной игры на компьютере не совместимы.",
-            14, DIM);
-        help.setPadding(0, pad, 0, 0);
-        col.addView(help);
-        col.addView(button("Сведения о лицензиях", v -> startActivity(new Intent(this, LicensesActivity.class))));
+        mainPage = column();
+        TextView title = text("Gothic II", 30, GOLD);
+        title.setTypeface(Typeface.SERIF, Typeface.BOLD);
+        mainPage.addView(title);
+        mainPage.addView(text("Твоя Gothic II прямо на телефоне: сенсорное управление, автобой, напарники.", 15, DIM));
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(Color.rgb(0x12, 0x0E, 0x0A));
-        scroll.addView(col);
-        setContentView(scroll);
+        status = text("", 16, TEXT);
+        status.setPadding(0, pad / 2, 0, pad / 2);
+        mainPage.addView(status);
+
+        permission = button("Разрешить доступ к файлам", v -> requestPermissions(
+            new String[]{Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE},
+            REQ_PERMISSION));
+        mainPage.addView(permission);
+        resume = button("Вернуться в игру", v -> resumeGame());
+        mainPage.addView(resume);
+        playNotr = button("Играть: Ночь Ворона", v -> play(VARIANT_NOTR));
+        mainPage.addView(playNotr);
+        playClassic = button("", v -> play(VARIANT_CLASSIC));
+        mainPage.addView(playClassic);
+
+        section(mainPage, "Настройки");
+        graphicsNav = navRow(mainPage, "Графика", () -> showPage(PAGE_GRAPHICS));
+        navRow(mainPage, "Управление", () -> showPage(PAGE_CONTROLS))
+            .setText("Размер и место кнопок, как играть");
+        aiNav = navRow(mainPage, "Живые NPC (ИИ)", () -> startActivity(new Intent(this, AiSettingsActivity.class)));
+        folderNav = navRow(mainPage, "Папка игры", () -> showPage(PAGE_GAME));
+        navRow(mainPage, "Журнал и сведения", () -> showPage(PAGE_INFO))
+            .setText("Журнал для разбора сбоев, лицензии");
 
         gamePath = prefs().getString(PREF_PATH, null);
+        scroll = new ScrollView(this);
+        scroll.setBackgroundColor(BG);
+        setContentView(scroll);
+        showPage(PAGE_MAIN);
     }
 
     @Override
@@ -179,7 +162,11 @@ public class LauncherActivity extends Activity {
 
     private void refresh() {
         boolean aiOn = AiSettings.of(getSharedPreferences("ai", MODE_PRIVATE)).enabled();
-        aiButton.setText("Живой NPC — Геральт (ИИ): " + (aiOn ? "включён" : "выключен"));
+        aiNav.setText("Геральт и жители говорят сами: " + (aiOn ? "включено" : "выключено"));
+        graphicsNav.setText(graphics.summaryShort());
+        String folder = gamePath != null ? gamePath : "не выбрана";
+        folderNav.setText(folder);
+        if (gameFolder != null) gameFolder.setText("Папка игры:\n" + folder);
         if (restarting) return;
         boolean running = gamePid(this) != 0;
         resume.setVisibility(running ? View.VISIBLE : View.GONE);
@@ -194,7 +181,7 @@ public class LauncherActivity extends Activity {
         }
         if (gamePath != null && GameFolder.isGameDir(new File(gamePath))) {
             setPlayable(new File(gamePath));
-            status.setText(game + "Папка игры:\n" + gamePath);
+            status.setText(game.isEmpty() ? "Игра найдена — можно играть." : game.trim());
             return;
         }
         setPlayable(null);
@@ -208,7 +195,7 @@ public class LauncherActivity extends Activity {
                 if (found != null) {
                     setGamePath(found.getPath());
                 } else {
-                    status.setText("Папка игры не найдена. Нажми «Выбрать папку игры» — нужна "
+                    status.setText("Папка игры не найдена. Открой «Папка игры» и выбери её — нужна "
                         + "распакованная Gothic II: Gold, где есть System, Data и _work.");
                 }
             });
@@ -233,12 +220,55 @@ public class LauncherActivity extends Activity {
         refresh();
     }
 
+    // ---------------- страницы ----------------
+
+    /** Главная или раздел настроек: раздел — своя страница с «Назад» вверху. */
+    private void showPage(int p) {
+        page = p;
+        scroll.removeAllViews();
+        if (mainPage.getParent() != null) ((LinearLayout) mainPage.getParent()).removeView(mainPage);
+        graphicsRefresh.clear();
+        graphicsSummary = null;
+        gameFolder = null;
+        switch (p) {
+            case PAGE_GRAPHICS: scroll.addView(graphicsPage()); break;
+            case PAGE_CONTROLS: scroll.addView(controlsPage()); break;
+            case PAGE_GAME: scroll.addView(gamePage()); break;
+            case PAGE_INFO: scroll.addView(infoPage()); break;
+            default: scroll.addView(mainPage); break;
+        }
+        scroll.scrollTo(0, 0);
+        if (p == PAGE_MAIN && status != null) refresh();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (page != PAGE_MAIN) {
+            showPage(PAGE_MAIN);
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    /** Страница раздела: «‹ Назад», заголовок. */
+    private LinearLayout pageOf(String title) {
+        LinearLayout col = column();
+        Button back = button("‹ Назад", v -> showPage(PAGE_MAIN));
+        back.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) back.getLayoutParams();
+        lp.width = LinearLayout.LayoutParams.WRAP_CONTENT;
+        lp.topMargin = 0;
+        col.addView(back);
+        TextView t = text(title, 26, GOLD);
+        t.setTypeface(Typeface.SERIF, Typeface.BOLD);
+        t.setPadding(0, pad / 2, 0, 0);
+        col.addView(t);
+        return col;
+    }
+
     /** «Графика»: готовые наборы и отдельные параметры; касание кнопки — следующий вариант. */
-    private void addGraphicsSection(LinearLayout col, int pad) {
-        TextView title = text("Графика", 20, GOLD);
-        title.setTypeface(Typeface.SERIF, Typeface.BOLD);
-        title.setPadding(0, pad, 0, 0);
-        col.addView(title);
+    private LinearLayout graphicsPage() {
+        LinearLayout col = pageOf("Графика");
         graphicsSummary = text("", 14, DIM);
         col.addView(graphicsSummary);
 
@@ -258,21 +288,87 @@ public class LauncherActivity extends Activity {
         }
         col.addView(presets);
 
-        List<GraphicsSettings.Option> options = new ArrayList<>(Arrays.asList(GraphicsSettings.ALL));
-        options.addAll(Arrays.asList(GraphicsSettings.EXTRA));
-        for (GraphicsSettings.Option o : options) {
-            if (o.check) {
-                col.addView(checkBox(o));
-                continue;
-            }
-            Button b = button("", v -> {
-                graphics.cycle(o);
-                refreshGraphics();
-            });
-            graphicsRefresh.add(() -> b.setText(graphics.label(o)));
-            col.addView(b);
-        }
+        section(col, "Параметры");
+        for (GraphicsSettings.Option o : GraphicsSettings.ALL) addOption(col, o);
+        section(col, "Дополнительно");
+        col.addView(text("Не входят в наборы.", 13, DIM));
+        for (GraphicsSettings.Option o : GraphicsSettings.EXTRA) addOption(col, o);
+        col.addView(note("Настройки видео в меню самой игры написаны для старого движка и почти не действуют — "
+            + "графика задаётся здесь. Если игра уже идёт, новая графика — после перезапуска игры."));
         refreshGraphics();
+        return col;
+    }
+
+    private void addOption(LinearLayout col, GraphicsSettings.Option o) {
+        if (o.check) {
+            col.addView(checkBox(o));
+            return;
+        }
+        Button b = button("", v -> {
+            graphics.cycle(o);
+            refreshGraphics();
+        });
+        graphicsRefresh.add(() -> b.setText(graphics.label(o)));
+        col.addView(b);
+    }
+
+    /** «Управление»: настройка кнопок поверх игры и коротко — как играть. */
+    private LinearLayout controlsPage() {
+        LinearLayout col = pageOf("Управление");
+        section(col, "Кнопки на экране");
+        col.addView(note("Размер, место и видимость кнопок настраиваются прямо поверх игры: перетащи кнопку пальцем, "
+            + "коснись — выбрать её, «Меньше»/«Больше» — размер выбранной (коснись мимо кнопок — всех сразу), "
+            + "«Прозрачнее»/«Ярче» — видимость, «Сбросить», «Готово». То же — кнопка «Кнопки» в главном меню игры."));
+        col.addView(button("Настроить кнопки в игре", v -> editControls()));
+        col.addView(button("Вернуть кнопки на места по умолчанию", v -> resetControls()));
+
+        section(col, "Как играть");
+        col.addView(note(
+            "• Слева — джойстик: появляется под пальцем; чуть сдвинуть — шаг, до края — бег.\n"
+                + "• Справа — обзор пальцем. Коснуться человека или зверя — выбрать цель.\n"
+                + "• Главная кнопка в углу делает то, что на ней написано: «Говорить», «Взять», «Открыть», "
+                + "«Удар» (держать — серия ударов, свайп вбок — боковой удар), «Выстрел», заклинание.\n"
+                + "• Вокруг неё: «Оружие» (подержать — колесо оружия и заклинаний), «Прыжок», «Блок».\n"
+                + "• Вторая дуга: «Зелье» (коснуться — лечение, подержать — мана; при полном здоровье не пьёт), "
+                + "«Автобой», «Собрать», «Отряд». «Сказать» — обратиться к человеку рядом (живые NPC).\n"
+                + "• Справа вверху: «Сумка», «Карта», «Путь» (быстрое перемещение), «Журнал», «Герой», "
+                + "«Сохранить» (подержать — быстрая загрузка), «Меню».\n"
+                + "• Диалог, сумка, меню: касание по строке — выделить, «Выбрать» — подтвердить, «Назад» — закрыть. "
+                + "Кнопка «Назад» телефона — Esc.\n"
+                + "• Напарники: в разговоре с безымянным жителем, стражником или наёмником — «Пойдём со мной». "
+                + "До шести, 10 золотых за уровень.\n"
+                + "• «Приложение» в главном меню игры открывает этот экран, игра ждёт на паузе."));
+        return col;
+    }
+
+    /** «Папка игры»: где игра, выбор вручную, варианты и сохранения. */
+    private LinearLayout gamePage() {
+        LinearLayout col = pageOf("Папка игры");
+        gameFolder = text("", 15, TEXT);
+        gameFolder.setPadding(0, pad / 2, 0, 0);
+        col.addView(gameFolder);
+        col.addView(button("Выбрать папку игры", v -> startActivityForResult(
+            new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER)));
+        col.addView(note("Нужна распакованная Gothic II: Золотое издание (папки System, Data и _work) во внутренней "
+            + "памяти телефона. Игра читается прямо из этой папки.\n\n"
+            + "«Ночь Ворона» — Gothic II с дополнением (Яркендар, новые гильдии и задания). Без дополнения — "
+            + "классическая Gothic II, как Gothic2c.exe в Золотом издании GOG; у неё свои ячейки сохранений.\n\n"
+            + "Сохранения хранятся в самом приложении (удаление приложения их удалит) и с сохранениями "
+            + "оригинальной игры на компьютере не совместимы."));
+        refresh();
+        return col;
+    }
+
+    /** «Журнал и сведения»: журнал для разбора сбоев, лицензии. */
+    private LinearLayout infoPage() {
+        LinearLayout col = pageOf("Журнал и сведения");
+        col.addView(note("Журнал — что делала игра и живые NPC в последних двух запусках (старее удаляется сам). "
+            + "Если что-то пошло не так — сохрани его сразу после игры и пришли."));
+        col.addView(button("Сохранить журнал в «Загрузки»", v -> saveLog()));
+        col.addView(button("Очистить журнал", v -> clearLog()));
+        section(col, "О приложении");
+        col.addView(button("Сведения о лицензиях", v -> startActivity(new Intent(this, LicensesActivity.class))));
+        return col;
     }
 
     /** Галочка настройки; регдолл у живых без регдолла не действует — тогда флажок неактивен. */
@@ -301,7 +397,7 @@ public class LauncherActivity extends Activity {
     }
 
     private void refreshGraphics() {
-        graphicsSummary.setText(graphics.summary());
+        if (graphicsSummary != null) graphicsSummary.setText(graphics.summary());
         for (Runnable r : graphicsRefresh) r.run();
     }
 
@@ -345,6 +441,11 @@ public class LauncherActivity extends Activity {
     }
 
     private void startGame(String variant) {
+        startGame(variant, false);
+    }
+
+    /** edit — сразу открыть настройку кнопок (поверх главного меню игры). */
+    private void startGame(String variant, boolean edit) {
         if (gamePath == null) return;
         try {
             writeFile("gothic_path.txt", gamePath);
@@ -355,8 +456,35 @@ public class LauncherActivity extends Activity {
             return;
         }
         prefs().edit().putString(PREF_VARIANT, variant).apply();
-        startActivity(new Intent(this, GameActivity.class));
+        Intent i = new Intent(this, GameActivity.class);
+        if (edit) i.putExtra(GameActivity.EXTRA_EDIT_CONTROLS, true);
+        startActivity(i);
         finish();
+    }
+
+    /** «Настроить кнопки в игре»: игра идёт — вернуться в неё с настройкой, нет — запустить последний вариант. */
+    private void editControls() {
+        if (gamePid(this) != 0) {
+            Intent i = new Intent(this, GameActivity.class);
+            i.putExtra(GameActivity.EXTRA_EDIT_CONTROLS, true);
+            startActivity(i);
+            finish();
+            return;
+        }
+        if (gamePath == null || !GameFolder.isGameDir(new File(gamePath))) {
+            Toast.makeText(this, "Сначала нужна папка игры.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        String last = prefs().getString(PREF_VARIANT, VARIANT_NOTR);
+        if (VARIANT_CLASSIC.equals(last) && !GameFolder.hasClassic(new File(gamePath))) last = VARIANT_NOTR;
+        startGame(last, true);
+    }
+
+    private void resetControls() {
+        new File(getFilesDir(), "touch_layout.ini").delete();
+        Toast.makeText(this, gamePid(this) != 0
+            ? "Кнопки встанут на места после перезапуска игры (или «Сбросить» в настройке кнопок)."
+            : "Кнопки — на местах по умолчанию.", Toast.LENGTH_LONG).show();
     }
 
     /** «Вернуться в игру»: экран игры - singleTask, он выходит вперёд, экран запуска закрывается. */
@@ -421,7 +549,7 @@ public class LauncherActivity extends Activity {
         File out = new File(downloads, "gothic2-log.txt");
         try (OutputStream os = new FileOutputStream(out)) {
             boolean any = false;
-            for (String name : new String[]{"log.txt", "crash.log", "ai/ai-log.old.txt", "ai/ai-log.txt"}) {
+            for (String name : new String[]{"log.txt", "crash.log", "crash.prev.log", "ai/ai-log.old.txt", "ai/ai-log.txt"}) {
                 File f = new File(getFilesDir(), name);
                 if (!f.isFile()) continue;
                 any = true;
@@ -437,6 +565,17 @@ public class LauncherActivity extends Activity {
         } catch (IOException e) {
             Toast.makeText(this, "Не удалось сохранить журнал: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
+    }
+
+    /** Журнал игры пишется заново при каждом запуске; здесь — удалить всё, что накопилось (не во время игры). */
+    private void clearLog() {
+        if (gamePid(this) != 0) {
+            Toast.makeText(this, "Игра идёт — журнал очистится при следующем запуске.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        for (String name : new String[]{"log.txt", "crash.log", "crash.prev.log"}) new File(getFilesDir(), name).delete();
+        gothic2.mobile.og.ai.AiLog.clear(new File(getFilesDir(), "ai"));
+        Toast.makeText(this, "Журнал очищен.", Toast.LENGTH_SHORT).show();
     }
 
     private boolean hasPermission() {
@@ -458,6 +597,54 @@ public class LauncherActivity extends Activity {
     }
 
 
+    private LinearLayout column() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(pad, pad, pad, pad);
+        col.setBackgroundColor(BG);
+        return col;
+    }
+
+    private void section(LinearLayout col, String title) {
+        TextView t = text(title, 20, GOLD);
+        t.setTypeface(Typeface.SERIF, Typeface.BOLD);
+        t.setPadding(0, pad, 0, pad / 4);
+        col.addView(t);
+    }
+
+    private TextView note(String s) {
+        TextView t = text(s, 14, DIM);
+        t.setPadding(0, pad / 3, 0, 0);
+        return t;
+    }
+
+    /** Строка раздела: название, под ним — коротко, что внутри (возвращается — обновлять), справа «›». */
+    private TextView navRow(LinearLayout col, String title, Runnable open) {
+        float d = getResources().getDisplayMetrics().density;
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setBackgroundColor(PANEL);
+        row.setPadding((int) (14 * d), (int) (10 * d), (int) (14 * d), (int) (10 * d));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = (int) (8 * d);
+        row.setLayoutParams(lp);
+        row.setClickable(true);
+        row.setOnClickListener(v -> open.run());
+
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        texts.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        texts.addView(text(title, 17, GOLD));
+        TextView sub = text("", 13, DIM);
+        texts.addView(sub);
+        row.addView(texts);
+        row.addView(text("›", 26, GOLD));
+        col.addView(row);
+        return sub;
+    }
+
     private TextView text(String s, int sp, int color) {
         TextView t = new TextView(this);
         t.setText(s);
@@ -471,7 +658,7 @@ public class LauncherActivity extends Activity {
         b.setText(s);
         b.setAllCaps(false);
         b.setTextColor(GOLD);
-        b.setBackgroundColor(Color.rgb(0x2E, 0x22, 0x14));
+        b.setBackgroundColor(PANEL);
         b.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);

@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import org.junit.Rule;
 import org.junit.Test;
@@ -143,6 +144,43 @@ public class AiLogicTest {
         assertEquals("Да.", c.chat(new ArrayList<>(), null, 10).text);
         assertEquals(2, keys.size());
         assertEquals("k2", keys.get(1));
+    }
+
+    @Test
+    public void retriesOnceWhenConnectionDropsOrTimesOut() throws IOException {
+        // Журнал 2026-10-25: «Software caused connection abort», затем таймауты — второй запрос обычно отвечает
+        List<Integer> timeouts = new ArrayList<>();
+        int[] calls = {0};
+        LlmClient c = new LlmClient(AiSettings.inMemory().chat(), (url, key, body, t) -> {
+            timeouts.add(t);
+            if (calls[0]++ == 0) throw new java.net.SocketException("Software caused connection abort");
+            return "{\"choices\":[{\"message\":{\"content\":\"Да.\"}}]}";
+        });
+        assertEquals("Да.", c.chat(new ArrayList<>(), null, 10).text);
+        assertEquals(2, timeouts.size());
+        assertTrue(timeouts.get(0) <= 30000);
+        // два таймаута подряд — ошибка, понятная игроку
+        LlmClient slow = new LlmClient(AiSettings.inMemory().chat(), (url, key, body, t) -> {
+            throw new java.net.SocketTimeoutException("timeout");
+        });
+        try {
+            slow.chat(new ArrayList<>(), null, 10);
+            fail();
+        } catch (IOException e) {
+            assertTrue(LlmClient.describe(e), LlmClient.describe(e).contains("не ответил"));
+        }
+        // ответ сервера с ошибкой (не 429/5xx) не повторяется
+        int[] n = {0};
+        LlmClient bad = new LlmClient(AiSettings.inMemory().chat(), (url, key, body, t) -> {
+            n[0]++;
+            throw new LlmClient.LlmException(401, "HTTP 401");
+        });
+        try {
+            bad.chat(new ArrayList<>(), null, 10);
+            fail();
+        } catch (IOException e) {
+            assertEquals(1, n[0]);
+        }
     }
 
     @Test
