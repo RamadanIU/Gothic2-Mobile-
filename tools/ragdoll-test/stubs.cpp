@@ -7,7 +7,10 @@
 
 #include <Tempest/Log>
 #include <BulletCollision/CollisionShapes/btStaticPlaneShape.h>
+#include <BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h>
+#include <BulletCollision/CollisionShapes/btTriangleMesh.h>
 #include <algorithm>
+#include <cmath>
 
 class PhysicVbo {};
 struct DynamicWorld::NpcBodyList {};
@@ -97,23 +100,39 @@ void CollisionWorld::removeRagdollBody(btRigidBody* b) {
 
 void CollisionWorld::tick(uint64_t dt) {
   if(ragBodies.size()>0)
-    this->stepSimulation(float(dt)/1000.f, 4);
+    this->stepSimulation(float(dt)/1000.f, 3);
   }
 
-// --- DynamicWorld: земля - плоскость, своя очередь кукол (копия RagdollList)
+// --- DynamicWorld: земля - плоскость или неровная сетка треугольников (как земля мира игры), куклы в физике
 struct DynamicWorld::RagdollList final {
-  std::vector<Ragdoll*> list;
+  std::vector<Ragdoll*> active;
   };
 
 std::unique_ptr<btCollisionShape> groundShape;
 std::unique_ptr<btRigidBody>      groundBody;
+std::unique_ptr<btTriangleMesh>   groundMesh;
+bool                              meshGround = false;
 
 DynamicWorld::DynamicWorld(World*, const zenkit::Mesh&) {
   world.reset(new CollisionWorld());
   ragdolls.reset(new RagdollList());
   world->setInternalTickCallback(&DynamicWorld::ragdollPreTick, this, true);
 
-  groundShape.reset(new btStaticPlaneShape(btVector3(0,1,0),0));
+  if(meshGround) {
+    // 60x60 м, клетка 1 м, бугры до ±8 см
+    groundMesh.reset(new btTriangleMesh());
+    auto h = [](int x, int z) { return 0.08f*std::sin(float(x)*1.3f)*std::cos(float(z)*0.7f); };
+    for(int x=-30; x<30; ++x)
+      for(int z=-30; z<30; ++z) {
+        btVector3 a(float(x),h(x,z),float(z)), b(float(x+1),h(x+1,z),float(z));
+        btVector3 c(float(x),h(x,z+1),float(z+1)), d(float(x+1),h(x+1,z+1),float(z+1));
+        groundMesh->addTriangle(a,c,b);
+        groundMesh->addTriangle(b,c,d);
+        }
+    groundShape.reset(new btBvhTriangleMeshShape(groundMesh.get(),true));
+    } else {
+    groundShape.reset(new btStaticPlaneShape(btVector3(0,1,0),0));
+    }
   btRigidBody::btRigidBodyConstructionInfo ci(0,nullptr,groundShape.get());
   ci.m_friction = 0.75f;
   groundBody.reset(new btRigidBody(ci));
@@ -125,27 +144,38 @@ DynamicWorld::~DynamicWorld() {
   world->removeCollisionObject(groundBody.get());
   }
 
-void DynamicWorld::addRagdoll(Ragdoll* r) { ragdolls->list.push_back(r); }
+// как в dynamicworld.cpp
+void DynamicWorld::addRagdoll(Ragdoll* r) {
+  auto& l = ragdolls->active;
+  if(std::find(l.begin(),l.end(),r)==l.end())
+    l.push_back(r);
+  }
 void DynamicWorld::delRagdoll(Ragdoll* r) {
-  auto& l = ragdolls->list;
-  l.erase(std::remove(l.begin(),l.end(),r),l.end());
+  auto& l = ragdolls->active;
+  for(size_t i=0; i<l.size(); ++i)
+    if(l[i]==r) {
+      l[i] = l.back();
+      l.pop_back();
+      return;
+      }
   }
 
 void DynamicWorld::ragdollPreTick(btDynamicsWorld* w, float dt) {
   auto self = reinterpret_cast<DynamicWorld*>(w->getWorldUserInfo());
-  for(auto r:self->ragdolls->list)
-    r->preStep(dt);
+  Ragdoll::preStepAll(self->ragdolls->active, dt);
+  }
+
+auto DynamicWorld::ragdollsActive() -> std::vector<Ragdoll*>& {
+  return ragdolls->active;
+  }
+
+size_t DynamicWorld::ragdollsSimulated() const {
+  return ragdolls->active.size();
   }
 
 void DynamicWorld::tick(uint64_t dt) {
   world->tick(dt);
-  for(auto r:ragdolls->list) {
-    if(!r->isSimulated())
-      continue;
-    r->afterStep(dt);
-    if(r->calmTime>700 || r->simTime>12000)
-      r->freeze();
-    }
+  Ragdoll::tickAll(ragdolls->active, dt, -1e9f);
   }
 
 float waterLevel = -1e9f;

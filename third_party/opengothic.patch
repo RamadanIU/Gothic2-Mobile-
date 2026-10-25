@@ -5904,8 +5904,38 @@ index 6f5c549..bb62bb4 100644
  
    for(auto& i:visitedWorlds)
      if(i.compareName(wrld->name())){
+diff --git a/common/game/movealgo.cpp b/common/game/movealgo.cpp
+index 9fb78c1..fbd0d8a 100644
+--- a/common/game/movealgo.cpp
++++ b/common/game/movealgo.cpp
+@@ -493,6 +493,12 @@ void MoveAlgo::clearSpeed() {
+   fallCount   = 0;
+   }
+ 
++void MoveAlgo::clearFall() {
++  if(flags==InAir || flags==Falling)
++    setState(Run);
++  clearSpeed();
++  }
++
+ bool MoveAlgo::accessDamFly(float dx, float dz, char hitType) {
+   if(flags!=Run && flags!=Falling && flags!=InAir)
+     return false;
+diff --git a/common/game/movealgo.h b/common/game/movealgo.h
+index bdae2eb..d2c1f5f 100644
+--- a/common/game/movealgo.h
++++ b/common/game/movealgo.h
+@@ -59,6 +59,8 @@ class MoveAlgo final {
+ 
+     void    multSpeed(float s){ mulSpeed=s; }
+     void    clearSpeed();
++    // Gothic II Mobile: падение дальше ведёт регдолл (Npc::startRagdollFall) - не в полёте и без накопленной скорости
++    void    clearFall();
+     bool    accessDamFly(float dx, float dz, char hitType);
+ 
+     bool    testSlide(const Tempest::Vec3& p, DynamicWorld::CollisionTest& out) const;
 diff --git a/common/game/playercontrol.cpp b/common/game/playercontrol.cpp
-index aa16509..0d0e348 100644
+index aa16509..e0f230b 100644
 --- a/common/game/playercontrol.cpp
 +++ b/common/game/playercontrol.cpp
 @@ -1,13 +1,22 @@
@@ -7308,7 +7338,19 @@ index aa16509..0d0e348 100644
    implMove(dt);
  
    float runAngle = pl->runAngle();
-@@ -675,6 +2026,12 @@ void PlayerControl::implMove(uint64_t dt) {
+@@ -619,6 +1970,11 @@ void PlayerControl::implMove(uint64_t dt) {
+     return;
+   if(bs==BS_UNCONSCIOUS)
+     return;
++  // Gothic II Mobile: герой падает по физике (регдолл) - управление вернётся, когда встанет
++  if(pl.isRagdollFall()) {
++    runAngleDest = 0;
++    return;
++    }
+ 
+   if(!pl.isAiQueueEmpty()) {
+     runAngleDest = 0;
+@@ -675,6 +2031,12 @@ void PlayerControl::implMove(uint64_t dt) {
        }
      }
  
@@ -8102,7 +8144,7 @@ index 0000000..915c632
 +    static void             resolve(World& w, std::vector<Spot>& out);
 +  };
 diff --git a/common/gothic.cpp b/common/gothic.cpp
-index 56c5d58..18533c8 100644
+index 56c5d58..058e330 100644
 --- a/common/gothic.cpp
 +++ b/common/gothic.cpp
 @@ -18,6 +18,7 @@
@@ -8139,7 +8181,7 @@ index 56c5d58..18533c8 100644
          }
        if(FileExt::hasExt(file, u"mod")) {
          // Remove all *.mod files, that are not listed in modvdfs
-@@ -149,6 +160,37 @@ Gothic::Gothic(GameModDescriptor desc) {
+@@ -149,6 +160,38 @@ Gothic::Gothic(GameModDescriptor desc) {
      iniFile->set("INTERNAL", "vidResIndex", 0); // full-res
      }
    {
@@ -8160,6 +8202,7 @@ index 56c5d58..18533c8 100644
 +    opts.sharpUpscale     = g2m.getI("GRAPHICS","upscale",1)!=0;
 +    opts.animLod          = g2m.getI("GRAPHICS","animLod",1)!=0;
 +    opts.ragdoll          = g2m.getI("GRAPHICS","ragdoll",1)!=0;
++    opts.ragdollFall      = opts.ragdoll && g2m.getI("GRAPHICS","ragdollFall",1)!=0;
 +    if(g2m.getI("GRAPHICS","showFps",0)!=0)
 +      setFRate(true);
 +    if(g2m.has("GRAPHICS","windRange")) {
@@ -8169,7 +8212,7 @@ index 56c5d58..18533c8 100644
 +      }
 +    Tempest::Log::i("[g2m] graphics: fps=",opts.fpsLimit," res=",iniFile->getI("INTERNAL","vidResIndex"),
 +                    " shadows=",int(opts.shadowResolution)," view=",int(opts.viewDistance/100.f),"m detail=",opts.detailRatio,
-+                    " upscale=",(opts.sharpUpscale ? "sharp" : "bilinear")," animLod=",int(opts.animLod)," ragdoll=",int(opts.ragdoll),
++                    " upscale=",(opts.sharpUpscale ? "sharp" : "bilinear")," animLod=",int(opts.animLod)," ragdoll=",int(opts.ragdoll),"/",int(opts.ragdollFall),
 +                    " wind=",int(iniFile->getI("ENGINE","zWindEnabled")!=0 ? opts.windRange/100.f : 0.f),"m");
 +    }
 +  }
@@ -8177,7 +8220,7 @@ index 56c5d58..18533c8 100644
    defaults.reset(new IniFile());
    defaults->set("GAME", "enableMouse",         1);
    defaults->set("GAME", "mouseSensitivity",    0.5f);
-@@ -644,7 +686,12 @@ void Gothic::updateAnimation(uint64_t dt) {
+@@ -644,7 +687,12 @@ void Gothic::updateAnimation(uint64_t dt) {
    }
  
  void Gothic::quickSave() {
@@ -8190,7 +8233,7 @@ index 56c5d58..18533c8 100644
    }
  
  void Gothic::quickLoad() {
-@@ -749,27 +796,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
+@@ -749,27 +797,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
    }
  
  zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const ScriptLang lang) {
@@ -8238,7 +8281,7 @@ index 56c5d58..18533c8 100644
    if(!FileUtil::exists(path) && int(lang)>=0) {
      gscript = CommandLine::inst().scriptPath(lang);
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
-@@ -783,6 +841,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
+@@ -783,6 +842,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
      }
  
@@ -8247,10 +8290,10 @@ index 56c5d58..18533c8 100644
    zenkit::DaedalusScript script;
    script.load(buf.get());
 diff --git a/common/gothic.h b/common/gothic.h
-index 2654cc4..2fd1b45 100644
+index 2654cc4..ef62c1d 100644
 --- a/common/gothic.h
 +++ b/common/gothic.h
-@@ -71,11 +71,24 @@ class Gothic final {
+@@ -71,11 +71,25 @@ class Gothic final {
        bool     showHealthBar     = true;
        uint8_t  showManaBar       = 2;
        uint8_t  showSwimBar       = 1;
@@ -8263,6 +8306,7 @@ index 2654cc4..2fd1b45 100644
 +      float    windRange         = 8000; // ветер качает траву и деревья ближе этого, см; 0 - везде
 +      bool     sharpUpscale      = true; // масштабирование до экрана: Ланцош (чётче) или билинейное
 +      bool     ragdoll           = true; // убитые и оглушённые падают по физике (physics/ragdoll.h)
++      bool     ragdollFall       = true; // и живые: долгое падение (больше 1 с), удар, отбрасывающий тело (тролль)
        };
  
      auto         version() const -> const VersionInfo&;
@@ -8275,7 +8319,7 @@ index 2654cc4..2fd1b45 100644
      bool         isInGameAndAlive() const;
  
      std::string_view defaultWorld()       const;
-@@ -257,6 +270,7 @@ class Gothic final {
+@@ -257,6 +271,7 @@ class Gothic final {
  
      std::mutex                              syncSnd;
      Tempest::SoundDevice                    sndDev;
@@ -9054,7 +9098,7 @@ index 4c01505..36cb23a 100644
    }
  
 diff --git a/common/mainwindow.cpp b/common/mainwindow.cpp
-index 52b66d3..279500b 100644
+index 52b66d3..4f46c65 100644
 --- a/common/mainwindow.cpp
 +++ b/common/mainwindow.cpp
 @@ -1,5 +1,8 @@
@@ -9292,7 +9336,7 @@ index 52b66d3..279500b 100644
    }
  
  void MainWindow::onSettings() {
-@@ -390,14 +483,74 @@ void MainWindow::onSettings() {
+@@ -390,14 +483,79 @@ void MainWindow::onSettings() {
    if(zMaxFps>0)
      maxFpsInv = 1000u/uint64_t(zMaxFps); else
      maxFpsInv = 0;
@@ -9325,13 +9369,18 @@ index 52b66d3..279500b 100644
 +  const double fpsAvg = perf.interval>0 ? 1000.0*n/perf.interval : 0.0;
 +  const auto   st     = MobilePerf::thermalStatus();
 +  const float  head   = MobilePerf::thermalHeadroom();
-+  char buf[320] = {};
++  // регдолл: сколько тел было в физике и сколько стоил шаг физики с ними (в среднем по кадрам с куклами)
++  const uint32_t ragPeak   = PerfStats::ragdollPeak.exchange(0);
++  const uint32_t ragUs     = PerfStats::ragdollUs.exchange(0);
++  const uint32_t ragFrames = PerfStats::ragdollFrames.exchange(0);
++  char buf[360] = {};
 +  std::snprintf(buf, sizeof(buf),
 +                "[perf] fps=%.1f frame=%.1fms max=%.0fms | logic=%.1f anim=%.1f render=%.1f gpu-wait=%.1f present=%.1f"
-+                " | npc %u/%u wind %u/%u rag %u | thermal=%d headroom=%.2f hints=%d cap=%d",
++                " | npc %u/%u wind %u/%u rag %u max %u phys %.1fms x%u | thermal=%d headroom=%.2f hints=%d cap=%d",
 +                fpsAvg, perf.frame/n, perf.frameMax, perf.logic/n, perf.anim/n, perf.record/n, perf.gpuWait/n, perf.present/n,
 +                PerfStats::npcAnimated.load(), PerfStats::npcTotal.load(),
 +                PerfStats::windUpdated.load(), PerfStats::windTotal.load(), PerfStats::ragdolls.load(),
++                ragPeak, ragFrames>0 ? double(ragUs)/1000.0/double(ragFrames) : 0.0, ragFrames,
 +                int(st), std::isnan(head) ? -1.0 : double(head), MobilePerf::hasHints() ? 1 : 0, effectiveFps());
 +  Log::i(buf);
 +
@@ -9367,7 +9416,7 @@ index 52b66d3..279500b 100644
    if(video.isActive()){
      event.accept();
      video.keyDownEvent(event);
-@@ -495,6 +648,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
+@@ -495,6 +653,15 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
    }
  
  void MainWindow::keyUpEvent(KeyEvent &event) {
@@ -9383,7 +9432,7 @@ index 52b66d3..279500b 100644
    if(uiKeyUp==&video){
      video.keyUpEvent(event);
      if(event.isAccepted())
-@@ -529,6 +691,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -529,6 +696,11 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
    auto act     = keycodec.tr(event);
    auto mapping = keycodec.mapping(event);
  
@@ -9395,7 +9444,7 @@ index 52b66d3..279500b 100644
    std::string_view menuEv;
    if(act==KeyCodec::Escape)
      menuEv = Gothic::inst().menuMain();
-@@ -543,6 +710,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -543,6 +715,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
      if(auto pl = Gothic::inst().player())
        rootMenu.setPlayer(*pl);
      clearInput();
@@ -9403,7 +9452,7 @@ index 52b66d3..279500b 100644
      }
    else if(act==KeyCodec::Inventory && !dialogs.isActive()) {
      if(inventory.isActive()) {
-@@ -553,11 +721,146 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
+@@ -553,11 +726,146 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
          inventory.open(*pl);
        }
      clearInput();
@@ -9551,7 +9600,7 @@ index 52b66d3..279500b 100644
    if(!event.in)
      return;
    dMouse = Point();
-@@ -882,8 +1185,16 @@ uint64_t MainWindow::tick() {
+@@ -882,8 +1190,16 @@ uint64_t MainWindow::tick() {
      Gothic::inst().finishLoading();
      if(st==Gothic::LoadState::FailedLoad)
        rootMenu.setMainMenu();
@@ -9568,7 +9617,7 @@ index 52b66d3..279500b 100644
      return 0;
      }
    else if(st!=Gothic::LoadState::Idle) {
-@@ -949,6 +1260,30 @@ void MainWindow::tickCamera(uint64_t dt) {
+@@ -949,6 +1265,30 @@ void MainWindow::tickCamera(uint64_t dt) {
                               ws==WeaponState::W2H);
    auto       pos          = pl!=nullptr ? pl->cameraBone(camera.isFirstPerson()) : Vec3();
  
@@ -9599,7 +9648,7 @@ index 52b66d3..279500b 100644
    if(!camera.isCutscene() && !camera.isFree()) {
      const bool fs = SystemApi::isFullscreen(hwnd());
      if(!fs && mouseP[Event::ButtonLeft]) {
-@@ -1056,7 +1391,8 @@ void MainWindow::loadGame(std::string_view slot) {
+@@ -1056,7 +1396,8 @@ void MainWindow::loadGame(std::string_view slot) {
      }
  
    Gothic::inst().setBenchmarkMode(Benchmark::None);
@@ -9609,7 +9658,7 @@ index 52b66d3..279500b 100644
      game = nullptr; // clear world-memory now
      Tempest::RFile file(slot);
      Serialize      s(file);
-@@ -1102,20 +1438,50 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
+@@ -1102,20 +1443,50 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
    auto& thumb = lres.isEmpty() ? tex : lres;
    auto  pm    = device.readPixels(textureCast<const Texture2d&>(thumb));
  
@@ -9661,7 +9710,7 @@ index 52b66d3..279500b 100644
  
    update();
    }
-@@ -1127,6 +1493,11 @@ void MainWindow::onVideo(std::string_view fname) {
+@@ -1127,6 +1498,11 @@ void MainWindow::onVideo(std::string_view fname) {
    }
  
  void MainWindow::onStartLoading() {
@@ -9673,7 +9722,7 @@ index 52b66d3..279500b 100644
    player   .clearInput();
    inventory.onWorldChanged();
    dialogs  .onWorldChanged();
-@@ -1240,16 +1611,37 @@ void MainWindow::render(){
+@@ -1240,16 +1616,37 @@ void MainWindow::render(){
        once player position is updated, animation bones(cameraBone in particular) can be updated
        lastly - camera position
        */
@@ -9711,7 +9760,7 @@ index 52b66d3..279500b 100644
      Resources::resetRecycled(cmdId);
  
      if(video.isActive()) {
-@@ -1274,9 +1666,47 @@ void MainWindow::render(){
+@@ -1274,9 +1671,47 @@ void MainWindow::render(){
      renderer.draw(swapchain[swapchain.currentImage()],enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
      }
      sync = device.submit(cmd);
@@ -9759,7 +9808,7 @@ index 52b66d3..279500b 100644
      auto t = Application::tickCount();
      auto frameTime = maxFpsInv;
      if(!Gothic::inst().isInGame() && !video.isActive())
-@@ -1286,6 +1716,7 @@ void MainWindow::render(){
+@@ -1286,6 +1721,7 @@ void MainWindow::render(){
        Application::sleep(delay);
        t += delay;
        }
@@ -9890,7 +9939,7 @@ index 3fb2713..2bc6dc1 100644
 +#endif
    };
 diff --git a/common/physics/collisionworld.cpp b/common/physics/collisionworld.cpp
-index 3d6c5e2..0262f76 100644
+index 3d6c5e2..529d173 100644
 --- a/common/physics/collisionworld.cpp
 +++ b/common/physics/collisionworld.cpp
 @@ -77,6 +77,29 @@ struct CollisionWorld::Broadphase : btDbvtBroadphase {
@@ -9966,13 +10015,14 @@ index 3d6c5e2..0262f76 100644
  void CollisionWorld::rayCast(const Tempest::Vec3& b, const Tempest::Vec3& e, btCollisionWorld::RayResultCallback& cb) {
    btVector3 s = toMeters(b), f = toMeters(e);
    if(s==f)
-@@ -306,6 +355,9 @@ void CollisionWorld::tick(uint64_t dt) {
+@@ -306,6 +355,10 @@ void CollisionWorld::tick(uint64_t dt) {
    const  float dtF     = float(dt);
  
    if(dynamic) {
-+    // Gothic II Mobile: с регдоллом - до 4 шагов по 1/60 с: при 20-30 кадрах тело не замедляется
++    // Gothic II Mobile: с регдоллом - до 3 шагов по 1/60 с: при 20-30 кадрах тело не замедляется, а в редкий
++    // тяжёлый кадр (загрузка, сохранение) физика не догоняет время ценой ещё одного долгого кадра
 +    if(ragBodies.size()>0)
-+      this->stepSimulation(dtF/1000.f, 4); else
++      this->stepSimulation(dtF/1000.f, 3); else
      if(rigid.size()>0)
        this->stepSimulation(dtF/1000.f, 2);
  
@@ -10008,10 +10058,10 @@ index fb084a3..5b3bf33 100644
      btVector3                                   bbox[2] = {btVector3(0,0,0), btVector3(0,0,0)};
  
 diff --git a/common/physics/dynamicworld.cpp b/common/physics/dynamicworld.cpp
-index 0683815..d33cc9d 100644
+index 0683815..89fae08 100644
 --- a/common/physics/dynamicworld.cpp
 +++ b/common/physics/dynamicworld.cpp
-@@ -3,7 +3,9 @@
+@@ -3,9 +3,12 @@
  #include "collisionworld.h"
  #include "physicmeshshape.h"
  #include "physicvbo.h"
@@ -10020,70 +10070,40 @@ index 0683815..d33cc9d 100644
 +#include "utils/perfstats.h"
  
  #include <algorithm>
++#include <chrono>
  #include <cmath>
-@@ -554,6 +556,61 @@ struct DynamicWorld::BBoxList final {
+ #include <cassert>
+ #include <cstddef>
+@@ -554,6 +557,28 @@ struct DynamicWorld::BBoxList final {
    DynamicWorld&          wrld;
    };
  
-+// Gothic II Mobile: все куклы мира. Каждый кадр после шага физики - позы костей, «улеглось ли тело»;
-+// улёгшееся застывает (тела уходят из физики). В физике одновременно не больше MaxSimulated кукол:
-+// в большой драке дольше всех падающая застывает первой
++// Gothic II Mobile: куклы мира, которые сейчас в физике (застывшие здесь не числятся и ничего не стоят).
++// Правила - в Ragdoll::tickAll: срок в физике, бюджет MaxSimulated
 +struct DynamicWorld::RagdollList final {
-+  static constexpr size_t   MaxSimulated = 6;
-+  static constexpr uint64_t CalmTime     = 700;   // тело почти не движется столько мс - застыло
-+  static constexpr uint64_t MaxTime      = 12000; // дольше не падает никто
-+
-+  std::vector<Ragdoll*> list;
++  std::vector<Ragdoll*> active;
 +
 +  void add(Ragdoll* r) {
-+    list.push_back(r);
++    for(auto i:active)
++      if(i==r)
++        return;
++    active.push_back(r);
 +    }
 +
 +  void del(Ragdoll* r) {
-+    for(size_t i=0; i<list.size(); ++i)
-+      if(list[i]==r) {
-+        list[i] = list.back();
-+        list.pop_back();
++    for(size_t i=0; i<active.size(); ++i)
++      if(active[i]==r) {
++        active[i] = active.back();
++        active.pop_back();
 +        return;
 +        }
-+    }
-+
-+  size_t simulated() const {
-+    size_t n = 0;
-+    for(auto r:list)
-+      if(r->isSimulated())
-+        n++;
-+    return n;
-+    }
-+
-+  void preStep(float dt) {
-+    for(auto r:list)
-+      r->preStep(dt);
-+    }
-+
-+  void tick(uint64_t dt, float minY) {
-+    for(auto r:list) {
-+      if(!r->isSimulated())
-+        continue;
-+      r->afterStep(dt);
-+      if(r->calmTime>CalmTime || r->simTime>MaxTime || r->rootPosition().y<minY)
-+        r->freeze();
-+      }
-+    for(size_t n=simulated(); n>MaxSimulated; --n) {
-+      Ragdoll* old = nullptr;
-+      for(auto r:list)
-+        if(r->isSimulated() && (old==nullptr || r->simTime>old->simTime))
-+          old = r;
-+      old->freeze();
-+      }
-+    PerfStats::ragdolls.store(uint32_t(simulated()));
 +    }
 +  };
 +
  DynamicWorld::DynamicWorld(World* owner, const zenkit::Mesh& worldMesh) {
    world.reset(new CollisionWorld());
  
-@@ -617,6 +674,8 @@ DynamicWorld::DynamicWorld(World* owner, const zenkit::Mesh& worldMesh) {
+@@ -617,6 +642,8 @@ DynamicWorld::DynamicWorld(World* owner, const zenkit::Mesh& worldMesh) {
    npcList   .reset(new NpcBodyList(*this));
    bulletList.reset(new BulletsList(*this));
    bboxList  .reset(new BBoxList   (*this));
@@ -10092,15 +10112,28 @@ index 0683815..d33cc9d 100644
  
    if(owner!=nullptr) {
      world->setItemHitCallback([owner](::Item& itm, zenkit::MaterialGroup mat, float impulse, float mass) {
-@@ -1027,6 +1086,33 @@ void DynamicWorld::tick(uint64_t dt) {
+@@ -1026,7 +1053,46 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
+ void DynamicWorld::tick(uint64_t dt) {
    npcList   ->tickAabbs();
    bulletList->tick(dt);
++  // Gothic II Mobile: регдолл - время шага физики с куклами (строка [perf]), позы кукол после шага;
++  // провалившееся под мир тело застывает
++  const bool rag = !ragdolls->active.empty();
++  const auto t0  = rag ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
    world     ->tick(dt);
-+  // Gothic II Mobile: регдолл - позы кукол после шага физики; провалившееся под мир тело застывает
-+  btVector3 bmin = {}, bmax = {};
-+  if(landBody!=nullptr)
-+    landBody->getAabb(bmin,bmax);
-+  ragdolls  ->tick(dt, bmin.y()*100.f-1000.f);
++  if(rag) {
++    btVector3 bmin = {}, bmax = {};
++    if(landBody!=nullptr)
++      landBody->getAabb(bmin,bmax);
++    Ragdoll::tickAll(ragdolls->active, dt, bmin.y()*100.f-1000.f);
++    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-t0).count();
++    PerfStats::ragdollUs    .fetch_add(uint32_t(us));
++    PerfStats::ragdollFrames.fetch_add(1);
++    }
++  const uint32_t n = uint32_t(ragdolls->active.size());
++  PerfStats::ragdolls.store(n);
++  if(n>PerfStats::ragdollPeak.load())
++    PerfStats::ragdollPeak.store(n);
 +  }
 +
 +void DynamicWorld::addRagdoll(Ragdoll* r) {
@@ -10114,20 +10147,20 @@ index 0683815..d33cc9d 100644
 +void DynamicWorld::ragdollPreTick(btDynamicsWorld* w, float dt) {
 +  auto self = reinterpret_cast<DynamicWorld*>(w->getWorldUserInfo());
 +  if(self!=nullptr && self->ragdolls!=nullptr)
-+    self->ragdolls->preStep(dt);
++    Ragdoll::preStepAll(self->ragdolls->active, dt);
++  }
++
++auto DynamicWorld::ragdollsActive() -> std::vector<Ragdoll*>& {
++  return ragdolls->active;
 +  }
 +
 +size_t DynamicWorld::ragdollsSimulated() const {
-+  return ragdolls->simulated();
-+  }
-+
-+size_t DynamicWorld::ragdollsTotal() const {
-+  return ragdolls->list.size();
++  return ragdolls->active.size();
    }
  
  void DynamicWorld::deleteObj(BulletBody* obj) {
 diff --git a/common/physics/dynamicworld.h b/common/physics/dynamicworld.h
-index 02725e0..fb280cf 100644
+index 02725e0..82a59e8 100644
 --- a/common/physics/dynamicworld.h
 +++ b/common/physics/dynamicworld.h
 @@ -26,6 +26,8 @@ class Interactive;
@@ -10155,23 +10188,23 @@ index 02725e0..fb280cf 100644
        };
  
      enum PtrType {
-@@ -276,6 +280,10 @@ class DynamicWorld final {
+@@ -276,6 +280,9 @@ class DynamicWorld final {
  
      void           deleteObj(BulletBody* obj);
  
-+    // Gothic II Mobile: регдолл - сколько кукол сейчас в физике и всего
++    // Gothic II Mobile: регдолл - сколько кукол сейчас в физике
 +    size_t         ragdollsSimulated() const;
-+    size_t         ragdollsTotal() const;
 +
      static float   materialFriction(zenkit::MaterialGroup mat);
      static float   materialDensity (zenkit::MaterialGroup mat);
  
-@@ -302,6 +310,10 @@ class DynamicWorld final {
+@@ -302,6 +309,11 @@ class DynamicWorld final {
      RayWaterResult implWaterRay(const Tempest::Vec3& from, const Tempest::Vec3& to, float stepHeight) const;
      bool           hasCollision(const NpcItem &it, CollisionTest& out);
  
 +    void           addRagdoll(Ragdoll* r);
 +    void           delRagdoll(Ragdoll* r);
++    auto           ragdollsActive() -> std::vector<Ragdoll*>&;
 +    static void    ragdollPreTick(btDynamicsWorld* w, float dt);
 +
      std::unique_ptr<CollisionWorld>    world;
@@ -10202,10 +10235,10 @@ index daa4a7d..455d40d 100644
  #include <BulletCollision/CollisionShapes/btBoxShape.h>
 diff --git a/common/physics/ragdoll.cpp b/common/physics/ragdoll.cpp
 new file mode 100644
-index 0000000..bb1e9ed
+index 0000000..a73df6d
 --- /dev/null
 +++ b/common/physics/ragdoll.cpp
-@@ -0,0 +1,1079 @@
+@@ -0,0 +1,1243 @@
 +#include "ragdoll.h"
 +
 +#include <Tempest/Log>
@@ -10394,6 +10427,26 @@ index 0000000..bb1e9ed
 +      }
 +    }
 +  return ((p1+d1*s)-(p2+d2*t)).length();
++  }
++
++// Итерации решателя на сустав: рядом - точнее (руки и ноги не «тянутся» при ударе о землю), вдали - дешевле
++int solverItFor(float viewDist) {
++  if(viewDist<1500.f)
++    return 20;
++  if(viewDist<3000.f)
++    return 12;
++  return 8;
++  }
++
++// Очередь на застывание при нехватке места в физике: дальние и дольше падающие - раньше (1 с - как 5 м);
++// живой падающий и тем более герой - последними
++float evictScore(float viewDist, uint64_t simTime, Ragdoll::State st, bool keep) {
++  float s = viewDist + float(simTime)*0.5f;
++  if(st==Ragdoll::S_Fall)
++    s -= 1e6f;
++  if(keep)
++    s -= 1e7f;
++  return s;
 +  }
 +
 +float pointSegmentDistance(const Vec3& p, const Vec3& a, const Vec3& b) {
@@ -10915,15 +10968,14 @@ index 0000000..bb1e9ed
 +    boneId[i] = uint16_t(lay.parts[i].bone);
 +  if(lay.follower!=size_t(-1))
 +    boneId.back() = uint16_t(lay.follower);
-+  owner.addRagdoll(this);
 +  }
 +
 +Ragdoll::~Ragdoll() {
 +  removeBodies();
-+  owner->delRagdoll(this);
 +  }
 +
-+std::unique_ptr<Ragdoll> Ragdoll::create(DynamicWorld& owner, const Skeleton& sk, const Matrix4x4* bones, size_t count, State st) {
++std::unique_ptr<Ragdoll> Ragdoll::create(DynamicWorld& owner, const Skeleton& sk, const Matrix4x4* bones, size_t count, State st,
++                                         float viewDist, bool keep) {
 +  auto lay = layoutOf(sk);
 +  if(lay==nullptr || bones==nullptr)
 +    return nullptr;
@@ -10932,7 +10984,11 @@ index 0000000..bb1e9ed
 +      return nullptr;
 +  if(lay->follower!=size_t(-1) && lay->follower>=count)
 +    return nullptr;
++  if(!reserve(owner,viewDist,st,keep))
++    return nullptr;
 +  std::unique_ptr<Ragdoll> r(new Ragdoll(owner,sk,*lay,st));
++  r->viewDist = viewDist;
++  r->keep     = keep;
 +  for(size_t i=0; i<r->boneId.size(); ++i)
 +    r->boneWorld[i] = bones[r->boneId[i]];
 +  r->setFollower();
@@ -10975,6 +11031,7 @@ index 0000000..bb1e9ed
 +  if(!body.empty())
 +    return;
 +  auto& cw = *owner->world;
++  solverIt = solverItFor(viewDist);
 +  body.resize(lay->parts.size());
 +  pivot.assign(lay->parts.size(),Vec3());
 +
@@ -11055,7 +11112,7 @@ index 0000000..bb1e9ed
 +        ct->setParam(BT_CONSTRAINT_ERP,0.8f,ax);
 +      c = std::move(ct);
 +      }
-+    c->setOverrideNumSolverIterations(20);
++    c->setOverrideNumSolverIterations(solverIt);
 +    Joint jt;
 +    jt.c      = std::move(c);
 +    jt.parent = uint16_t(pp);
@@ -11077,8 +11134,12 @@ index 0000000..bb1e9ed
 +
 +  simTime  = 0;
 +  calmTime = 0;
++  waterAt  = 0;
++  fallPeak = 0;
++  impact   = 0;
 +  inWater  = false;
-+  calming  = false;
++  damping  = 0;
++  owner->addRagdoll(this);
 +  }
 +
 +void Ragdoll::removeBodies() {
@@ -11091,11 +11152,15 @@ index 0000000..bb1e9ed
 +    cw.removeRagdollBody(b.rb.get());
 +  joint.clear();
 +  body.clear();
++  owner->delRagdoll(this);
 +  }
 +
 +bool Ragdoll::wake() {
 +  if(isSimulated())
 +    return true;
++  // застывшее тело оживает от удара, только если в физике есть место
++  if(!reserve(*owner,viewDist,st,keep))
++    return false;
 +  createBodies();
 +  ver++;
 +  return isSimulated();
@@ -11114,6 +11179,32 @@ index 0000000..bb1e9ed
 +    return;
 +  for(size_t i=0; i<boneWorld.size() && i<local.size(); ++i)
 +    boneWorld[i] = obj*local[i];
++  }
++
++void Ragdoll::setViewDistance(float cm, bool k) {
++  viewDist = cm;
++  keep     = k;
++  const int it = solverItFor(cm);
++  if(it!=solverIt)
++    setSolverIterations(it);
++  }
++
++void Ragdoll::setSolverIterations(int n) {
++  solverIt = n;
++  for(auto& j:joint)
++    j.c->setOverrideNumSolverIterations(n);
++  }
++
++bool Ragdoll::isAirborne() const {
++  if(body.empty())
++    return false;
++  return body[0].rb->getLinearVelocity().y()<-2.f;
++  }
++
++float Ragdoll::takeImpact() {
++  const float v = impact;
++  impact = 0;
++  return v;
 +  }
 +
 +void Ragdoll::setVelocity(const Vec3& v) {
@@ -11183,8 +11274,11 @@ index 0000000..bb1e9ed
 +  const float t = float(simTime);
 +  float f = 0;
 +  if(st==S_Dead)
-+    f = (t<350.f ? 0.35f*(1.f-t/350.f) : 0.f) + 0.08f; else
++    f = (t<350.f ? 0.35f*(1.f-t/350.f) : 0.f) + 0.08f;
++  else if(st==S_Unconscious)
 +    f = (t<700.f ? 0.5f *(1.f-t/700.f) : 0.f) + 0.15f;
++  else
++    f = 0.3f; // живой: напряжён, руки и ноги не болтаются
 +  if(inWater)
 +    f = std::max(f,0.3f);
 +  f = 1.f - std::pow(1.f-std::clamp(f,0.f,0.95f), dt*60.f);
@@ -11207,15 +11301,16 @@ index 0000000..bb1e9ed
 +  simTime += dt;
 +  updateBones();
 +
-+  // в воде тело не падает камнем, а медленно погружается
-+  const auto root = rootPosition();
-+  const auto wr   = owner->waterRay(root, 0.f);
-+  const bool water = wr.hasCol && wr.wdepth>root.y;
-+  if(water!=inWater) {
-+    inWater = water;
-+    calming = false;
-+    for(auto& b:body)
-+      b.rb->setDamping(water ? 0.9f : 0.05f, water ? 0.9f : 0.25f);
++  // в воде тело не падает камнем, а медленно погружается. Луч к воде - раз в 100 мс, не каждый кадр
++  if(simTime>=waterAt+100 || waterAt==0) {
++    waterAt = simTime;
++    const auto root  = rootPosition();
++    const auto wr    = owner->waterRay(root, 0.f);
++    const bool water = wr.hasCol && wr.wdepth>root.y;
++    if(water!=inWater) {
++      inWater = water;
++      damping = -1;
++      }
 +    }
 +  // тело в воде почти ничего не весит - медленно тонет, а не падает камнем.
 +  // Сила действует весь следующий шаг физики (Bullet сбрасывает силы в конце stepSimulation)
@@ -11233,12 +11328,37 @@ index 0000000..bb1e9ed
 +    const float v = rb.getLinearVelocity().length() + rb.getAngularVelocity().length()*(p.halfLen+p.radius)*0.01f;
 +    maxV = std::max(maxV,v);
 +    }
-+  // почти лёг - сильнее гасить движение, иначе капсулы долго дрожат на пределах суставов
-+  const bool settling = (maxV<0.4f && simTime>500);
-+  if(settling!=calming && !inWater) {
-+    calming = settling;
++  // удар о землю после падения: таз резко замедлился - скорость до удара (урон от падения, Npc::tickRagdollFall)
++  {
++  const btVector3 v  = body[0].rb->getLinearVelocity();
++  const float     vy = v.y();
++  if(inWater) {
++    fallPeak = 0; // в воду - без урона, как в игре
++    }
++  else if(vy<-2.f) {
++    fallPeak = std::max(fallPeak, v.length());
++    }
++  else if(fallPeak>0.f && -vy<0.5f*fallPeak) {
++    impact   = std::max(impact, fallPeak);
++    fallPeak = 0;
++    }
++  }
++
++  // почти лёг - сильнее гасить движение, иначе капсулы долго дрожат на пределах суставов;
++  // срок в физике подходит к концу (SettleTime) - ещё сильнее, чтобы тело остановилось само, без рывка
++  int lvl = 0;
++  if(inWater)
++    lvl = 3;
++  else if(st!=S_Fall && simTime>SettleTime && !isAirborne())
++    lvl = 2;
++  else if(maxV<0.4f && simTime>500)
++    lvl = 1;
++  if(lvl!=damping) {
++    damping = lvl;
++    static const float lin[] = {0.05f, 0.4f,  0.8f,  0.9f};
++    static const float ang[] = {0.25f, 0.85f, 0.95f, 0.9f};
 +    for(auto& b:body)
-+      b.rb->setDamping(settling ? 0.4f : 0.05f, settling ? 0.85f : 0.25f);
++      b.rb->setDamping(lin[lvl], ang[lvl]);
 +    }
 +  // редкое вздрагивание лёгкой части не отменяет «улеглось», а только отодвигает
 +  if(!active || maxV<0.15f)
@@ -11257,6 +11377,83 @@ index 0000000..bb1e9ed
 +                double(rb.getLinearVelocity().length()),double(rb.getAngularVelocity().length()),int(rb.isActive()),int(calmTime));
 +    }
 +#endif
++  }
++
++bool Ragdoll::isExpired(float minY) const {
++  if(rootPosition().y<minY)
++    return true; // провалилось под мир
++  if(st==S_Fall)
++    return simTime>FallMaxTime; // живой встаёт сам (Npc::tickRagdollFall)
++  if(calmTime>CalmTime)
++    return true;
++  if(simTime>LiveTime && !isAirborne())
++    return true;
++  return simTime>AirTime;
++  }
++
++void Ragdoll::preStepAll(const std::vector<Ragdoll*>& active, float dt) {
++  for(auto r:active)
++    r->preStep(dt);
++  }
++
++void Ragdoll::tickAll(std::vector<Ragdoll*>& active, uint64_t dt, float minY) {
++  // застывшая кукла сама уходит из списка (removeBodies): на её место встаёт последняя - её и смотрим
++  for(size_t i=0; i<active.size();) {
++    auto r = active[i];
++    r->afterStep(dt);
++    if(r->isExpired(minY))
++      r->freeze(); else
++      ++i;
++    }
++  // бюджет (на случай, если reserve обошли): лишние застывают по очереди evictScore; кукла героя - сверх бюджета
++  while(countedIn(active)>MaxSimulated) {
++    Ragdoll* worst = nullptr;
++    float    score = 0;
++    for(auto r:active) {
++      if(r->keep)
++        continue;
++      const float s = evictScore(r->viewDist,r->simTime,r->st,r->keep);
++      if(worst==nullptr || s>score) {
++        worst = r;
++        score = s;
++        }
++      }
++    worst->freeze();
++    }
++  }
++
++bool Ragdoll::reserve(DynamicWorld& owner, float viewDist, State st, bool keep) {
++  // Место в физике для новой куклы. Нет - освободить его может только тело, которое уже упало (в физике
++  // дольше SettleMinTime): застыть посреди падения - значит замереть стоя или на коленях. Иначе новое тело
++  // падает анимацией игры - и первый шаг физики не тратит время на кучу тел разом
++  // Кукла героя - всегда и сверх бюджета (она одна)
++  auto& active = owner.ragdollsActive();
++  if(keep || countedIn(active)<MaxSimulated)
++    return true;
++  const float mine  = evictScore(viewDist,0,st,keep);
++  Ragdoll*    worst = nullptr;
++  float       score = 0;
++  for(auto r:active) {
++    if(r->keep || r->st==S_Fall || r->simTime<SettleMinTime)
++      continue; // живой падающий встал бы посреди полёта
++    const float s = evictScore(r->viewDist,r->simTime,r->st,r->keep);
++    if(s>mine && (worst==nullptr || s>score)) {
++      worst = r;
++      score = s;
++      }
++    }
++  if(worst==nullptr)
++    return false;
++  worst->freeze();
++  return true;
++  }
++
++size_t Ragdoll::countedIn(const std::vector<Ragdoll*>& active) {
++  size_t n = 0;
++  for(auto r:active)
++    if(!r->keep)
++      n++;
++  return n;
 +  }
 +
 +Vec3 Ragdoll::rootPosition() const {
@@ -11287,10 +11484,10 @@ index 0000000..bb1e9ed
 +  }
 diff --git a/common/physics/ragdoll.h b/common/physics/ragdoll.h
 new file mode 100644
-index 0000000..d212da3
+index 0000000..b312517
 --- /dev/null
 +++ b/common/physics/ragdoll.h
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,155 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -11313,12 +11510,29 @@ index 0000000..d212da3
 +// суставы - конусы с пределами. Кукла ведёт мировые матрицы своих костей; остальные кости (пальцы, ключицы,
 +// слоты оружия) идут за ними по иерархии скелета (Pose::setRagdoll). Улёгшееся тело застывает: тела убираются
 +// из физики, поза остаётся (и пишется в сохранение) - процессор лежащие тела не тратят.
++//
++// Бюджет (физика на телефоне не бесплатна): кукла живёт в физике не дольше LiveTime после падения - потом
++// застывает, где лежит (с SettleTime движение плавно гасится, чтобы остановка не была рывком); в физике
++// одновременно не больше MaxSimulated кукол - лишние застывают, начиная с самых дальних и старых; далеко от
++// героя и камеры кукла не начинается и застывает (Npc::tickRagdoll). Застывшая кукла стоит не больше
++// обычной позы анимации.
 +class Ragdoll final {
 +  public:
 +    enum State : uint8_t {
 +      S_Dead        = 0,
 +      S_Unconscious = 1,
++      S_Fall        = 2, // живой и в сознании: долго падает или отброшен ударом - встанет сам (Npc::tickRagdollFall)
 +      };
++
++    static constexpr size_t   MaxSimulated = 4;     // кукол в физике одновременно (и кукла героя сверх них)
++    static constexpr uint64_t LiveTime     = 3000;  // мс в физике после падения: дальше тело застывает
++    static constexpr uint64_t SettleTime   = 2200;  // мс: с этого времени движение гасится сильнее
++    static constexpr uint64_t AirTime      = 6000;  // мс: тело ещё летит (обрыв) - ждать, пока долетит, но не дольше
++    static constexpr uint64_t CalmTime     = 700;   // мс почти без движения - тело улеглось, застывает раньше
++    static constexpr uint64_t SettleMinTime= 800;   // мс: раньше тело ещё падает - ради места в физике его не останавливать
++    static constexpr uint64_t FallMaxTime  = 10000; // мс: живой падающий - дольше не бывает
++    static constexpr float    StartDist    = 3500;  // см от героя или камеры: дальше падают анимацией
++    static constexpr float    FreezeDist   = 4500;  // см: дальше кукла застывает (с запасом от StartDist)
 +
 +    struct Hit final {
 +      Tempest::Vec3 at    = {}; // точка удара, см
@@ -11331,7 +11545,9 @@ index 0000000..d212da3
 +    ~Ragdoll();
 +
 +    // Кукла для скелета: bones - мировые матрицы всех костей (поза в момент падения); nullptr - скелет не подходит
-+    static std::unique_ptr<Ragdoll> create(DynamicWorld& owner, const Skeleton& sk, const Tempest::Matrix4x4* bones, size_t count, State st);
++    // или в физике нет места (reserve). viewDist, keep - как у setViewDistance
++    static std::unique_ptr<Ragdoll> create(DynamicWorld& owner, const Skeleton& sk, const Tempest::Matrix4x4* bones, size_t count, State st,
++                                           float viewDist = 0, bool keep = false);
 +    // Застывшая кукла (из сохранения): мировые матрицы ведомых костей, тела в физику не добавляются
 +    static std::unique_ptr<Ragdoll> createFrozen(DynamicWorld& owner, const Skeleton& sk, const std::vector<uint16_t>& boneId,
 +                                                 const std::vector<Tempest::Matrix4x4>& world, State st);
@@ -11345,6 +11561,17 @@ index 0000000..d212da3
 +
 +    void                  setVelocity(const Tempest::Vec3& v); // скорость всего тела (бег, падение), м/с
 +    void                  hit(const Hit& h);                    // застывшее тело оживает
++
++    // Расстояние до героя или камеры (ближнее), см: дальние куклы считаются проще и застывают первыми.
++    // keep - кукла героя: застывает последней
++    void                  setViewDistance(float cm, bool keep);
++    float                 viewDistance() const { return viewDist; }
++    // Тело ещё падает (таз летит вниз быстрее 2 м/с)
++    bool                  isAirborne() const;
++    // Тело улеглось: почти не движется не меньше ms
++    bool                  isCalm(uint64_t ms) const { return calmTime>=ms; }
++    // Скорость последнего удара о землю после падения, м/с (0 - не было); вызов сбрасывает
++    float                 takeImpact();
 +
 +    // Ведомые кости: номера, мировые матрицы (см) и маска по номеру кости скелета
 +    const std::vector<uint16_t>&           bones()  const { return boneId; }
@@ -11366,6 +11593,12 @@ index 0000000..d212da3
 +
 +    uint64_t              simulatedTime() const { return simTime; }
 +
++    // Место в физике для новой куклы (или для пробуждения застывшей): false - падать анимацией игры
++    static bool           reserve(DynamicWorld& owner, float viewDist, State st, bool keep);
++    // Все куклы мира в физике: после шага физики - позы, «улеглось ли», бюджет (DynamicWorld::tick)
++    static void           tickAll(std::vector<Ragdoll*>& active, uint64_t dt, float minY);
++    static void           preStepAll(const std::vector<Ragdoll*>& active, float dt);
++
 +  private:
 +    struct Body;
 +    struct Joint;
@@ -11380,6 +11613,9 @@ index 0000000..d212da3
 +    void                  updateBones();
 +    void                  preStep(float dt);
 +    void                  afterStep(uint64_t dt);
++    bool                  isExpired(float minY) const;
++    static size_t         countedIn(const std::vector<Ragdoll*>& active); // куклы в бюджете (без героя)
++    void                  setSolverIterations(int n);
 +
 +    DynamicWorld*                   owner = nullptr;
 +    const Skeleton*                 sk    = nullptr;
@@ -11395,9 +11631,15 @@ index 0000000..d212da3
 +
 +    uint64_t                        simTime  = 0; // с начала падения (или пробуждения), мс
 +    uint64_t                        calmTime = 0; // тело почти не движется, мс
++    uint64_t                        waterAt  = 0; // simTime последней проверки воды
 +    uint32_t                        ver      = 0;
++    float                           viewDist = 0; // см до героя или камеры
++    float                           fallPeak = 0; // наибольшая скорость таза вниз в этом падении, м/с
++    float                           impact   = 0; // скорость удара о землю, ещё не забранная takeImpact, м/с
++    int                             solverIt = 0;
++    int                             damping  = 0; // уровень гашения движения (afterStep), -1 - пересчитать
++    bool                            keep     = false;
 +    bool                            inWater  = false;
-+    bool                            calming  = false; // почти легло - движение гасится сильнее
 +
 +  friend class DynamicWorld;
 +  };
@@ -16325,10 +16567,10 @@ index 0000000..bf88d71
 +  };
 diff --git a/common/utils/perfstats.h b/common/utils/perfstats.h
 new file mode 100644
-index 0000000..d1cb84c
+index 0000000..d000a7e
 --- /dev/null
 +++ b/common/utils/perfstats.h
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,17 @@
 +#pragma once
 +
 +#include <atomic>
@@ -16341,7 +16583,10 @@ index 0000000..d1cb84c
 +  static inline std::atomic<uint32_t> npcAnimated{0}; // из них скелет пересчитан в этом кадре
 +  static inline std::atomic<uint32_t> windTotal{0};   // объекты с ветром (трава, деревья)
 +  static inline std::atomic<uint32_t> windUpdated{0}; // из них сдвинуты в этом кадре
-+  static inline std::atomic<uint32_t> ragdolls{0};    // тела регдолла в физике (Ragdoll)
++  static inline std::atomic<uint32_t> ragdolls{0};      // тела регдолла в физике (Ragdoll)
++  static inline std::atomic<uint32_t> ragdollPeak{0};   // наибольшее число тел в физике с прошлой строки [perf]
++  static inline std::atomic<uint32_t> ragdollUs{0};     // время шагов физики с куклами, мкс (с прошлой строки)
++  static inline std::atomic<uint32_t> ragdollFrames{0}; // кадров с куклами в физике (с прошлой строки)
 +  };
 diff --git a/common/utils/workers.cpp b/common/utils/workers.cpp
 index f8badbd..a918201 100644
@@ -16424,7 +16669,7 @@ index b45a9bd..35a566d 100644
      bool                isCracked() const { return isLockCracked; }
      bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..ad32d87 100644
+index e015398..4ee07f5 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -4,10 +4,12 @@
@@ -16652,7 +16897,33 @@ index e015398..ad32d87 100644
    if(isDown()) {
      onNoHealth(dontKill,HS_NoSound);
      return;
-@@ -2247,6 +2339,9 @@ void Npc::tickTimedEvt(Animation::EvCount& ev) {
+@@ -2107,9 +2199,13 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+     }
+ 
+   // throw enemy
++  bool thrown = false;
+   if(hitResult.hasHit && (damageType & (1<<zenkit::DamageType::FLY))) {
+-    mvAlgo.accessDamFly(x-other.x, z-other.z, lastHitType);
++    thrown = mvAlgo.accessDamFly(x-other.x, z-other.z, lastHitType);
+     }
++  // Gothic II Mobile: живой лежит по физике - удар толкает тело
++  if(isRagdollFall() && ragdollHoldsBody())
++    applyRagdollHit();
+ 
+   if(hitResult.value>0) {
+     currentOther = &other;
+@@ -2130,6 +2226,10 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+         }
+       }
+     }
++
++  // Gothic II Mobile: отброшенный ударом (тролль) и устоявший на ногах - летит по физике и встаёт сам
++  if(thrown && !isDown())
++    startRagdollFall();
+   }
+ 
+ void Npc::takeFallDamage(const Vec3& fallSpeed) {
+@@ -2247,6 +2347,9 @@ void Npc::tickTimedEvt(Animation::EvCount& ev) {
          if(auto it = invent.addItem(i.item,1,world())) {
            invent.putToSlot(*this,it->clsId(),i.slot[0]);
            }
@@ -16662,7 +16933,7 @@ index e015398..ad32d87 100644
          break;
          }
        case zenkit::MdsEventType::SET_FIGHT_MODE:
-@@ -2344,6 +2439,14 @@ void Npc::tick(uint64_t dt) {
+@@ -2344,6 +2447,27 @@ void Npc::tick(uint64_t dt) {
  
    tickAnimationTags();
  
@@ -16672,12 +16943,25 @@ index e015398..ad32d87 100644
 +    ragVelocity = (p-ragPrevPos)/float(dt);
 +    ragPrevPos  = p;
 +    }
++  // Gothic II Mobile: летит дольше RagdollFallDelay (обрыв, прыжок с высоты) - дальше падает по физике
++  if(ragdoll==nullptr && (mvAlgo.isInAir() || mvAlgo.isFalling()) && !isDown()) {
++    ragAirTime += dt;
++    if(ragAirTime>=RagdollFallDelay) {
++      startRagdollFall();
++      ragAirTime = 0;
++      }
++    } else {
++    ragAirTime = 0;
++    }
 +  tickRagdoll();
++  // живой лежит по физике: ни ИИ, ни перемещения, пока не встанет
++  if(isRagdollFall() && ragdollHoldsBody())
++    return;
 +
    if(!visual.pose().hasAnim())
      setAnim(AnimationSolver::Idle);
  
-@@ -2380,7 +2483,8 @@ void Npc::tick(uint64_t dt) {
+@@ -2380,7 +2504,8 @@ void Npc::tick(uint64_t dt) {
      if(!isPlayer() && go2.flag!=GT_Flee && faiWaitTime<owner.tickCount() && currentTarget!=nullptr) {
        implTurnToFai(*currentTarget,dt);
        }
@@ -16687,7 +16971,7 @@ index e015398..ad32d87 100644
      return;
      }
  
-@@ -2398,7 +2502,9 @@ void Npc::tick(uint64_t dt) {
+@@ -2398,7 +2523,9 @@ void Npc::tick(uint64_t dt) {
        }
      }
  
@@ -16698,7 +16982,7 @@ index e015398..ad32d87 100644
    implAiTick(dt);
    }
  
-@@ -2529,6 +2635,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2529,6 +2656,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -16710,7 +16994,7 @@ index e015398..ad32d87 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -2579,6 +2690,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2579,6 +2711,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          break;
          }
        else if(bs==BS_UNCONSCIOUS || bs==BS_LIE) {
@@ -16720,7 +17004,7 @@ index e015398..ad32d87 100644
          if(!setAnim(Anim::Idle))
            queue.pushFront(std::move(act)); else
            implAniWait(visual.pose().animationTotalTime());
-@@ -2593,14 +2707,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2593,14 +2728,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_EquipArmor:
        invent.equipArmor(act.i0,*this);
        break;
@@ -16743,7 +17027,7 @@ index e015398..ad32d87 100644
        break;
      case AI_UseMob: {
        if(act.i0<0) {
-@@ -3504,6 +3623,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -3504,6 +3644,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -16752,7 +17036,7 @@ index e015398..ad32d87 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +3914,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +3935,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
@@ -16763,7 +17047,7 @@ index e015398..ad32d87 100644
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -3836,6 +3961,12 @@ bool Npc::finishingMove() {
+@@ -3836,6 +3982,12 @@ bool Npc::finishingMove() {
      return false;
  
    if(doAttack(Anim::AttackFinish,BS_HIT)) {
@@ -16776,7 +17060,7 @@ index e015398..ad32d87 100644
      currentTarget->hnpc->attribute[ATR_HITPOINTS] = 0;
      currentTarget->checkHealth(true,false);
      owner.sendPassivePerc(*this,*this,*currentTarget,PERC_ASSESSMURDER);
-@@ -4158,10 +4289,69 @@ bool Npc::isPrehit() const {
+@@ -4158,10 +4310,69 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -16846,7 +17130,7 @@ index e015398..ad32d87 100644
  void Npc::setPerceptionTime(uint64_t time) {
    perceptionTime = time;
    }
-@@ -4238,6 +4428,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4449,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -16857,7 +17141,7 @@ index e015398..ad32d87 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4292,6 +4486,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
+@@ -4292,6 +4507,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
  void Npc::quitInteraction() {
    if(currentInteract==nullptr)
      return;
@@ -16867,7 +17151,7 @@ index e015398..ad32d87 100644
    if(invTorch)
      processDefInvTorch();
    setDirectionY(0);
-@@ -4356,6 +4553,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4574,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -16905,7 +17189,7 @@ index e015398..ad32d87 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4818,7 +5046,300 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4818,7 +5067,405 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
      durtyTranform = 0;
      }
  
@@ -16978,12 +17262,97 @@ index e015398..ad32d87 100644
 +        break;
 +      }
 +    }
-+  // далеко от камеры падение никто не увидит - по анимации, физика не бесплатна;
++  // далеко от героя и камеры падение никто не разглядит - по анимации, физика не бесплатна;
 +  // без камеры (мир ещё загружается, убитые скриптом при старте) - тоже
-+  auto camera = Gothic::inst().camera();
-+  if(camera==nullptr || (camera->originLwc()-position()).length()>6000.f)
++  float dist = 0;
++  bool  keep = false;
++  if(!ragdollViewDistance(dist,keep) || dist>Ragdoll::StartDist)
 +    return false;
 +  return true;
++  }
++
++bool Npc::ragdollViewDistance(float& dist, bool& keep) const {
++  // ближнее из расстояний до камеры и до героя; кукла героя - в бюджете физики последней
++  auto camera = Gothic::inst().camera();
++  if(camera==nullptr)
++    return false;
++  dist = (camera->originLwc()-position()).length();
++  if(auto pl = owner.player())
++    dist = std::min(dist, (pl->position()-position()).length());
++  keep = isPlayer();
++  return true;
++  }
++
++bool Npc::isRagdollFall() const {
++  return ragdoll!=nullptr && ragdoll->state()==Ragdoll::S_Fall;
++  }
++
++bool Npc::ragdollFallAllowed() const {
++  // Живой падает по физике только человеком: встаёт он анимацией подъёма раненого (на спине и на животе)
++  if(!Gothic::options().ragdollFall || ragdoll!=nullptr || isDown())
++    return false;
++  if(interactive()!=nullptr || isSwim() || isDive() || mvAlgo.isClimb())
++    return false;
++  if(!ragdollAllowed())
++    return false;
++  for(auto name:{"S_WOUNDED","S_WOUNDEDB","T_WOUNDED_2_STAND","T_WOUNDEDB_2_STAND"})
++    if(visual.findSequence(name)==nullptr)
++      return false;
++  // под ногами вода - нырнёт, как в игре
++  const auto wr = owner.physic()->waterRay(position(), 0.f);
++  if(wr.hasCol)
++    return false;
++  return true;
++  }
++
++void Npc::startRagdollFall() {
++  if(!ragdollFallAllowed())
++    return;
++  auto sk = visual.visualSkeleton();
++  if(sk==nullptr)
++    return;
++  auto& pose = visual.pose();
++  const auto root = pose.rootBone();
++  if((Vec3(root.at(3,0),root.at(3,1),root.at(3,2))-position()).length()>500.f)
++    return;
++  float dist = 0;
++  bool  keep = false;
++  ragdollViewDistance(dist,keep);
++  ragdoll = Ragdoll::create(*owner.physic(), *sk, pose.transform(), pose.boneCount(), Ragdoll::S_Fall, dist, keep);
++  if(ragdoll==nullptr)
++    return;
++  Vec3 v = ragVelocity*10.f; // см/мс -> м/с
++  if(v.length()>40.f)
++    v = Vec3();
++  ragdoll->setVelocity(v);
++  applyRagdollHit();
++  ragBlendStart = 0;
++  ragPushedVer  = 0;
++  ragFollowVer  = 0;
++  ragAirTime    = 0;
++  // падение ведёт кукла: урон от удара о землю - по ней (tickRagdollFall), у перемещения анимацией - без падения
++  mvAlgo.clearFall();
++  Log::i("[g2m] ragdoll: \"",displayName(),"\" falls alive, ",int(v.length()+0.5f)," m/s");
++  }
++
++void Npc::tickRagdollFall() {
++  followRagdoll();
++  // удар о землю - урон от падения по правилам игры (MoveAlgo на приземлении): разбился - лежит дальше как
++  // убитый или без сознания (onNoHealth -> startRagdoll меняет состояние куклы)
++  if(const float v = ragdoll->takeImpact(); v>0.f) {
++    takeFallDamage(Vec3(0,-v*0.1f,0)); // м/с -> см/мс
++    if(ragdoll==nullptr || ragdoll->state()!=Ragdoll::S_Fall)
++      return;
++    }
++  // лежит не меньше RagdollFallHold, потом встаёт, как только тело улеглось (или застыло: срок, бюджет, дальность)
++  const uint64_t t       = ragdoll->simulatedTime();
++  const bool     settled = !ragdoll->isAirborne() && (ragdoll->isCalm(300) || t>=RagdollFallLimit);
++  if(ragdoll->isSimulated() && (t<RagdollFallHold || !settled))
++    return;
++  ragdollGetUp();
++  setAnim(Anim::Idle);
++  if(!isPlayer())
++    implAniWait(visual.pose().animationTotalTime());
 +  }
 +
 +void Npc::applyRagdollHit() {
@@ -17022,7 +17391,11 @@ index e015398..ad32d87 100644
 +  const auto root = pose.rootBone();
 +  if((Vec3(root.at(3,0),root.at(3,1),root.at(3,2))-position()).length()>500.f)
 +    return;
-+  ragdoll = Ragdoll::create(*owner.physic(), *sk, pose.transform(), pose.boneCount(), st);
++  float dist = 0;
++  bool  keep = false;
++  ragdollViewDistance(dist,keep);
++  // в физике нет места (большая драка) - падает анимацией игры, как без регдолла
++  ragdoll = Ragdoll::create(*owner.physic(), *sk, pose.transform(), pose.boneCount(), st, dist, keep);
 +  if(ragdoll==nullptr)
 +    return;
 +
@@ -17040,6 +17413,21 @@ index e015398..ad32d87 100644
 +  if(ragdoll==nullptr)
 +    return;
 +  if(ragBlendStart==0) {
++    // дальние куклы считаются проще; ушли от тела далеко - оно застывает (но не посреди падения: замерло бы стоя)
++    if(ragdoll->isSimulated()) {
++      float dist = 0;
++      bool  keep = false;
++      if(ragdollViewDistance(dist,keep)) {
++        ragdoll->setViewDistance(dist,keep);
++        if(!keep && dist>Ragdoll::FreezeDist &&
++           (ragdoll->simulatedTime()>=Ragdoll::SettleMinTime || dist>2.f*Ragdoll::FreezeDist))
++          ragdoll->freeze();
++        }
++      }
++    if(ragdoll->state()==Ragdoll::S_Fall) {
++      tickRagdollFall();
++      return;
++      }
 +    const auto bs = bodyStateMasked();
 +    if(!isDown() && bs!=BS_DEAD && bs!=BS_UNCONSCIOUS && bs!=BS_LIE) {
 +      // ожил не через AI_StandUp (скрипт, превращение): поза куклы просто переходит в анимацию
@@ -17168,7 +17556,8 @@ index e015398..ad32d87 100644
 +  }
 +
 +void Npc::saveRagdoll(Serialize& fout, size_t id, std::string_view directory) const {
-+  if(ragdoll==nullptr || ragBlendStart!=0)
++  // живой падающий в сохранение не пишется: после загрузки стоит там, где лежал
++  if(ragdoll==nullptr || ragBlendStart!=0 || ragdoll->state()==Ragdoll::S_Fall)
 +    return;
 +  // поза тела - относительно NPC; при загрузке тело лежит так же, без физики, пока его не толкнут
 +  fout.setEntry("worlds/",fout.worldName(),directory,id,"/ragdoll");
@@ -17207,7 +17596,7 @@ index e015398..ad32d87 100644
 +  ragFollowVer = ragdoll!=nullptr ? ragdoll->version() : 0;
 +  }
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..7ee9be1 100644
+index 7309936..720e324 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
 @@ -10,6 +10,7 @@
@@ -17226,7 +17615,7 @@ index 7309936..7ee9be1 100644
  
  class Npc final {
    public:
-@@ -137,6 +139,18 @@ class Npc final {
+@@ -137,6 +139,20 @@ class Npc final {
  
      void       updateAnimation(uint64_t dt, bool force = false);
      void       updateTransform();
@@ -17242,10 +17631,12 @@ index 7309936..7ee9be1 100644
 +    void       updateAnimationLod();                         // пересчитать за всё накопленное время
 +    // Gothic II Mobile: тело лежит по физике (регдолл), а не по анимации
 +    bool       hasRagdoll() const { return ragdoll!=nullptr; }
++    // Живой падает по физике (долгое падение, отброшен ударом) и ещё не встал: управление героем не действует
++    bool       isRagdollFall() const;
  
      std::string_view displayName() const;
      auto       displayPosition() const -> Tempest::Vec3;
-@@ -289,7 +303,68 @@ class Npc final {
+@@ -289,7 +305,68 @@ class Npc final {
  
      bool      isAttackAnim() const;
      bool      isPrehit() const;
@@ -17314,7 +17705,7 @@ index 7309936..7ee9be1 100644
  
      void      setPerceptionTime   (uint64_t time);
      void      setPerceptionEnable (PercType t, size_t fn);
-@@ -456,6 +531,7 @@ class Npc final {
+@@ -456,6 +533,7 @@ class Npc final {
        Npc*             npc  = nullptr;
        const WayPoint*  wp   = nullptr;
        Tempest::Vec3    pos  = {};
@@ -17322,7 +17713,7 @@ index 7309936..7ee9be1 100644
  
        void             save(Serialize& fout) const;
        void             load(Serialize&  fin);
-@@ -514,6 +590,17 @@ class Npc final {
+@@ -514,6 +592,21 @@ class Npc final {
      Npc*      updateNearestBody();
      bool      checkHealth(bool onChange, bool forceKill);
      void      onNoHealth(bool death, HitSound sndMask);
@@ -17333,6 +17724,10 @@ index 7309936..7ee9be1 100644
 +    void      tickRagdoll();
 +    void      followRagdoll();
 +    void      ragdollGetUp();
++    bool      ragdollViewDistance(float& dist, bool& keep) const;
++    bool      ragdollFallAllowed() const;
++    void      startRagdollFall();
++    void      tickRagdollFall();
 +    void      pushRagdollPose();
 +    bool      ragdollHoldsBody() const { return ragdoll!=nullptr && ragBlendStart==0; }
 +    void      saveRagdoll(Serialize& fout, size_t id, std::string_view directory) const;
@@ -17340,7 +17735,7 @@ index 7309936..7ee9be1 100644
      bool      hasAutoroll() const;
      bool      prepareTurn();
      void      stopWalkAnimation();
-@@ -555,10 +642,29 @@ class Npc final {
+@@ -555,10 +648,33 @@ class Npc final {
  
      // visual props (cache)
      uint8_t                        durtyTranform=0;
@@ -17356,7 +17751,10 @@ index 7309936..7ee9be1 100644
 +      float                        power = 0;
 +      uint64_t                     time  = 0;
 +      };
-+    static constexpr uint64_t      RagdollBlendTime = 450; // мс
++    static constexpr uint64_t      RagdollBlendTime = 450;  // мс
++    static constexpr uint64_t      RagdollFallDelay = 1000; // мс в полёте: дальше живой падает по физике
++    static constexpr uint64_t      RagdollFallHold  = 3000; // мс: столько живой лежит по физике, прежде чем встать
++    static constexpr uint64_t      RagdollFallLimit = 6000; // мс: дольше не ждёт, пока тело улежится
 +    std::unique_ptr<Ragdoll>       ragdoll;
 +    RagdollHit                     ragHit;
 +    uint64_t                       ragBlendStart = 0;
@@ -17366,11 +17764,12 @@ index 7309936..7ee9be1 100644
 +    std::vector<Tempest::Matrix4x4> ragLocal;
 +    Tempest::Vec3                  ragPrevPos    = {};
 +    Tempest::Vec3                  ragVelocity   = {}; // см/мс
++    uint64_t                       ragAirTime    = 0;  // мс в полёте (MoveAlgo: InAir, Falling)
 +
      WalkBit                        wlkMode                 =WalkBit::WM_Run;
      int32_t                        trGuild                 =GIL_NONE;
      int32_t                        talentsSk[TALENT_MAX_G2]={};
-@@ -608,6 +714,8 @@ class Npc final {
+@@ -608,6 +724,8 @@ class Npc final {
      AiQueue                        aiQueue;
      AiQueue                        aiQueueOverlay;
      std::vector<Routine>           routines;
@@ -17379,7 +17778,7 @@ index 7309936..7ee9be1 100644
  
      Interactive*                   currentInteract=nullptr;
      Npc*                           currentOther   =nullptr;
-@@ -629,6 +737,7 @@ class Npc final {
+@@ -629,6 +747,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;

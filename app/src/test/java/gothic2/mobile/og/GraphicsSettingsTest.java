@@ -116,13 +116,28 @@ public class GraphicsSettingsTest {
     @Test
     public void ragdollIsOnByDefaultAndNotPartOfPresets() {
         GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
-        // ключ читает Gothic::Gothic (patch движка): ragdoll=1 - тела падают по физике
+        // ключи читает Gothic::Gothic (patch движка): ragdoll=1 - тела падают по физике, ragdollFall=1 - и живые
         assertTrue(g.iniText().contains("\nragdoll=1\n"));
-        assertEquals("Падение побеждённых: по физике", g.label(GraphicsSettings.RAGDOLL));
+        assertTrue(g.iniText().contains("\nragdollFall=1\n"));
+        assertTrue(g.isOn(GraphicsSettings.RAGDOLL));
+        assertTrue(GraphicsSettings.RAGDOLL.check);
         g.applyPreset(GraphicsSettings.ECONOMY_PRESET);
         assertTrue(g.iniText().contains("\nragdoll=1\n"));
-        g.cycle(GraphicsSettings.RAGDOLL);
+        g.setOn(GraphicsSettings.RAGDOLL, false);
+        assertFalse(g.isOn(GraphicsSettings.RAGDOLL));
         assertTrue(g.iniText().contains("\nragdoll=0\n"));
         assertEquals(GraphicsSettings.ECONOMY_PRESET, g.currentPreset());
+        g.setOn(GraphicsSettings.RAGDOLL_FALL, false);
+        assertTrue(g.iniText().contains("\nragdollFall=0\n"));
+        g.setOn(GraphicsSettings.RAGDOLL, true);
+        assertTrue(g.iniText().contains("\nragdoll=1\n"));
+    }
+
+    @Test
+    public void ragdollKeepsOldSetting() {
+        // прежняя версия хранила тот же ключ с вариантами «по физике»/«анимацией игры» - значение не меняется
+        MemoryPrefs prefs = new MemoryPrefs();
+        prefs.values.put(GraphicsSettings.RAGDOLL.key, 1);
+        assertFalse(new GraphicsSettings(prefs).isOn(GraphicsSettings.RAGDOLL));
     }
 }

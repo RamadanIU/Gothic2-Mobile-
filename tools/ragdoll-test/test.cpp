@@ -17,6 +17,7 @@
 using namespace Tempest;
 
 extern float waterLevel;
+extern bool  meshGround;
 
 struct Bone { const char* name; int parent; Vec3 at; };
 
@@ -202,7 +203,70 @@ static Result run(DynamicWorld& dw, const Skeleton& sk, const char* title, Vec3 
 
 static zenkit::AnimationSample toSampleCopy(const Matrix4x4& m);
 
-int main() {
+static std::unique_ptr<Ragdoll> spawn(DynamicWorld& dw, const Skeleton& sk, Vec3 at, float rotY, Ragdoll::State st,
+                                      Vec3 hitDir, float power) {
+  std::vector<Matrix4x4> bones(sk.tr.size());
+  Matrix4x4 obj = Matrix4x4::mkIdentity();
+  obj.translate(at);
+  obj.rotateOY(rotY);
+  for(size_t k=0;k<bones.size();++k) bones[k] = obj*sk.tr[k];
+  auto r = Ragdoll::create(dw,sk,bones.data(),bones.size(),st);
+  if(r && power>0) {
+    Ragdoll::Hit h; h.at = org(bones[12]); h.dir = hitDir; h.power = power;
+    r->hit(h);
+    }
+  return r;
+  }
+
+// Нагрузка на земле из треугольников (как земля мира игры): N тел падают от ударов, мс на кадр, пока есть куклы.
+// Запуск: ragtest perf
+static int perf() {
+  zenkit::Mesh mesh;
+  DynamicWorld dw(nullptr,mesh);
+  auto hum = mkSkeleton(human(),"HUMANS.MDH");
+  auto wlf = mkSkeleton(wolf(),"WOLF.MDH");
+  auto bench = [&](const char* title, int n, float dist) {
+    std::vector<std::unique_ptr<Ragdoll>> rs;
+    for(int i=0;i<n;++i) {
+      auto r = spawn(dw, i%3==2 ? *wlf : *hum, Vec3(float(i%4)*150.f-200.f, 0, float(i/4)*150.f), float(i)*40.f,
+                     Ragdoll::S_Dead, Vec3(std::cos(float(i)),0,std::sin(float(i))), 3.5f);
+      if(r==nullptr)
+        continue;
+#ifndef OLD_API
+      r->setViewDistance(dist,false);
+#else
+      (void)dist;
+#endif
+      rs.push_back(std::move(r));
+      }
+    double total = 0, worst = 0; int frames = 0; float last = 0;
+    for(int f=0; f<400; ++f) {
+      size_t sim = 0;
+      for(auto& r:rs) sim += r->isSimulated();
+      if(sim==0) break;
+      auto t0 = std::chrono::steady_clock::now();
+      dw.tick(33);
+      double ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
+      total += ms; worst = std::max(worst,ms); frames++; last = float(f+1)*0.033f;
+      }
+    std::printf("%-30s %5.2f ms/frame avg, worst %5.2f ms, physics %.2f s, total %.0f ms\n",
+                title, total/std::max(frames,1), worst, double(last), total);
+    };
+  for(int k=0;k<2;++k) {
+    bench("1 body, near",          1,  500);
+    bench("4 bodies, near",        4,  500);
+    bench("4 bodies, 20 m",        4, 2000);
+    bench("4 bodies, far (32 m)",  4, 3200);
+    bench("8 bodies, near",        8,  500);
+    }
+  return 0;
+  }
+
+int main(int argc, char** argv) {
+  if(argc>1 && std::string(argv[1])=="perf") {
+    meshGround = true;
+    return perf();
+    }
   zenkit::Mesh mesh;
   DynamicWorld dw(nullptr,mesh);
   auto hum = mkSkeleton(human(),"HUMANS.MDH");
@@ -216,7 +280,9 @@ int main() {
 
   int fail = 0;
   auto check = [&](const Result& r, bool human, float frontSign) {
-    bool ok = r.ok && r.frozenAt>0 && r.maxSep<6.f && r.pelvisY<40.f && r.pelvisY>-5.f;
+    // застывает не позже срока в физике (Ragdoll::LiveTime), а не лежит в физике до полной остановки
+    bool ok = r.ok && r.frozenAt>0 && r.frozenAt<=float(Ragdoll::LiveTime)/1000.f+0.05f &&
+              r.maxSep<6.f && r.pelvisY<40.f && r.pelvisY>-5.f;
     if(human) ok = ok && r.kneeMin>-12 && r.kneeMax<155 && r.elbowMin>-16 && r.elbowMax<160;
     if(frontSign!=0) ok = ok && (r.chestFrontY*frontSign>0.2f);
     if(!ok) { fail++; std::printf("   ^^^ FAIL\n"); }
@@ -245,25 +311,84 @@ int main() {
       obj.translate(float(i%3)*40.f, float(i/3)*60.f, float(i%2)*30.f);
       obj.rotateOY(float(i)*45.f);
       for(size_t k=0;k<bones.size();++k) bones[k] = obj*hum->tr[k];
-      rs.push_back(Ragdoll::create(dw,*hum,bones.data(),bones.size(),Ragdoll::S_Dead));
+      auto r = Ragdoll::create(dw,*hum,bones.data(),bones.size(),Ragdoll::S_Dead);
+      if(r==nullptr)
+        continue; // в физике нет места: это тело упало бы анимацией игры
       Ragdoll::Hit h; h.at = org(bones[12]); h.dir = Vec3(1,0,0); h.power = 3.f;
-      rs.back()->hit(h);
+      r->hit(h);
+      rs.push_back(std::move(r));
       }
-    double worst = 0, total = 0; int frames = 0;
+    std::printf("8 bodies at once: %d got ragdoll (budget %d), the rest - animation\n", int(rs.size()), int(Ragdoll::MaxSimulated));
+    if(rs.size()!=Ragdoll::MaxSimulated) fail++;
+    double worst = 0, total = 0; int frames = 0; size_t maxSim = 0;
     for(int f=0; f<300; ++f) {
       auto t0 = std::chrono::steady_clock::now();
       dw.tick(33);
       double ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
       worst = std::max(worst,ms); total += ms; frames++;
+      maxSim = std::max(maxSim, dw.ragdollsSimulated());
       }
     int sim = 0; for(auto& r:rs) sim += r->isSimulated();
-    std::printf("8 bodies pile: avg %.2f ms/frame, worst %.2f ms (x86, 30 fps), still simulated: %d\n", total/frames, worst, sim);
+    std::printf("8 bodies pile: avg %.2f ms/frame, worst %.2f ms (x86, 30 fps), at once: %d (max %d), still simulated: %d\n",
+                total/frames, worst, int(maxSim), int(Ragdoll::MaxSimulated), sim);
+    if(maxSim>Ragdoll::MaxSimulated) { fail++; std::printf("   ^^^ FAIL: budget\n"); }
     Ragdoll::Hit h; h.at = rs[0]->chestPosition(); h.dir = Vec3(0,0,1); h.power = 4.f;
     rs[0]->hit(h);
     std::printf("hit frozen corpse: simulated=%d\n", int(rs[0]->isSimulated()));
     for(int f=0; f<200; ++f) dw.tick(33);
     std::printf("after 6.6 s: simulated=%d pelvis.y=%.0f\n", int(rs[0]->isSimulated()), double(rs[0]->rootPosition().y));
     if(sim!=0 || rs[0]->isSimulated()) fail++;
+  }
+
+  // бюджет: место новому телу освобождает дальнее уже упавшее; падающее ещё - не трогается; герой - сверх бюджета
+  {
+    auto mk = [&](float x, float dist, bool keep) {
+      std::vector<Matrix4x4> bones(hum->tr.size());
+      Matrix4x4 obj = Matrix4x4::mkIdentity();
+      obj.translate(x,0,300);
+      for(size_t k=0;k<bones.size();++k) bones[k] = obj*hum->tr[k];
+      return Ragdoll::create(dw,*hum,bones.data(),bones.size(),Ragdoll::S_Dead,dist,keep);
+      };
+    std::vector<std::unique_ptr<Ragdoll>> rs;
+    for(int i=0;i<4;++i)
+      rs.push_back(mk(float(i)*150.f, float(i)*500.f, false));
+    auto early = mk(700, 100, false); // все ещё падают - места нет
+    for(int f=0; f<30; ++f) dw.tick(33);
+    auto nearOne = mk(800, 200, false);   // освобождает место: застывает дальнее (1500 см)
+    auto farOne  = mk(950, 4000, false);  // дальше всех - анимацией
+    auto hero    = mk(1100, 0, true);     // сверх бюджета
+    const bool ok = early==nullptr && nearOne!=nullptr && farOne==nullptr && hero!=nullptr &&
+                    rs[0]->isSimulated() && rs[1]->isSimulated() && rs[2]->isSimulated() && !rs[3]->isSimulated() &&
+                    dw.ragdollsSimulated()==Ragdoll::MaxSimulated+1;
+    std::printf("budget: falling ones kept, far settled one frozen for a near one, far new one - animation, hero extra: %s\n",
+                ok ? "yes" : "no ^^^ FAIL");
+    if(!ok) fail++;
+    for(int f=0; f<120; ++f) dw.tick(33);
+  }
+
+  // живой падает с обрыва (S_Fall): не застывает по сроку мёртвых, удар о землю - со скоростью падения
+  {
+    auto r = spawn(dw,*hum,Vec3(0,600,-400),0,Ragdoll::S_Fall,Vec3(),0);
+    float impact = 0, t = 0;
+    for(; t<4.f; t+=0.033f) {
+      dw.tick(33);
+      impact = std::max(impact, r->takeImpact());
+      }
+    const float expect = std::sqrt(2.f*DynamicWorld::gravityMS*(6.f+0.85f)); // таз - на 95 см, лёг на 10 см
+    const bool  ok     = r->isSimulated() && impact>0.8f*expect && impact<1.15f*expect;
+    std::printf("fall 6 m alive: impact %.1f m/s (free fall %.1f), simulated at 4 s: %d %s\n",
+                double(impact), double(expect), int(r->isSimulated()), ok ? "" : "^^^ FAIL");
+    if(!ok) fail++;
+    for(int f=0; f<200 && r->isSimulated(); ++f) dw.tick(33);
+    if(r->isSimulated()) { fail++; std::printf("   ^^^ FAIL: alive ragdoll never expires\n"); }
+    // в воду - без удара
+    waterLevel = 200;
+    auto w = spawn(dw,*hum,Vec3(300,600,-400),0,Ragdoll::S_Fall,Vec3(),0);
+    float wi = 0;
+    for(int f=0; f<90; ++f) { dw.tick(33); wi = std::max(wi, w->takeImpact()); }
+    waterLevel = -1e9f;
+    std::printf("fall 6 m into water: impact %.1f m/s %s\n", double(wi), wi==0 ? "" : "^^^ FAIL");
+    if(wi!=0) fail++;
   }
 
   // поворот матрица -> кватернион -> матрица (Pose::toSample против mkMatrix)
