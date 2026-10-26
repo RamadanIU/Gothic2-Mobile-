@@ -68,11 +68,9 @@ import gothic2.mobile.core.input.OverlayLayout
 import gothic2.mobile.core.input.TouchCommand
 import gothic2.mobile.core.input.TouchRouter
 import gothic2.mobile.core.runtime.BinaryFix
-import gothic2.mobile.core.runtime.FileReplacement
 import gothic2.mobile.core.runtime.SessionController
 import gothic2.mobile.core.saves.SaveBackupPolicy
 import java.io.File
-import java.nio.file.Path
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -283,25 +281,9 @@ class GameActivity : XServerDisplayActivity() {
         }
     }
 
-    /**
-     * Файлы контейнера распакованы, Wine ещё не запущен (фоновый поток Winlator). В режимах D7VK
-     * Winlator каждый раз кладёт свой D7VK 1.11 — меняем его на нашу сборку (чёрные далёкие
-     * объекты, см. FileReplacement.D7VK_1_11_GOTHIC). В режимах WineD3D там ddraw Wine — он не трогается.
-     */
+    /** Файлы контейнера распакованы, Wine ещё не запущен (фоновый поток Winlator). */
     override fun onWineSystemFilesReady() {
         val ddraw = File(container.rootDir, ".wine/drive_c/windows/syswow64/ddraw.dll").toPath()
-        val replaced = runCatching { FileReplacement.D7VK_1_11_GOTHIC.apply(ddraw) { assets.open(GraphicsMode.D7VK_ASSET) } }
-            .onFailure { app.diagnostics.log("launch", "d7vk build failed: $it") }
-            .getOrNull()
-        when (replaced) {
-            FileReplacement.Result.INSTALLED -> app.diagnostics.log("launch", "d7vk: patched build (mip upload, GetCaps)")
-            FileReplacement.Result.ALREADY_INSTALLED -> Unit
-            // Своей сборки нет или она не встала — хотя бы без падения при запуске.
-            else -> fixD7vkCaps(ddraw)
-        }
-    }
-
-    private fun fixD7vkCaps(ddraw: Path) {
         val result = runCatching { BinaryFix.D7VK_1_11_HEL_CAPS.apply(ddraw) }
             .onFailure { app.diagnostics.log("launch", "d7vk fix failed: $it") }
             .getOrNull()

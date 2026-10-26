@@ -1,8 +1,6 @@
 package gothic2.mobile.app.runtime
 
-import gothic2.mobile.core.runtime.FileReplacement
 import java.io.File
-import java.nio.file.Files
 import javax.xml.parsers.DocumentBuilderFactory
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -19,15 +17,6 @@ class GraphicsModeTest {
         // Выбор игрока важнее видеокарты; неизвестный id — режим по умолчанию.
         assertEquals(GraphicsMode.WINED3D_ZINK_TURNIP, GraphicsMode.of("wined3d_zink_turnip", "Adreno (TM) 740"))
         assertEquals(GraphicsMode.D7VK_TURNIP, GraphicsMode.of("removed", "Adreno (TM) 740"))
-    }
-
-    @Test
-    fun `bundled D7VK build matches the checksum it is installed with`() {
-        // После пересборки (tools/build-d7vk.sh) сумма в FileReplacement.D7VK_1_11_GOTHIC обновляется.
-        val asset = File("src/main/assets", GraphicsMode.D7VK_ASSET)
-        val target = Files.createTempDirectory("g2d7vk").resolve("ddraw.dll")
-        Files.copy(asset.toPath(), target)
-        assertEquals(FileReplacement.Result.ALREADY_INSTALLED, FileReplacement.D7VK_1_11_GOTHIC.apply(target) { asset.inputStream() })
     }
 
     @Test
