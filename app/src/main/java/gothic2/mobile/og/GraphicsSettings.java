@@ -84,7 +84,15 @@ final class GraphicsSettings {
     static final Option OCCLUSION = new Option("gfx_occlusion", "occlusion",
         "Не рисовать заслонённое (быстрее; выключи, если пропадают стены)",
         new String[]{"включено", "выключено"}, new String[]{"1", "0"}, true);
-    static final Option[] EXTRA = {SHOW_FPS, RAGDOLL, RAGDOLL_FALL, OCCLUSION};
+    /**
+     * Освещение: в движке тени почти чёрные, а освещённое солнцем — очень яркое. «Мягкое» подсвечивает тени и не
+     * давит тёмные тона, «светлое» — сильнее, «контрастное» — как в движке. Дело вкуса, а не скорости: в наборы
+     * не входит, по умолчанию — первый вариант (ключ lighting читает Gothic::Gothic).
+     */
+    static final Option LIGHTING = new Option("gfx_lighting", "lighting", "Освещение",
+        new String[]{"мягкое — тени видны", "светлое — тени ещё светлее", "контрастное — тёмные тени, как раньше"},
+        new String[]{"1", "2", "0"});
+    static final Option[] EXTRA = {LIGHTING, SHOW_FPS, RAGDOLL, RAGDOLL_FALL, OCCLUSION};
 
     /** Готовые наборы: индексы вариантов в порядке {@link #ALL}. */
     static final String[] PRESET_NAMES = {"Экономно", "Сбалансированно", "Красиво"};

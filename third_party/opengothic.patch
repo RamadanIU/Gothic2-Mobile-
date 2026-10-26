@@ -8214,7 +8214,7 @@ index 0000000..915c632
 +    static void             resolve(World& w, std::vector<Spot>& out);
 +  };
 diff --git a/common/gothic.cpp b/common/gothic.cpp
-index 56c5d58..a2c6203 100644
+index 56c5d58..445eb1e 100644
 --- a/common/gothic.cpp
 +++ b/common/gothic.cpp
 @@ -18,6 +18,7 @@
@@ -8251,7 +8251,7 @@ index 56c5d58..a2c6203 100644
          }
        if(FileExt::hasExt(file, u"mod")) {
          // Remove all *.mod files, that are not listed in modvdfs
-@@ -149,6 +160,40 @@ Gothic::Gothic(GameModDescriptor desc) {
+@@ -149,6 +160,49 @@ Gothic::Gothic(GameModDescriptor desc) {
      iniFile->set("INTERNAL", "vidResIndex", 0); // full-res
      }
    {
@@ -8274,6 +8274,15 @@ index 56c5d58..a2c6203 100644
 +    opts.ragdoll          = g2m.getI("GRAPHICS","ragdoll",1)!=0;
 +    opts.ragdollFall      = opts.ragdoll && g2m.getI("GRAPHICS","ragdollFall",1)!=0;
 +    opts.occlusion        = g2m.getI("GRAPHICS","occlusion",1)!=0;
++    // Освещение: в движке тени почти чёрные (рассеянный свет слабый, а кривая ACES ещё и давит тёмные тона),
++    // а солнечное - очень яркое. Мягкое и светлое - подсветка теней и мягкий низ кривой (Renderer::drawTonemapping)
++    opts.lighting         = std::clamp(g2m.getI("GRAPHICS","lighting",1), 0, 2);
++    static const float ambientMul[]  = {1.f, 1.7f,  2.4f};
++    static const float toneToe[]     = {0.f, 0.6f,  0.9f};
++    static const float exposureMul[] = {1.f, 0.92f, 0.9f};
++    opts.ambientMul       = ambientMul [opts.lighting];
++    opts.toneToe          = toneToe    [opts.lighting];
++    opts.exposureMul      = exposureMul[opts.lighting];
 +    if(g2m.getI("GRAPHICS","showFps",0)!=0)
 +      setFRate(true);
 +    if(g2m.has("GRAPHICS","windRange")) {
@@ -8284,7 +8293,7 @@ index 56c5d58..a2c6203 100644
 +    Tempest::Log::i("[g2m] graphics: fps=",opts.fpsLimit," res=",iniFile->getI("INTERNAL","vidResIndex"),
 +                    " shadows=",int(opts.shadowResolution)," view=",int(opts.viewDistance/100.f),"m detail=",opts.detailRatio,
 +                    " upscale=",(opts.sharpUpscale ? "sharp" : "bilinear")," animLod=",int(opts.animLod)," ragdoll=",int(opts.ragdoll),"/",int(opts.ragdollFall),
-+                    " occlusion=",int(opts.occlusion),
++                    " occlusion=",int(opts.occlusion)," lighting=",opts.lighting,
 +                    " wind=",int(iniFile->getI("ENGINE","zWindEnabled")!=0 ? opts.windRange/100.f : 0.f),"m");
 +    }
 +  }
@@ -8292,7 +8301,7 @@ index 56c5d58..a2c6203 100644
    defaults.reset(new IniFile());
    defaults->set("GAME", "enableMouse",         1);
    defaults->set("GAME", "mouseSensitivity",    0.5f);
-@@ -644,7 +689,12 @@ void Gothic::updateAnimation(uint64_t dt) {
+@@ -644,7 +698,12 @@ void Gothic::updateAnimation(uint64_t dt) {
    }
  
  void Gothic::quickSave() {
@@ -8305,7 +8314,7 @@ index 56c5d58..a2c6203 100644
    }
  
  void Gothic::quickLoad() {
-@@ -749,27 +799,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
+@@ -749,27 +808,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
    }
  
  zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const ScriptLang lang) {
@@ -8353,7 +8362,7 @@ index 56c5d58..a2c6203 100644
    if(!FileUtil::exists(path) && int(lang)>=0) {
      gscript = CommandLine::inst().scriptPath(lang);
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
-@@ -783,6 +844,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
+@@ -783,6 +853,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
      }
  
@@ -8362,10 +8371,10 @@ index 56c5d58..a2c6203 100644
    zenkit::DaedalusScript script;
    script.load(buf.get());
 diff --git a/common/gothic.h b/common/gothic.h
-index 2654cc4..48b2670 100644
+index 2654cc4..1b8f955 100644
 --- a/common/gothic.h
 +++ b/common/gothic.h
-@@ -71,11 +71,26 @@ class Gothic final {
+@@ -71,11 +71,31 @@ class Gothic final {
        bool     showHealthBar     = true;
        uint8_t  showManaBar       = 2;
        uint8_t  showSwimBar       = 1;
@@ -8380,6 +8389,11 @@ index 2654cc4..48b2670 100644
 +      bool     ragdoll           = true; // убитые и оглушённые падают по физике (physics/ragdoll.h)
 +      bool     ragdollFall       = true; // и живые: долгое падение (больше 1 с), удар, отбрасывающий тело (тролль)
 +      bool     occlusion         = true; // не рисовать заслонённое (HiZ); выключить - проверить пропадающие стены
++      // освещение (ключ lighting): 0 - контрастное, как в движке; 1 - мягкое (по умолчанию); 2 - светлое
++      int      lighting          = 1;
++      float    ambientMul        = 1.7f;  // рассеянный свет (то, что видно в тени) - во столько раз сильнее
++      float    toneToe           = 0.6f;  // тёмные тона не давятся кривой ACES: 0 - давятся, как в движке
++      float    exposureMul       = 0.92f; // общая яркость: светлое не становится ярче от подсветки теней
        };
  
      auto         version() const -> const VersionInfo&;
@@ -8392,7 +8406,7 @@ index 2654cc4..48b2670 100644
      bool         isInGameAndAlive() const;
  
      std::string_view defaultWorld()       const;
-@@ -257,6 +272,7 @@ class Gothic final {
+@@ -257,6 +277,7 @@ class Gothic final {
  
      std::mutex                              syncSnd;
      Tempest::SoundDevice                    sndDev;
@@ -8869,7 +8883,7 @@ index b002cf6..243ff9b 100644
          bool   isEmpty()    const { return subCount==0; }
          size_t nodesCount() const { return subCount;    }
 diff --git a/common/graphics/renderer.cpp b/common/graphics/renderer.cpp
-index 03a64b2..fdb3582 100644
+index 03a64b2..a5d13b8 100644
 --- a/common/graphics/renderer.cpp
 +++ b/common/graphics/renderer.cpp
 @@ -111,6 +111,7 @@ Renderer::~Renderer() {
@@ -8922,7 +8936,24 @@ index 03a64b2..fdb3582 100644
  
    auto sz = Vec2(float(sky.viewLut.w()), float(sky.viewLut.h()));
    cmd.setFramebuffer({{sky.viewLut, Tempest::Discard, Tempest::Preserve}});
-@@ -751,7 +769,10 @@ void Renderer::drawTonemapping(Attachment& result, Encoder<CommandBuffer>& cmd,
+@@ -740,6 +758,8 @@ void Renderer::drawTonemapping(Attachment& result, Encoder<CommandBuffer>& cmd,
+     float contrast   = 1;
+     float gamma      = 1.f/2.2f;
+     float mul        = 1;
++    float toe        = 0; // Gothic II Mobile: мягкий низ кривой (VideoSettings в tonemapping.glsl)
++    float padd[3]    = {}; // std140: структура выравнивается до 32 байт
+     };
+ 
+   Push p;
+@@ -747,11 +767,18 @@ void Renderer::drawTonemapping(Attachment& result, Encoder<CommandBuffer>& cmd,
+   p.contrast   = std::max(1.5f - settings.zVidContrast, 0.01f);
+   p.gamma      = p.gamma/std::max(2.0f*settings.zVidGamma,  0.01f);
+ 
++  // Gothic II Mobile: настройка «Освещение» - общая яркость и мягкий низ кривой (Gothic::Options)
++  p.mul        = Gothic::options().exposureMul;
++  p.toe        = Gothic::options().toneToe;
++
+   static float mul = 0.f;
    if(mul>0)
      p.mul = mul;
  
@@ -8934,7 +8965,27 @@ index 03a64b2..fdb3582 100644
    cmd.setFramebuffer({ {result, Tempest::Discard, Tempest::Preserve} });
    cmd.setBinding(0, wview.sceneGlobals().uboGlobal[SceneGlobals::V_Main]);
    // This Lanczos implementation pairs adjacent weights using bilinear sampling.
-@@ -861,6 +882,16 @@ void Renderer::drawFog(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const Worl
+@@ -795,6 +822,8 @@ void Renderer::drawCMAA2(Tempest::Attachment& result, Tempest::Encoder<Tempest::
+     float contrast   = 1;
+     float gamma      = 1.f/2.2f;
+     float mul        = 1;
++    float toe        = 0; // Gothic II Mobile: мягкий низ кривой (VideoSettings в tonemapping.glsl)
++    float padd[3]    = {}; // std140: структура выравнивается до 32 байт
+     };
+ 
+   Push p;
+@@ -802,6 +831,10 @@ void Renderer::drawCMAA2(Tempest::Attachment& result, Tempest::Encoder<Tempest::
+   p.contrast   = std::max(1.5f - settings.zVidContrast, 0.01f);
+   p.gamma      = p.gamma/std::max(2.0f*settings.zVidGamma,  0.01f);
+ 
++  // Gothic II Mobile: настройка «Освещение» - общая яркость и мягкий низ кривой (Gothic::Options)
++  p.mul        = Gothic::options().exposureMul;
++  p.toe        = Gothic::options().toneToe;
++
+   static float mul = 0.f;
+   if(mul>0)
+     p.mul = mul;
+@@ -861,6 +894,16 @@ void Renderer::drawFog(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const Worl
      case PathTrace:
        return;
      }
@@ -8951,7 +9002,7 @@ index 03a64b2..fdb3582 100644
    cmd.draw(nullptr, 0, 3);
    }
  
-@@ -1145,6 +1176,29 @@ void Renderer::buildHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
+@@ -1145,6 +1188,29 @@ void Renderer::buildHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
    push.numGroups = uint32_t(wgW * wgH);
    push.mip       = mip;
  
@@ -8981,7 +9032,7 @@ index 03a64b2..fdb3582 100644
    cmd.setBinding(0, hiz.counter);
    for(uint32_t i=0; i<maxBind; ++i)
      cmd.setBinding(1+i, hiz.hiZ, Sampler::nearest(), std::min(i, mip-1));
-@@ -1152,6 +1206,7 @@ void Renderer::buildHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
+@@ -1152,6 +1218,7 @@ void Renderer::buildHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
    cmd.setPipeline(shaders.hiZMip);
    //cmd.dispatchThreads(std::max(uint32_t(hiz.hiZ.w())/2u, 1u), std::max(uint32_t(hiz.hiZ.h())/2u, 1u));
    cmd.dispatch(size_t(wgW), size_t(wgH));
@@ -8989,7 +9040,7 @@ index 03a64b2..fdb3582 100644
    }
  
  void Renderer::drawVsm(Tempest::Encoder<Tempest::CommandBuffer>& cmd, WorldView& wview) {
-@@ -1768,7 +1823,7 @@ void Renderer::drawUnderwater(Encoder<CommandBuffer>& cmd, const WorldView& wvie
+@@ -1768,7 +1835,7 @@ void Renderer::drawUnderwater(Encoder<CommandBuffer>& cmd, const WorldView& wvie
  
  void Renderer::drawShadowMap(Encoder<CommandBuffer>& cmd, uint8_t fId, WorldView& view) {
    for(uint8_t i=0; i<Resources::ShadowLayers; ++i) {
@@ -8998,7 +9049,7 @@ index 03a64b2..fdb3582 100644
        continue;
      cmd.setDebugMarker(string_frm("ShadowMap #",i));
      cmd.setFramebuffer({}, {shadowMap[i], 0.f, Tempest::Preserve});
-@@ -1816,7 +1871,8 @@ void Renderer::drawShadowResolve(Encoder<CommandBuffer>& cmd, const WorldView& w
+@@ -1816,7 +1883,8 @@ void Renderer::drawShadowResolve(Encoder<CommandBuffer>& cmd, const WorldView& w
      }
    else {
      for(size_t r=0; r<Resources::ShadowLayers; ++r) {
@@ -9008,7 +9059,7 @@ index 03a64b2..fdb3582 100644
          continue;
        cmd.setBinding(4+r, shadowMap[r], Resources::shadowSampler());
        }
-@@ -1859,9 +1915,10 @@ void Renderer::drawLights(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
+@@ -1859,9 +1927,10 @@ void Renderer::drawLights(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
      cmd.setBinding(11,scene.rtScene.rtDesc);
      }
  
@@ -9042,8 +9093,29 @@ index 912ea33..a8085ba 100644
        Tempest::Attachment    transLut, multiScatLut, viewLut, viewCldLut;
        Tempest::StorageImage  cloudsLut, fogLut3D, fogLut3DMs;
        Tempest::StorageImage  occlusionLut, irradianceLut;
+diff --git a/common/graphics/sceneglobals.cpp b/common/graphics/sceneglobals.cpp
+index 9372f47..e34b0c9 100644
+--- a/common/graphics/sceneglobals.cpp
++++ b/common/graphics/sceneglobals.cpp
+@@ -3,6 +3,7 @@
+ #include "graphics/shaders.h"
+ #include "graphics/sky/sky.h"
+ #include "worldview.h"
++#include "gothic.h"
+ 
+ static uint32_t nextPot(uint32_t x) {
+   x--;
+@@ -142,6 +143,8 @@ void SceneGlobals::setSky(const Sky& s) {
+   uboGlobalCpu.cloudsDir[1]  = s.cloudsOffset(1, tickCount);
+   uboGlobalCpu.isNight       = s.isNight();
+   uboGlobalCpu.exposure      = 1;
++  // Gothic II Mobile: подсветка теней - настройка «Освещение» (ambient_light.frag, main.frag)
++  uboGlobalCpu.ambientMul    = Gothic::options().ambientMul;
+   }
+ 
+ void SceneGlobals::setWorld(const WorldView &wview) {
 diff --git a/common/graphics/sceneglobals.h b/common/graphics/sceneglobals.h
-index 09a9183..51d87e7 100644
+index 09a9183..c54d4e2 100644
 --- a/common/graphics/sceneglobals.h
 +++ b/common/graphics/sceneglobals.h
 @@ -54,6 +54,7 @@ class SceneGlobals final {
@@ -9054,6 +9126,14 @@ index 09a9183..51d87e7 100644
  
      const Tempest::Matrix4x4  viewProjectLwc() const;
      const Tempest::Matrix4x4  viewProjectLwcInv() const;
+@@ -120,6 +121,7 @@ class SceneGlobals final {
+       Tempest::Vec2                   cloudsDir[2] = {};
+ 
+       float                           probeGridBias = 3;
++      float                           ambientMul    = 1; // Gothic II Mobile: подсветка теней (Gothic::Options)
+       };
+ 
+     Tempest::UniformBuffer<UboGlobal> uboGlobalPf[Resources::MaxFramesInFlight][V_Count];
 diff --git a/common/graphics/visualobjects.cpp b/common/graphics/visualobjects.cpp
 index b7b6f25..82c1fae 100644
 --- a/common/graphics/visualobjects.cpp
@@ -18532,6 +18612,20 @@ index a405d35..84bfb23 100644
      list(APPEND VARS "-g")
    endif()
  
+diff --git a/shader/lighting/ambient_light.frag b/shader/lighting/ambient_light.frag
+index 8d73eec..6a8835a 100644
+--- a/shader/lighting/ambient_light.frag
++++ b/shader/lighting/ambient_light.frag
+@@ -68,6 +68,9 @@ vec3 luminance(vec3 norm) {
+   ret += ambient;
+   ret += sky*0.8;
+   ret += (norm.y*0.25+0.75) * NightAmbient * Fd_Lambert;
++  // Gothic II Mobile: в тени только этот свет - без отражённого от земли и стен (GI на телефоне нет) он слишком
++  // слаб, тени почти чёрные; настройка «Освещение» усиливает его (на экспозицию не влияет - sky_exposure.comp)
++  ret *= scene.ambientMul;
+   return ret;
+ #endif
+   }
 diff --git a/shader/lighting/light.frag b/shader/lighting/light.frag
 index eed0730..7698d9b 100644
 --- a/shader/lighting/light.frag
@@ -18567,8 +18661,45 @@ index 0fb903f..c096e45 100644
      // skip invisible lights, make sure that they don't turn into FQS
      gl_Position = vec4(0.0,0.0,-1.0,1.0);
      cenPosition = vec4(0.0);
+diff --git a/shader/lighting/tonemapping.glsl b/shader/lighting/tonemapping.glsl
+index e87f699..e3e3594 100644
+--- a/shader/lighting/tonemapping.glsl
++++ b/shader/lighting/tonemapping.glsl
+@@ -60,6 +60,7 @@ struct VideoSettings {
+   float contrast;
+   float gamma;
+   float mulExposure;
++  float toe; // Gothic II Mobile: мягкий низ кривой (настройка «Освещение»); 0 - чистый ACES
+   };
+ 
+ vec3 gameTonemap(vec3 color, const VideoSettings s) {
+@@ -70,7 +71,12 @@ vec3 gameTonemap(vec3 color, const VideoSettings s) {
+   color = color * vec3(s.contrast);
+ 
+   // Tonemapping
++  // Gothic II Mobile: у ACES наклон у нуля 0,21 - тёмные тона давятся впятеро против средних: в тени не
++  // разглядеть ни предмет, ни лицо. Добавка toe*x*exp(-x/0,04) поднимает наклон у нуля до 0,2+toe, к средним
++  // тонам (x>0,2) сходит на нет - светлое и цвета текстур как у ACES; кривая остаётся монотонной (toe<=1)
++  const vec3 lifted = s.toe * color * exp(-color*25.0);
+   color = acesTonemap(color);
++  color = min(color + lifted, vec3(1));
+ 
+   // Gamma
+   //color = srgbEncode(color);
+diff --git a/shader/materials/main.frag b/shader/materials/main.frag
+index f672893..9d2e89b 100644
+--- a/shader/materials/main.frag
++++ b/shader/materials/main.frag
+@@ -124,6 +124,7 @@ vec3 diffuseLight(float a) {
+   vec3  lcolor  = scene.sunColor * light * shadow;
+   vec3  ambient = scene.ambient + (norm.y*0.25+0.75) * NightAmbient * Fd_Lambert;
+   vec3  sky     = vec3(0); // TODO: irradiance
++  ambient *= scene.ambientMul; // Gothic II Mobile: подсветка теней, как в ambient_light.frag
+ 
+   return (lcolor + ambient + ambient);
+   }
 diff --git a/shader/materials/visibility_pass.comp b/shader/materials/visibility_pass.comp
-index 378d837..0089ba4 100644
+index 378d837..91b7800 100644
 --- a/shader/materials/visibility_pass.comp
 +++ b/shader/materials/visibility_pass.comp
 @@ -23,6 +23,9 @@ layout(push_constant, std430) uniform UboPush {
@@ -18581,51 +18712,85 @@ index 378d837..0089ba4 100644
    } push;
  
  Instance pullInstance(uint i) {
-@@ -161,6 +164,16 @@ bool projectCluster(const Cluster cluster, out vec4 aabb, out float depthMin) {
+@@ -156,11 +159,37 @@ bool hiZTest(vec4 sbbox, float depthMin) {
+ bool projectCluster(const Cluster cluster, out vec4 aabb, out float depthMin) {
+   if(cluster.instanceId==0xFFFFFFFF)
+     return projectSphere(cluster.sphere, aabb, depthMin);
+-  // return projectSphere(cluster.sphere, aabb, depthMin);
++  // Gothic II Mobile: у скелетных моделей (тела NPC, доспехи, сундуки и двери с анимацией) рамка - из позы
++  // покоя, а вершины ставят кости: лежащий, сидящий, упавший куклой (регдолл) выходит за рамку. Проверка
++  // перекрытия по такой рамке считала видимое тело заслонённым - оно пропадало. Сфера кластера (радиус -
++  // до самой дальней точки модели от её начала) накрывает любую позу
++  const uint bId = cluster.bucketId_commandId >> 16;
++  if((bucket[bId].flags & BK_SKIN)!=0)
++    return projectSphere(cluster.sphere, aabb, depthMin);
+   return projectInstance(cluster, aabb, depthMin);
    }
  #endif
  
 +// Gothic II Mobile: свой порог отсечения мелочи у каждого объекта (0,7..1,3 от общего): трава редеет вдали
-+// постепенно, без видимой линии, за которой она пропадает. Хеш от номера объекта - порог не меняется
-+// от кадра к кадру, мерцания нет.
-+float detailJitter(uint id) {
++// постепенно, без видимой линии, за которой она пропадает. Хеш - от места объекта (клетка 50 см), а не от
++// номера кластера: у предмета из нескольких частей (материалов) номера разные, и части пропадали поодиночке.
++// Порог не меняется от кадра к кадру, мерцания нет.
++float detailJitter(vec3 pos) {
++  const ivec3 c  = ivec3(floor(pos/50.0));
++  uint        id = uint(c.x)*73856093u ^ uint(c.y)*19349663u ^ uint(c.z)*83492791u;
 +  id = id*747796405u + 2891336453u;
 +  id = ((id >> ((id >> 28u) + 4u)) ^ id) * 277803737u;
 +  id = (id >> 22u) ^ id;
 +  return 0.7 + 0.6*float(id & 0xFFFFu)/65535.0;
 +  }
 +
++// Gothic II Mobile: ближе этого (см до поверхности сферы) мелочь по размеру не отсекается: кружки, свечи, травы,
++// монеты на столе и под ногами пропадали в 7-12 м («только рядом») прямо перед глазами
++const float DetailMinDist = 2000.0;
++// Gothic II Mobile: ближе этого проверка перекрытия не делается - то, что рядом с героем, рисуется всегда
++// (если карта перекрытий где-то врёт, пропадать будет не перед глазами). Рядом объектов мало - это дёшево
++const float HiZMinDist    = 1000.0;
++
  bool frustrumTest(const vec4 sphere) {
    if(sphere.w<0.f)
      return false;
-@@ -182,6 +195,17 @@ void runCluster(const uint clusterId) {
+@@ -182,6 +211,16 @@ void runCluster(const uint clusterId) {
    if(!frustrumTest(cluster.sphere))
      return;
  
 +  // Gothic II Mobile: дальше дальности прорисовки - ничего; мелкие предметы (трава, кусты, камни) -
-+  // по угловому размеру. Кластеры ландшафта (instanceId 0xFFFFFFFF) по размеру не отсекаются.
-+  if(push.viewDist>0 || push.detailRatio>0) {
-+    const float dist = distance(cluster.sphere.xyz, scene.camPos) - cluster.sphere.w;
-+    if(push.viewDist>0 && dist>push.viewDist)
-+      return;
-+    if(push.detailRatio>0 && cluster.instanceId!=0xFFFFFFFF &&
-+       cluster.sphere.w<dist*push.detailRatio*detailJitter(cluster.instanceId))
-+      return;
-+    }
++  // по угловому размеру, но не ближе DetailMinDist. Кластеры ландшафта (instanceId 0xFFFFFFFF) по размеру
++  // не отсекаются.
++  const float dist = distance(cluster.sphere.xyz, scene.camPos) - cluster.sphere.w;
++  if(push.viewDist>0 && dist>push.viewDist)
++    return;
++  if(push.detailRatio>0 && cluster.instanceId!=0xFFFFFFFF && dist>DetailMinDist &&
++     cluster.sphere.w<dist*push.detailRatio*detailJitter(cluster.sphere.xyz))
++    return;
 +
  #if defined(MAIN_VIEW)
    vec4  aabb     = vec4(0);
    float depthMin = 1;
-@@ -200,7 +224,8 @@ void runCluster(const uint clusterId) {
+@@ -200,7 +239,9 @@ void runCluster(const uint clusterId) {
  #endif
  
  #if defined(HIZ)
 -  if(!hiZTest(aabb, depthMin))
-+  // Gothic II Mobile: проверку перекрытия можно выключить (настройка «Отсечение невидимого»)
-+  if(push.noHiZ==0 && !hiZTest(aabb, depthMin))
++  // Gothic II Mobile: проверку перекрытия можно выключить (настройка «Отсечение невидимого»); рядом с героем
++  // её нет (HiZMinDist)
++  if(push.noHiZ==0 && dist>HiZMinDist && !hiZTest(aabb, depthMin))
      return;
  #endif
  
+diff --git a/shader/scene.glsl b/shader/scene.glsl
+index e526380..839bfc5 100644
+--- a/shader/scene.glsl
++++ b/shader/scene.glsl
+@@ -38,6 +38,7 @@ struct SceneDesc {
+   ivec2 screenRes;
+   vec4  cloudsDir;
+   float probeGridBias;
++  float ambientMul; // Gothic II Mobile: рассеянный свет сильнее во столько раз (настройка «Освещение»)
+   };
+ 
+ struct LightSource {
 diff --git a/shader/sky/fog.frag b/shader/sky/fog.frag
 index be1c08b..8045ebb 100644
 --- a/shader/sky/fog.frag

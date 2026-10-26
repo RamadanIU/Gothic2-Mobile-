@@ -162,4 +162,18 @@ public class GraphicsSettingsTest {
         g.cycle(GraphicsSettings.FPS);
         assertEquals("Свои настройки: 50 %, без ограничения", g.summaryShort());
     }
+
+    @Test
+    public void lightingIsSoftByDefaultAndNotInPresets() {
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        assertTrue(g.iniText().contains("\nlighting=1\n"));
+        assertEquals("Освещение: мягкое — тени видны", g.label(GraphicsSettings.LIGHTING));
+        g.cycle(GraphicsSettings.LIGHTING);
+        assertTrue(g.iniText().contains("\nlighting=2\n"));
+        g.cycle(GraphicsSettings.LIGHTING);
+        assertTrue("как в движке", g.iniText().contains("\nlighting=0\n"));
+        assertEquals(GraphicsSettings.DEFAULT_PRESET, g.currentPreset());
+        g.applyPreset(GraphicsSettings.ECONOMY_PRESET);
+        assertTrue("набор освещение не меняет", g.iniText().contains("\nlighting=0\n"));
+    }
 }
