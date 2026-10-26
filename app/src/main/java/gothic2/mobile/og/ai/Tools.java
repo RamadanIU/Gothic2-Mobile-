@@ -1,0 +1,227 @@
+package gothic2.mobile.og.ai;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Инструменты модели: что Геральт и живые жители умеют делать в мире (набор один на всех; кто делает — поле who
+ * команды, GeraltBrain). Большая часть — действия движка (AiNpc::cmdAct),
+ * talk_to_npc и remember ведёт сам мозг (GeraltBrain).
+ */
+public final class Tools {
+    private Tools() {
+    }
+
+    /** Долгие действия: ход тела, о конце которого движок сообщит позже (act_done). */
+    static final List<String> LONG = Arrays.asList("go_to_place", "go_to_npc", "attack", "take_item", "use_mob", "loot");
+
+    /**
+     * Жест, взгляд, занятие — только вместе со словами, когда к говорящему обратился герой: модели отвечали
+     * одними анимациями вместо слов, и это выглядело издёвкой (GeraltBrain не исполняет их без реплики).
+     */
+    static final List<String> NEEDS_WORDS = Arrays.asList("gesture", "look_at", "activity");
+
+    static boolean needsWords(String tool) {
+        return NEEDS_WORDS.contains(tool);
+    }
+
+    /**
+     * Жесты для модели. «Обрадоваться» и «возмутиться» убраны: это были анимации зеваки у драки (прыгает и машет
+     * кулаками), и модели звали «возмутиться» вместо удара — житель «плясал». Движок их ещё понимает (кивок, «прочь»).
+     */
+    static final String[] GESTURES = {"nod", "no", "shrug", "come_here", "greet", "dismiss", "get_lost", "salute",
+        "look_around"};
+    static final String[] ACTIVITIES = {"stand", "guard", "sit", "sit_chair", "sit_bench", "practice_sword", "eat", "drink",
+        "look_around", "smoke"};
+
+    public static List<Map<String, Object>> all() {
+        List<Map<String, Object>> t = new ArrayList<>();
+        t.add(tool("go_to_place", "Пойти к месту острова. place — название из списка «Места» в обстановке. Если ты в "
+                + "отряде героя — сходишь и вернёшься в строй.",
+            props("place", str("название места")), "place"));
+        t.add(tool("go_to_npc", "Подойти один раз к человеку или зверю из списка «Рядом». Это не следование: чтобы "
+                + "идти с героем, вызови follow_hero.",
+            props("target", str("ref, например n12, или hero")), "target"));
+        t.add(tool("follow_hero", "Пойти с героем: вступаешь в его отряд — идёшь за ним строем, защищаешь его в бою, "
+            + "не погибаешь (только теряешь сознание), лечишься зельями. Ждущий в отряде — снова идёт следом.", props()));
+        t.add(tool("wait_here", "Остаться на месте. Если ты в отряде героя — ждёшь его здесь и остаёшься в отряде (как "
+            + "приказ «Ждать»).", props()));
+        t.add(tool("go_home", "Вернуться к своим делам, на своё место, и уйти из отряда героя (Геральт — за стол в "
+            + "кабаке Корагона).", props()));
+        t.add(tool("attack", "Напасть: на чудовище — насмерть, на человека — сбить с ног. target — ref из «Рядом» или hero.",
+            props("target", str("ref")), "target"));
+        t.add(tool("stop_fight", "Прекратить бой и убрать оружие.", props()));
+        t.add(tool("weapon", "Обнажить (draw=true) или убрать (draw=false) оружие.",
+            props("draw", Json.of("type", "boolean")), "draw"));
+        t.add(tool("give_item", "Отдать свой предмет герою или другому NPC. item — id из твоего инвентаря (ITMI_GOLD — золото).",
+            props("item", str("id предмета"), "count", Json.of("type", "integer", "description", "сколько"),
+                "target", str("кому: hero (по умолчанию) или ref")), "item"));
+        t.add(tool("take_item", "Подобрать предмет с земли (ref из «На земле»).",
+            props("item", str("ref, например i7")), "item"));
+        t.add(tool("use_item", "Выпить зелье, съесть или использовать свой предмет (id из инвентаря).",
+            props("item", str("id предмета")), "item"));
+        t.add(tool("equip_item", "Надеть свою одежду или доспехи, взять оружие (меч, топор, лук, арбалет, щит), надеть кольцо, амулет, пояс. "
+                + "item — id из инвентаря; прежнее того же вида снимается само. Смена меча — в любой момент, даже с мечом в руке.",
+            props("item", str("id предмета")), "item"));
+        t.add(tool("unequip_item", "Снять надетое (одежду, оружие, кольцо и т. п.). item — id из инвентаря.",
+            props("item", str("id предмета")), "item"));
+        t.add(tool("gesture", "Жест: кивнуть, покачать головой, пожать плечами, подозвать, поприветствовать, отмахнуться, "
+                + "прогнать, отдать честь, оглядеться. Жест — не удар и не угроза: напасть — attack, пригрозить — обнажить "
+                + "оружие (weapon).",
+            props("name", en(GESTURES)), "name"));
+        t.add(tool("look_at", "Повернуться и посмотреть на кого-то.", props("target", str("ref или hero")), "target"));
+        t.add(tool("activity", "Заняться делом на месте: стоять, сторожить, сесть на землю, сесть на стул (за стол), сесть на скамью, упражняться с мечом, есть, пить, осматриваться, курить. Упражнение с мечом — тренировка по воздуху, не бой: напасть — attack. В отряде героя нельзя — на привале займёшься делом сам.",
+            props("name", en(ACTIVITIES)), "name"));
+        t.add(tool("use_mob", "Воспользоваться вещью мира рядом: сесть на скамью, к костру, открыть сундук и т. п. scheme — из «Вещи мира».",
+            props("scheme", str("например BENCH, CHESTBIG, CAULDRON")), "scheme"));
+        t.add(tool("loot", "Обыскать мёртвого или лежащего без сознания (ref из «Рядом»).",
+            props("target", str("ref")), "target"));
+        // hostile в движке — злость, а не вражда насмерть: постоянная вражда превращала драку с героем в бой насмерть
+        t.add(tool("set_attitude", "Изменить отношение к герою. angry — сердит, hostile — зол на него и готов драться. "
+                + "Драка с человеком — до потери сознания, не насмерть.",
+            props("value", en(new String[]{"friendly", "neutral", "angry", "hostile"})), "value"));
+        // Закончить разговор с героем модели нельзя: она закрывала диалог сразу после своей реплики, и разговор не
+        // складывался. Диалог закрывает герой («Пока.»)
+        t.add(tool("talk_to_npc", "Сказать что-то другому человеку из «Рядом» (не герою): спросить, передать, приказать, "
+                + "позвать, прогнать. Подойдёшь к нему сам — go_to_npc перед этим не нужен. Он услышит, ответит и может "
+                + "что-то сделать в ответ; беседа с ним продолжится несколько реплик, пока ты не добьёшься своего, — в ответ "
+                + "придёт её запись. Текст твоей реплики слышит только герой: что надо сказать другому — только этим "
+                + "инструментом. Вернуться к беседе позже — снова talk_to_npc с тем же ref: он помнит, о чём вы говорили.",
+            props("target", str("ref человека из «Рядом»"), "text", str("что сказать")), "target", "text"));
+        t.add(tool("remember", "Запомнить важное надолго: уговор, имя, долг, обещание.",
+            props("note", str("коротко, от себя")), "note"));
+        return t;
+    }
+
+    /**
+     * Инструменты живого жителя: те же, что у Геральта, и сюжетные темы его диалогов из игры (Story) — задания,
+     * награды, пропуска, обучение исполняет скрипт игры, как в родном диалоге.
+     */
+    public static List<Map<String, Object>> resident() {
+        List<Map<String, Object>> t = all();
+        t.add(tool("story_topic", "Сыграть тему из «Темы разговора» — сюжет игры: задание, его сдача, награда, разрешение, "
+                + "обучение, важная новость. Её слова и последствия настоящие: задание попадает в дневник героя, вещи и "
+                + "деньги переходят из рук в руки, герой получает опыт. Вызывай без слов: в ответ придёт, что ты сказал в "
+                + "игре, и итог — тогда перескажи это герою своими словами. topic — id темы (t…) или варианта ответа "
+                + "героя в начатой теме (c…).",
+            props("topic", str("id из «Темы разговора», например t4512, или варианта, например c7731")), "topic"));
+        return t;
+    }
+
+    static boolean isStory(String tool) {
+        return "story_topic".equals(tool);
+    }
+
+    /**
+     * Инструменты того, к кому обратился другой NPC (talk_to_npc): ответить делом — уйти, пойти с героем, дать
+     * вещь, обнажить оружие. Заговорившему он отвечает словами; talk (talk_to_npc) — может заговорить с третьим
+     * (передать, разобраться с ним), но не с тем, кто с ним говорит.
+     */
+    public static List<Map<String, Object>> listener(boolean talk) {
+        List<Map<String, Object>> t = new ArrayList<>();
+        for (Map<String, Object> m : all()) {
+            String name = Json.str(Json.obj(m.get("function")), "name");
+            if (forListener(name) || talk && "talk_to_npc".equals(name)) t.add(m);
+        }
+        return t;
+    }
+
+    static boolean forListener(String tool) {
+        return !"talk_to_npc".equals(tool) && !isStory(tool);
+    }
+
+    /** Вызов talk_to_npc другому человеку (не герою) — это тоже слова: жест или взгляд при нём уместны. */
+    static boolean talksToNpc(List<LlmClient.ToolCall> calls) {
+        for (LlmClient.ToolCall c : calls) {
+            if ("talk_to_npc".equals(c.name) && !"hero".equals(Json.str(c.args, "target"))) return true;
+        }
+        return false;
+    }
+
+    /** Слова герою, написанные вызовом talk_to_npc с target hero (модели так делали): это обычная реплика. */
+    static String heroLine(List<LlmClient.ToolCall> calls) {
+        for (LlmClient.ToolCall c : calls) {
+            if ("talk_to_npc".equals(c.name) && "hero".equals(Json.str(c.args, "target"))) return Json.str(c.args, "text");
+        }
+        return "";
+    }
+
+    private static Map<String, Object> tool(String name, String desc, Map<String, Object> props, String... required) {
+        List<Object> req = new ArrayList<>(Arrays.asList((Object[]) required));
+        Map<String, Object> params = Json.of("type", "object", "properties", props);
+        if (!req.isEmpty()) params.put("required", req);
+        return Json.of("type", "function", "function", Json.of("name", name, "description", desc, "parameters", params));
+    }
+
+    private static Map<String, Object> props(Object... kv) {
+        return Json.of(kv);
+    }
+
+    private static Map<String, Object> str(String desc) {
+        return Json.of("type", "string", "description", desc);
+    }
+
+    private static Map<String, Object> en(String[] values) {
+        return Json.of("type", "string", "enum", new ArrayList<Object>(Arrays.asList(values)));
+    }
+
+    /** Действие движка для инструмента: имя и аргументы (null — инструмент не для движка). */
+    static Map<String, Object> engineAct(String id, String tool, Map<String, Object> args) {
+        String name = tool;
+        Map<String, Object> a = Json.of();
+        switch (tool) {
+            case "go_to_place":
+                a.put("place", Json.str(args, "place"));
+                break;
+            case "go_to_npc":
+            case "attack":
+            case "look_at":
+            case "loot":
+                a.put("target", Json.str(args, "target"));
+                if (tool.equals("look_at")) name = "turn_to";
+                break;
+            case "follow_hero":
+            case "wait_here":
+            case "go_home":
+            case "stop_fight":
+                break;
+            case "weapon":
+                name = Json.bool(args, "draw", true) ? "draw_weapon" : "holster_weapon";
+                break;
+            case "give_item":
+                a.put("item", Json.str(args, "item"));
+                a.put("count", Math.max(1, Json.num(args, "count", 1)));
+                String to = Json.str(args, "target");
+                if (!to.isEmpty()) a.put("target", to);
+                break;
+            case "take_item":
+            case "use_item":
+                a.put("item", Json.str(args, "item"));
+                break;
+            case "equip_item":
+            case "unequip_item":
+                a.put("item", Json.str(args, "item"));
+                name = tool.equals("equip_item") ? "equip" : "unequip";
+                break;
+            case "gesture":
+            case "activity":
+                a.put("name", Json.str(args, "name"));
+                break;
+            case "use_mob":
+                a.put("scheme", Json.str(args, "scheme"));
+                break;
+            case "set_attitude":
+                a.put("value", Json.str(args, "value"));
+                break;
+            case "story_topic":
+                a.put("topic", Json.str(args, "topic"));
+                name = "story";
+                break;
+            default:
+                return null;
+        }
+        return Json.of("cmd", "act", "id", id, "name", name, "args", a);
+    }
+}

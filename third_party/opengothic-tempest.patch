@@ -1,0 +1,330 @@
+diff --git a/Engine/CMakeLists.txt b/Engine/CMakeLists.txt
+index 6763126..8cd3597 100644
+--- a/Engine/CMakeLists.txt
++++ b/Engine/CMakeLists.txt
+@@ -173,7 +173,9 @@ if(TEMPEST_BUILD_VULKAN)
+     endif()
+   endif()
+ 
+-  target_include_directories(${PROJECT_NAME} PRIVATE "$ENV{VULKAN_SDK}/include")
++  # Gothic II Mobile: путь к свежим заголовкам Vulkan передаёт сборка Gradle (-DTEMPEST_VULKAN_SDK)
++  set(TEMPEST_VULKAN_SDK "$ENV{VULKAN_SDK}" CACHE PATH "Vulkan SDK (include/vulkan)")
++  target_include_directories(${PROJECT_NAME} PRIVATE "${TEMPEST_VULKAN_SDK}/include")
+   if(WIN32)
+     target_link_libraries(${PROJECT_NAME} PRIVATE vulkan-1)
+   else()
+diff --git a/Engine/gapi/abstractgraphicsapi.cpp b/Engine/gapi/abstractgraphicsapi.cpp
+index d92ef35..7d3b9df 100644
+--- a/Engine/gapi/abstractgraphicsapi.cpp
++++ b/Engine/gapi/abstractgraphicsapi.cpp
+@@ -33,6 +33,16 @@ const Sampler& Sampler::anisotrophy() {
+   return s;
+   }
+ 
++static float samplerAnisotropyLimit = 0;
++
++void Sampler::setAnisotropyLimit(float limit) {
++  samplerAnisotropyLimit = limit;
++  }
++
++float Sampler::anisotropyLimit() {
++  return samplerAnisotropyLimit;
++  }
++
+ const Sampler& Sampler::bilinear() {
+   static Sampler s = mkBilinear();
+   return s;
+diff --git a/Engine/gapi/abstractgraphicsapi.h b/Engine/gapi/abstractgraphicsapi.h
+index 7938dfe..abf0368 100644
+--- a/Engine/gapi/abstractgraphicsapi.h
++++ b/Engine/gapi/abstractgraphicsapi.h
+@@ -225,6 +225,10 @@ namespace Tempest {
+     bool             anisotropic = true;
+ 
+     static const Sampler& anisotrophy();
++    // Gothic II Mobile: предел анизотропной фильтрации для всех сэмплеров (до создания устройства:
++    // сэмплер по умолчанию создаётся вместе с ним); 0 - как у видеокарты
++    static void           setAnisotropyLimit(float limit);
++    static float          anisotropyLimit();
+     static const Sampler& bilinear();
+     static const Sampler& trillinear();
+     static const Sampler& nearest();
+diff --git a/Engine/gapi/vulkan/vsamplercache.cpp b/Engine/gapi/vulkan/vsamplercache.cpp
+index 024986d..4bf59fc 100644
+--- a/Engine/gapi/vulkan/vsamplercache.cpp
++++ b/Engine/gapi/vulkan/vsamplercache.cpp
+@@ -5,6 +5,8 @@
+ #include "vdevice.h"
+ #include "vtexture.h"
+ 
++#include <algorithm>
++
+ using namespace Tempest;
+ using namespace Tempest::Detail;
+ 
+@@ -33,9 +35,13 @@ VkSamplerCreateInfo VSamplerCache::createInfo(const VDevice& dev, const Sampler&
+   samplerInfo.addressModeU            = nativeFormat(s.uClamp);
+   samplerInfo.addressModeV            = nativeFormat(s.vClamp);
+   samplerInfo.addressModeW            = nativeFormat(s.wClamp);
+-  if(s.anisotropic && dev.props.anisotropy) {
++  // Gothic II Mobile: предел анизотропии из настроек игры (Sampler::setAnisotropyLimit)
++  float maxAnisotropy = dev.props.maxAnisotropy;
++  if(Sampler::anisotropyLimit()>0)
++    maxAnisotropy = std::min(maxAnisotropy, Sampler::anisotropyLimit());
++  if(s.anisotropic && dev.props.anisotropy && maxAnisotropy>1.f) {
+     samplerInfo.anisotropyEnable      = VK_TRUE;
+-    samplerInfo.maxAnisotropy         = dev.props.maxAnisotropy;
++    samplerInfo.maxAnisotropy         = maxAnisotropy;
+     } else {
+     samplerInfo.anisotropyEnable      = VK_FALSE;
+     samplerInfo.maxAnisotropy         = 1.f;
+diff --git a/Engine/gapi/vulkan/vswapchain.cpp b/Engine/gapi/vulkan/vswapchain.cpp
+index 1edfe1a..8a7bfd3 100644
+--- a/Engine/gapi/vulkan/vswapchain.cpp
++++ b/Engine/gapi/vulkan/vswapchain.cpp
+@@ -11,6 +11,9 @@
+ #if defined(__UNIX__)
+ #include "system/api/x11api.h"
+ #endif
++#if defined(__ANDROID__)
++#include "system/api/androidapi.h"
++#endif
+ 
+ #if defined(__WINDOWS__)
+ #  define VK_USE_PLATFORM_WIN32_KHR
+@@ -264,7 +267,10 @@ VkResult VSwapchain::createSurface(VkInstance instance, void* hwnd, VkSurfaceKHR
+ #elif defined(__ANDROID__)
+   VkAndroidSurfaceCreateInfoKHR createInfo = {};
+   createInfo.sType  = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+-  createInfo.window = reinterpret_cast<ANativeWindow*>(hwnd);
++  // Gothic II Mobile: дескриптор - постоянный слот окна, само окно меняется при сворачивании (AndroidApi)
++  createInfo.window = reinterpret_cast<ANativeWindow*>(AndroidApi::nativeWindow(reinterpret_cast<SystemApi::Window*>(hwnd)));
++  if(createInfo.window==nullptr)
++    return VK_ERROR_SURFACE_LOST_KHR;
+   return vkCreateAndroidSurfaceKHR(instance,&createInfo,nullptr,pSurface);
+ #elif defined(__UNIX__)
+   VkXlibSurfaceCreateInfoKHR createInfo = {};
+@@ -309,6 +315,11 @@ void VSwapchain::cleanupSurface() noexcept {
+ 
+ void VSwapchain::reset() {
+   cleanupSwapchain();
++#if defined(__ANDROID__)
++  // Gothic II Mobile: окно сменилось (свернули и вернулись) - старая поверхность принадлежит ушедшему окну
++  if(surfaceGen!=AndroidApi::windowGeneration())
++    cleanupSurface();
++#endif
+   createSwapchain(device);
+   }
+ 
+@@ -325,6 +336,9 @@ VkSurfaceKHR VSwapchain::createSurface(VkInstance instance, void* hwnd) {
+   VkSurfaceKHR ret = VK_NULL_HANDLE;
+   if(createSurface(instance, hwnd, &ret)!=VK_SUCCESS)
+     throw std::system_error(Tempest::GraphicsErrc::NoDevice);
++#if defined(__ANDROID__)
++  surfaceGen = AndroidApi::windowGeneration();
++#endif
+   return ret;
+   }
+ 
+diff --git a/Engine/gapi/vulkan/vswapchain.h b/Engine/gapi/vulkan/vswapchain.h
+index 4c36c4b..94eb529 100644
+--- a/Engine/gapi/vulkan/vswapchain.h
++++ b/Engine/gapi/vulkan/vswapchain.h
+@@ -113,6 +113,9 @@ class VSwapchain : public AbstractGraphicsApi::Swapchain {
+     VDevice&                 device;
+     SystemApi::Window*       hwnd      = nullptr;
+     VkSurfaceKHR             surface   = VK_NULL_HANDLE;
++#if defined(__ANDROID__)
++    uint32_t                 surfaceGen = 0; // Gothic II Mobile: номер окна Android, на котором создана surface
++#endif
+     VkSwapchainKHR           swapChain = VK_NULL_HANDLE;
+ 
+     uint32_t                 imgIndex = 0;
+diff --git a/Engine/sound/sounddevice.cpp b/Engine/sound/sounddevice.cpp
+index c67acbe..fc17892 100644
+--- a/Engine/sound/sounddevice.cpp
++++ b/Engine/sound/sounddevice.cpp
+@@ -223,6 +223,17 @@ void SoundDevice::suspend() {
+   alcSuspendContext(data->context);
+   }
+ 
++void SoundDevice::setPaused(bool paused) {
++  auto& list = PhysicalDeviceList::inst();
++  std::lock_guard<std::mutex> guard(list.sync);
++  auto dev = list.val.lock();
++  if(dev==nullptr)
++    return;
++  if(paused)
++    alcDevicePauseSOFT(dev->dev); else
++    alcDeviceResumeSOFT(dev->dev);
++  }
++
+ void SoundDevice::setListenerPosition(const Vec3& p) {
+   float xyz[] = {p.x,p.y,p.z};
+   alListenerfvDirect(data->context, AL_POSITION, xyz);
+diff --git a/Engine/sound/sounddevice.h b/Engine/sound/sounddevice.h
+index 3bf1ca8..d657a93 100644
+--- a/Engine/sound/sounddevice.h
++++ b/Engine/sound/sounddevice.h
+@@ -44,6 +44,9 @@ class SoundDevice final {
+ 
+     void setGlobalVolume(float v);
+ 
++    // Gothic II Mobile: остановить и продолжить вывод звука всех устройств (игра свёрнута - тишина)
++    static void setPaused(bool paused);
++
+   private:
+     struct Data;
+     struct Device;
+diff --git a/Engine/system/api/androidapi.cpp b/Engine/system/api/androidapi.cpp
+index 96b7829..673a0f8 100644
+--- a/Engine/system/api/androidapi.cpp
++++ b/Engine/system/api/androidapi.cpp
+@@ -52,6 +52,29 @@ struct TouchPoint {
+   Point   movePos, moveLast;
+   };
+ static std::vector<TouchPoint> touches;
++// Gothic II Mobile: системная кнопка «Назад» - Esc игры (иначе NativeActivity закрывается)
++static bool                    backPressed = false;
++
++// Gothic II Mobile: при сворачивании Android забирает окно (APP_CMD_TERM_WINDOW), при возврате даёт новое
++// (APP_CMD_INIT_WINDOW). Раньше потеря окна закрывала игру - вернувшись, игрок видел экран запуска.
++// Теперь дескриптор окна движка - этот постоянный слот: свёрнуто - окна нет, кадров и тиков игры тоже
++// (игра на паузе), вернулись - цепочка кадров создаётся на новом окне
++struct WindowSlot {
++  ANativeWindow* window     = nullptr;
++  uint32_t       generation = 0;
++  };
++static WindowSlot windowSlot;
++
++static void setSlotWindow(ANativeWindow* w) {
++  if(windowSlot.window==w)
++    return;
++  if(windowSlot.window!=nullptr)
++    ANativeWindow_release(windowSlot.window);
++  windowSlot.window = w;
++  if(w!=nullptr)
++    ANativeWindow_acquire(w);
++  windowSlot.generation++;
++  }
+ 
+ static void pressTouch(int32_t id, Point pos) {
+   size_t slot = 0;
+@@ -101,6 +124,14 @@ std::filesystem::path AndroidApi::externalDataPath() {
+   return path!=nullptr ? path : "";
+   }
+ 
++void* AndroidApi::nativeWindow(SystemApi::Window* w) {
++  return w!=nullptr ? reinterpret_cast<WindowSlot*>(w)->window : nullptr;
++  }
++
++uint32_t AndroidApi::windowGeneration() {
++  return windowSlot.generation;
++  }
++
+ void AndroidApi::updateFocus() {
+   const bool next = resumed && focused;
+   if(active==next)
+@@ -120,6 +151,8 @@ void AndroidApi::updateWindow() {
+   if(mainWindow==nullptr)
+     return;
+ 
++  // Gothic II Mobile: новое окно после сворачивания - смена размера пересоздаёт цепочку кадров на нём
++  setSlotWindow(app->window);
+   SizeEvent event(ANativeWindow_getWidth(app->window),ANativeWindow_getHeight(app->window));
+   AndroidApi::dispatchResize(*mainWindow,event);
+   }
+@@ -157,6 +190,16 @@ void AndroidApi::onAppCmd(void*, int32_t cmd) {
+       updateFocus();
+       break;
+     case APP_CMD_TERM_WINDOW:
++      // Gothic II Mobile: свернули - не выход из игры. Цепочка кадров уничтожается сейчас, пока окно живо:
++      // нулевой размер - MainWindow::resizeEvent сбрасывает её, а без окна новая не создаётся
++      hasWindow = false;
++      releaseAllTouches();
++      setSlotWindow(nullptr);
++      if(mainWindow!=nullptr) {
++        SizeEvent event(0,0);
++        AndroidApi::dispatchResize(*mainWindow,event);
++        }
++      break;
+     case APP_CMD_DESTROY:
+       hasWindow = false;
+       if(mainWindow!=nullptr) {
+@@ -172,6 +215,11 @@ void AndroidApi::onAppCmd(void*, int32_t cmd) {
+ 
+ int32_t AndroidApi::onInputEvent(const void* input) {
+   const auto event = static_cast<const AInputEvent*>(input);
++  if(AInputEvent_getType(event)==AINPUT_EVENT_TYPE_KEY && AKeyEvent_getKeyCode(event)==AKEYCODE_BACK) {
++    if(AKeyEvent_getAction(event)==AKEY_EVENT_ACTION_UP)
++      backPressed = true;
++    return 1;
++    }
+   if(AInputEvent_getType(event)!=AINPUT_EVENT_TYPE_MOTION ||
+      (AInputEvent_getSource(event) & AINPUT_SOURCE_TOUCHSCREEN)!=AINPUT_SOURCE_TOUCHSCREEN)
+     return 0;
+@@ -209,6 +257,14 @@ int32_t AndroidApi::onInputEvent(const void* input) {
+ bool AndroidApi::processTouchEvents(AppCallBack& cb) {
+   if(mainWindow==nullptr || isExit.load())
+     return false;
++  if(backPressed) {
++    backPressed = false;
++    KeyEvent down(Event::K_ESCAPE,Event::M_NoModifier,Event::KeyDown);
++    SystemApi::dispatchKeyDown(*mainWindow,down,AKEYCODE_BACK);
++    KeyEvent up(Event::K_ESCAPE,Event::M_NoModifier,Event::KeyUp);
++    SystemApi::dispatchKeyUp(*mainWindow,up,AKEYCODE_BACK);
++    return true;
++    }
+   // Dispatch a copy: handlers may poll recursively and change touches
+   for(size_t i=0; i<touches.size(); ++i) {
+     auto& t = touches[i];
+@@ -258,8 +314,8 @@ SystemApi::Window* AndroidApi::createAndroidWindow(Tempest::Window* owner) {
+   if(isExit.load() || app->destroyRequested!=0)
+     return nullptr;
+   mainWindow = owner;
+-  ANativeWindow_acquire(app->window);
+-  return reinterpret_cast<SystemApi::Window*>(app->window);
++  setSlotWindow(app->window);
++  return reinterpret_cast<SystemApi::Window*>(&windowSlot);
+   }
+ 
+ SystemApi::Window* AndroidApi::implCreateWindow(Tempest::Window* owner, uint32_t, uint32_t) {
+@@ -270,8 +326,8 @@ SystemApi::Window* AndroidApi::implCreateWindow(Tempest::Window* owner, ShowMode
+   return createAndroidWindow(owner);
+   }
+ 
+-void AndroidApi::implDestroyWindow(SystemApi::Window* w) {
+-  ANativeWindow_release(reinterpret_cast<ANativeWindow*>(w));
++void AndroidApi::implDestroyWindow(SystemApi::Window*) {
++  setSlotWindow(nullptr);
+   mainWindow = nullptr;
+   touches.clear();
+   }
+@@ -282,7 +338,9 @@ void AndroidApi::implExit() {
+   }
+ 
+ Rect AndroidApi::implWindowClientRect(SystemApi::Window* w) {
+-  const auto window = reinterpret_cast<ANativeWindow*>(w);
++  const auto window = reinterpret_cast<ANativeWindow*>(nativeWindow(w));
++  if(window==nullptr)
++    return Rect(); // свёрнуто
+   return Rect(0,0,ANativeWindow_getWidth(window),ANativeWindow_getHeight(window));
+   }
+ 
+diff --git a/Engine/system/api/androidapi.h b/Engine/system/api/androidapi.h
+index 54d4ec5..25cfcef 100644
+--- a/Engine/system/api/androidapi.h
++++ b/Engine/system/api/androidapi.h
+@@ -10,6 +10,12 @@ class AndroidApi final : SystemApi {
+     static std::filesystem::path internalDataPath();
+     static std::filesystem::path externalDataPath();
+ 
++    // Gothic II Mobile: окно Android пропадает при сворачивании и приходит новое при возврате, а дескриптор
++    // окна движка постоянный: текущее ANativeWindow (nullptr - свёрнуто) и номер окна - сменился, значит,
++    // поверхность Vulkan надо создать заново (VSwapchain::reset)
++    static void*    nativeWindow(SystemApi::Window* w);
++    static uint32_t windowGeneration();
++
+   private:
+     AndroidApi() = default;
+ 

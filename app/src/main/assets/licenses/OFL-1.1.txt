@@ -1,4 +1,5 @@
-Copyright 2011 The Alegreya Project Authors (https://github.com/huertatipografica/Alegreya)
+Значок приложения: контур буквы «G» из шрифта UnifrakturMaguntia (автор j. 'mach' wust), перерисованный
+в векторный ресурс; сам шрифт в приложение не входит.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

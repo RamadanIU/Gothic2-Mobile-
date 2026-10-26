@@ -1,28 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    Gothic II на движке OpenGothic (C++, нативно, Vulkan). Игра читается прямо из папки игрока:
+    targetSdk 28 и разрешение «Файлы» (app/build.gradle.kts).
+-->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:name="android.hardware.vulkan.level" android:version="0" android:required="true" />
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true" />
 
-    <!-- Доступ к файлам: игра запускается прямо из папки игрока (Wine работает с путями, а не с
-         content://). При targetSdk 28 это обычное разрешение «Файлы», как у Winlator; без него
-         игру можно только скопировать в приложение через системный выбор папки. -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-
-    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
-    <uses-feature android:name="android.hardware.touchscreen.multitouch.distinct" android:required="true" />
-    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+    <!-- Живой NPC (docs/AI_NPC.md): языковая модель и облачные голоса по ключу игрока, речь игрока -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
-        android:name=".GothicApplication"
-        android:allowBackup="false"
+        android:label="Gothic II"
         android:icon="@mipmap/gothic_icon"
-        android:roundIcon="@mipmap/gothic_icon_round"
-        android:label="@string/game_title"
+        android:hasCode="true"
+        android:allowBackup="false"
+        android:appCategory="game"
         android:requestLegacyExternalStorage="true"
-        android:supportsRtl="false"
-        android:theme="@style/Theme.Gothic2">
+        android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
 
         <activity
-            android:name=".ui.LauncherActivity"
+            android:name=".LauncherActivity"
             android:exported="true"
             android:screenOrientation="sensorLandscape">
             <intent-filter>
@@ -32,24 +33,36 @@
         </activity>
 
         <activity
-            android:name=".ui.GameActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density"
+            android:name=".LicensesActivity"
             android:exported="false"
-            android:launchMode="singleTask"
-            android:resizeableActivity="false"
+            android:screenOrientation="sensorLandscape" />
+
+        <activity
+            android:name=".AiSettingsActivity"
+            android:exported="false"
             android:screenOrientation="sensorLandscape"
-            android:theme="@style/Theme.Gothic2.Game" />
+            android:windowSoftInputMode="adjustResize" />
 
+        <!-- Игра - в своём процессе: движок после выхода завершает процесс, экран запуска остаётся
+             и перезапускает игру с другими настройками или вариантом (GameActivity) -->
         <activity
-            android:name=".ui.SettingsActivity"
+            android:name=".GameActivity"
             android:exported="false"
-            android:label="@string/settings_title"
-            android:screenOrientation="sensorLandscape" />
-
-        <activity
-            android:name=".ui.LicensesActivity"
-            android:exported="false"
-            android:label="@string/licenses_title"
-            android:screenOrientation="sensorLandscape" />
+            android:process=":game"
+            android:screenOrientation="sensorLandscape"
+            android:launchMode="singleTask"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode">
+            <meta-data android:name="android.app.lib_name" android:value="Gothic2Notr" />
+        </activity>
     </application>
+
+    <!-- Распознавание речи (SpeechRecognizer) на Android 11+ видно только так -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
 </manifest>

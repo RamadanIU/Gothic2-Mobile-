@@ -16,8 +16,7 @@ dependencyResolutionManagement {
 
 rootProject.name = "Gothic2Mobile"
 
-// core — чистая Kotlin/JVM-логика без Android (ввод, сохранения, проверка сборки, профили).
-// app  — Android-приложение: экран игры, оверлей, импорт, настройки, связь со средой исполнения.
-// winlator — среда исполнения (Wine + Box64 + X-сервер) из исходников Winlator; их скачивает
-//            tools/fetch-winlator.sh в third_party/winlator-app.
-include(":core", ":app", ":winlator")
+// app — Android-приложение: экран запуска (папка игры, графика), экран игры и движок OpenGothic
+//       (C++, собирается через CMake из third_party/opengothic — его скачивает tools/fetch-opengothic.sh
+//       и накладывает наши патчи third_party/opengothic*.patch).
+include(":app")

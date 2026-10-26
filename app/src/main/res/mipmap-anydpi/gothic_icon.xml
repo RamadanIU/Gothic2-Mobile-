@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     Значок: золотая готическая «G» на тёплом тёмном фоне; monochrome — для тематических значков
-    Android 13+. Имя своё, не ic_launcher: у Winlator есть mipmap-anydpi-v26/ic_launcher, и на
-    Android 8+ он перекрывал бы наш значок.
+    Android 13+.
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@drawable/gothic_icon_background" />
