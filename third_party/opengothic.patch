@@ -18627,15 +18627,15 @@ index 378d837..0089ba4 100644
  #endif
  
 diff --git a/shader/sky/fog.frag b/shader/sky/fog.frag
-index be1c08b..f8a2606 100644
+index be1c08b..8045ebb 100644
 --- a/shader/sky/fog.frag
 +++ b/shader/sky/fog.frag
 @@ -24,6 +24,13 @@ layout(location = 0) out vec4 outColor;
  #else
  layout(binding = 0) uniform sampler3D fogLut;
  layout(binding = 1) uniform sampler3D fogLutMs;
-+// Gothic II Mobile: дымка у границы прорисовки - земля и предметы вдали переходят в цвет неба, а не
-+// обрываются; skyLUT - небо по направлениям (как в sky.frag)
++// Gothic II Mobile: дымка у границы прорисовки - земля и предметы вдали переходят в цвет неба у горизонта, а
++// не обрываются; skyLUT - небо по направлениям (как в sky.frag)
 +layout(binding = 5) uniform sampler2D skyLUT;
 +layout(push_constant, std430) uniform UboPush {
 +  float fadeStart; // см; fadeEnd==0 - без дымки
@@ -18644,17 +18644,35 @@ index be1c08b..f8a2606 100644
  #endif
  
  layout(binding = 2) uniform sampler2D depth;
-@@ -199,6 +206,18 @@ void main_frag() {
+@@ -199,6 +206,36 @@ void main_frag() {
    lum *= scene.GSunIntensity;
    lum *= scene.exposure;
  
-+  if(!isSky && push.fadeEnd>0) {
-+    const vec3  wpos = inverse(vec3(inPos,dMax));    // метры
-+    const vec3  ray  = wpos - scene.camPos*0.01;
-+    const float k    = smoothstep(push.fadeStart, push.fadeEnd, length(ray)*100.0);
++  if(push.fadeEnd>0) {
++    // Gothic II Mobile: дымка - цвет неба у горизонта в ту же сторону, а не в направлении взгляда: ниже горизонта в
++    // таблице неба тёмная «земля планеты», и при взгляде с холма вниз дальний город уходил в черноту.
++    // Тем же цветом закрыто «небо» ниже горизонта - там, где земля дальше дальности прорисовки отсечена.
++    float k = 0;
++    vec3  dir;
++    if(isSky) {
++      dir = view;
++      k   = smoothstep(0.0, -0.02, dir.y);
++      } else {
++      const vec3 wpos = inverse(vec3(inPos,dMax));   // метры
++      const vec3 ray  = wpos - scene.camPos*0.01;
++      dir = normalize(ray);
++      k   = smoothstep(push.fadeStart, push.fadeEnd, length(ray)*100.0);
++      }
 +    if(k>0) {
-+      const vec3 viewPos = vec3(0.0, RPlanet + scene.plPosY, 0.0);
-+      const vec3 skyLum  = textureSkyLUT(skyLUT, viewPos, normalize(ray), sunDir)*scene.GSunIntensity*scene.exposure;
++      const vec3  viewPos = vec3(0.0, RPlanet + scene.plPosY, 0.0);
++      const float h       = viewPos.y;
++      const float yMin    = sqrt(max(h*h - RPlanet*RPlanet, 0.0))/h + 0.01; // чуть выше горизонта таблицы
++      vec2 xz = dir.xz;
++      if(dot(xz,xz)<1e-8)
++        xz = vec2(1,0);
++      const float y      = max(dir.y, yMin);
++      const vec3  hor    = vec3(normalize(xz)*sqrt(max(1.0-y*y, 0.0)), y);
++      const vec3  skyLum = textureSkyLUT(skyLUT, viewPos, hor.xzy, sunDir)*scene.GSunIntensity*scene.exposure;
 +      lum = mix(lum, skyLum, k);
 +      tr  = tr*(1.0-k);
 +      }
