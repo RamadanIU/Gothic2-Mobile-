@@ -41,7 +41,8 @@ class LicensesActivity : AppCompatActivity() {
         Entry("Box64", "© Sebastien Chevalier (ptitSeb) и участники · MIT", "MIT.txt"),
         Entry(
             "DXVK и D7VK",
-            "© Philip Rebohle, Joshua Ashton и участники; D7VK © WinterSnowfall · zlib. D7VK 1.11 изменён: исправлена ошибка GetCaps",
+            "© Philip Rebohle, Joshua Ashton и участники; D7VK © WinterSnowfall · zlib. D7VK 1.11 изменён: исправлены " +
+                "ошибка GetCaps и выгрузка уровней текстур; изменения — third_party/d7vk.patch в исходниках приложения",
             "Zlib.txt",
         ),
         Entry("Mesa (Turnip, Zink)", "© авторы Mesa · MIT", "MIT.txt"),

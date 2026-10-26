@@ -11,7 +11,8 @@ package gothic2.mobile.app.runtime
  * отдаёт встроенному ddraw Wine (`ddraw_.dll`), который работает через OpenGL второго драйвера. С
  * Gladio этот ddraw сообщал игре негодные возможности («maximum texture size is lower than 32» — так
  * же падал и WineD3D + Gladio), поэтому OpenGL в режимах D7VK — Zink. С Zink игра доходила до ошибки
- * в самом D7VK 1.11 (падение при запуске) — её исправляет BinaryFix.D7VK_1_11_HEL_CAPS.
+ * в самом D7VK 1.11 (падение при запуске). Вместо D7VK из Winlator работает наша сборка того же
+ * D7VK 1.11 с исправлениями (FileReplacement.D7VK_1_11_GOTHIC), запасной путь — BinaryFix.D7VK_1_11_HEL_CAPS.
  *
  * @property title название в настройках — без названий библиотек: игрок выбирает «быстрый» или «совместимый»
  * @property graphicsDriver драйверы Winlator «Vulkan,OpenGL»
@@ -46,6 +47,9 @@ enum class GraphicsMode(val id: String, val title: String, val graphicsDriver: S
         /** По умолчанию: на Adreno — D7VK через Turnip, иначе WineD3D через Vortek. */
         fun defaultFor(gpuName: String?): GraphicsMode =
             if (gpuName?.contains("Adreno", ignoreCase = true) == true) D7VK_TURNIP else WINED3D_ZINK
+
+        /** Наша сборка D7VK в assets (tools/build-d7vk.sh, FileReplacement.D7VK_1_11_GOTHIC). */
+        const val D7VK_ASSET = "d7vk/ddraw.dll"
 
         fun of(id: String?, gpuName: String?): GraphicsMode = entries.firstOrNull { it.id == id } ?: defaultFor(gpuName)
 
