@@ -125,6 +125,9 @@ struct Actor {
   // рука к ране, как Npc: после удара - через 0,2 с, держит hold с
   WoundReach               wound;              // рука к ране - как у Npc
   float                    woundHold = 2.f;
+  bool                     fight     = false;  // в бою (оружие в руках): рука у раны - короче, как Npc::noteWound
+  uint8_t                  freeArms  = 3;      // свободные руки (бит 0 - левая): с одноручным - 1
+  float                    painPower = 0, painAt = -1, painSide = 0; // боль - как Npc::painNow
   std::vector<Matrix4x4>   anim, prevAnim, disp;
   std::vector<std::pair<Vec3,char>> marks;
   uint64_t                 dt = 33;
@@ -202,17 +205,23 @@ struct Actor {
 
   void hit(Vec3 atPt, Vec3 dir, float power, float damage, uint8_t kind = Ragdoll::H_Melee, bool stagger = true) {
     if(!r) startActive();
-    Ragdoll::Hit h; h.at = atPt; h.dir = dir; h.power = power; h.damage = damage; h.kind = kind; h.freeArms = 1;
+    Ragdoll::Hit h; h.at = atPt; h.dir = dir; h.power = power; h.damage = damage; h.kind = kind; h.freeArms = freeArms;
     r->hitActive(h,stagger);
     // рана для слоя позы - как Npc::noteWound
     InjuryRig::Wound w;
     if(rig!=nullptr && rig->woundAt(disp.data(),disp.size(),atPt,w)) {
-      const int8_t arm = rig->reachArm(w,1|2);
-      if(arm>=0) {
+      const int8_t arm = rig->reachArm(w,freeArms);
+      if(arm>=0 && damage>=0.04f) {
         WoundReach::Wound wr;
-        wr.bone = w.bone; wr.arm = arm; wr.local = w.local; wr.normal = w.normal;
-        wound.add(wr, int64_t(time*1000.f), int64_t(woundHold*1000.f));
+        wr.bone = w.bone; wr.arm = arm; wr.zone = w.zone; wr.local = w.local; wr.normal = w.normal;
+        const float hold = fight ? 1.5f + 3.f*damage : woundHold;
+        wound.add(wr, int64_t(time*1000.f), int64_t(hold*1000.f));
         }
+      const float c = painNow();
+      const float p = std::max(std::clamp(0.3f + 2.5f*damage, 0.3f, 1.f), c);
+      painPower = p;
+      painAt    = time - 0.45f*c/p;
+      painSide  = (w.zone==InjuryRig::Z_Leg) ? 0.f : (w.side==0 ? 1.f : -1.f)*(w.zone==InjuryRig::Z_Arm ? 0.4f : 0.7f);
       if(w.zone==InjuryRig::Z_Leg && damage>0.15f) {
         inj.leg  = w.side;
         inj.limp = std::clamp(damage*2.5f, 0.35f, 1.f);
@@ -220,9 +229,17 @@ struct Actor {
       }
     }
 
+  float painNow() const {
+    if(painAt<0.f)
+      return 0.f;
+    return painPower*LimbIk::envelope(time-painAt, 0.45f, 0.3f+1.2f*painPower, 1.6f);
+    }
+
   void tick() {
     const float dts = float(dt)/1000.f;
     time += dts;
+    inj.pain     = painNow();
+    inj.painSide = painSide;
     if(walking) {
       const float a = rotY*float(M_PI)/180.f;
       at += Vec3(std::sin(a),0,std::cos(a))*(speed*dts);

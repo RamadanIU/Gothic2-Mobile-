@@ -9100,10 +9100,10 @@ index dadfd6d..eb65cb1 100644
      struct Attach {
 diff --git a/common/graphics/mesh/injury.cpp b/common/graphics/mesh/injury.cpp
 new file mode 100644
-index 0000000..8656359
+index 0000000..485746d
 --- /dev/null
 +++ b/common/graphics/mesh/injury.cpp
-@@ -0,0 +1,447 @@
+@@ -0,0 +1,495 @@
 +#include "injury.h"
 +
 +#include "limbik.h"
@@ -9355,6 +9355,8 @@ index 0000000..8656359
 +  if(fwd.length()<0.5f)
 +    fwd = Vec3(0,0,1);
 +
++  if(inj.pain>0.001f)
++    applyPain(inj, w, fwd);
 +  if(inj.hunch>0.001f)
 +    applyHunch(inj.hunch, w, Vec3::crossProduct(Vec3(0,1,0),fwd));
 +  if(inj.leg>=0 && inj.limp>0.001f)
@@ -9417,6 +9419,52 @@ index 0000000..8656359
 +    setWorld(w,head,m);
 +    rebuild(w);
 +    }
++  }
++
++void InjuryRig::applyPain(const Injury& inj, Work& w, const Vec3& fwd) const {
++  // Согнулся от боли (как в Euphoria): колени подгибаются - таз ниже и чуть назад, наклонён вперёд (ступни где в
++  // анимации, IK ног), корпус сгибается вперёд и к ране, голова опускается. Держится секунды после удара - и в
++  // драке, без физики (Npc::painNow)
++  const float s    = smooth(std::clamp(inj.pain,0.f,1.f));
++  const float k    = w.scale;
++  const Vec3  up   = Vec3(0,1,0);
++  const Vec3  left = Vec3::crossProduct(up,fwd); // поворот вокруг «влево» уводит верх вперёд
++  const Matrix4x4 footA[2] = {w.w[foot[0]], w.w[foot[1]]};
++  {
++  Matrix4x4 m = w.w[pelvis];
++  rotateBasis(m,left,deg(8.f)*s);
++  setOrigin(m, origin(m) - up*(7.f*k*s) - fwd*(3.f*k*s));
++  setWorld(w,pelvis,m);
++  rebuild(w);
++  }
++  {
++  const float n    = float(std::max<size_t>(bendable.size(),1));
++  const float bow  = deg(26.f)*s/n;
++  const float lean = -deg(8.f)*s*std::clamp(inj.painSide,-1.f,1.f)/n; // + вокруг «вперёд» уводит верх вправо
++  for(auto b:bendable) {
++    Matrix4x4 m = w.w[b];
++    rotateBasis(m,left,bow);
++    rotateBasis(m,fwd,lean);
++    setWorld(w,b,m);
++    rebuild(w);
++    }
++  }
++  if(head<parent.size()) {
++    Matrix4x4 m = w.w[head];
++    rotateBasis(m,left,deg(16.f)*s);
++    setWorld(w,head,m);
++    rebuild(w);
++    }
++  for(int i=0; i<2; ++i) {
++    Matrix4x4 t = w.w[thigh[i]], c = w.w[calf[i]], f = w.w[foot[i]];
++    solve(t,c,f,origin(footA[i]),fwd);
++    Matrix4x4 fa = footA[i];
++    setOrigin(fa,origin(f));
++    setWorld(w,thigh[i],t);
++    setWorld(w,calf[i],c);
++    setWorld(w,foot[i],fa);
++    }
++  rebuild(w);
 +  }
 +
 +void InjuryRig::applyLimp(const Injury& inj, Work& w, const Vec3& fwd) const {
@@ -9553,10 +9601,10 @@ index 0000000..8656359
 +  }
 diff --git a/common/graphics/mesh/injury.h b/common/graphics/mesh/injury.h
 new file mode 100644
-index 0000000..fe10dcb
+index 0000000..e4d681e
 --- /dev/null
 +++ b/common/graphics/mesh/injury.h
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,193 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -9585,8 +9633,12 @@ index 0000000..fe10dcb
 +  int8_t        leg    = -1;  // хромает на ногу: 0 - левая, 1 - правая
 +  float         limp   = 0;   // 0..1
 +  float         hunch  = 0;   // 0..1
++  float         pain   = 0;   // 0..1 - согнулся от боли после удара: корпус и голова вперёд, колени подогнуты
++  float         painSide = 0; // -1..1 - и вбок, к ране (+ - влево)
 +
-+  bool isActive() const { return (arm>=0 && reach>0.001f) || (leg>=0 && limp>0.001f) || hunch>0.001f; }
++  bool isActive() const {
++    return (arm>=0 && reach>0.001f) || (leg>=0 && limp>0.001f) || hunch>0.001f || pain>0.001f;
++    }
 +  };
 +
 +// Рука к ране во времени (Npc::tickInjury): через Delay после удара тянется (Rise), держит, отпускает (Fall). Новая
@@ -9596,11 +9648,12 @@ index 0000000..fe10dcb
 +  struct Wound final {
 +    uint16_t      bone   = 0;
 +    int8_t        arm    = -1;
++    uint8_t       zone   = 0;    // InjuryRig::Zone
 +    Tempest::Vec3 local  = {};
 +    Tempest::Vec3 normal = {};
 +    };
-+  static constexpr int64_t Delay = 250;
-+  static constexpr int64_t Rise  = 800;
++  static constexpr int64_t Delay = 150;
++  static constexpr int64_t Rise  = 650;
 +  static constexpr int64_t Fall  = 900;
 +  static constexpr int64_t Swap  = 550;  // уйти от старой раны (полностью прижатая рука)
 +
@@ -9635,8 +9688,9 @@ index 0000000..fe10dcb
 +      hasNext   = false;
 +      return;
 +      }
-+    if(w.arm==cur.arm && w.bone==cur.bone) {
-+      // та же рана (или рядом) - рука остаётся, держит дольше
++    if(w.arm==cur.arm && (w.bone==cur.bone || (w.zone==cur.zone && w.zone==0))) {
++      // та же рана или снова в корпус - рука остаётся на первой ране (держится за самую больную), держит дольше:
++      // иначе в драке, где удар за ударом, рука только перебегала бы от раны к ране и не дотягивалась
 +      const int64_t left = at+Delay+Rise+hold-now;
 +      hold += std::max<int64_t>(0, holdMs-left);
 +      return;
@@ -9741,6 +9795,7 @@ index 0000000..fe10dcb
 +    void      setWorld(Work& w, size_t bone, const Tempest::Matrix4x4& m) const;
 +    void      applyLimp (const Injury& inj, Work& w, const Tempest::Vec3& fwd) const;
 +    void      applyHunch(float a, Work& w, const Tempest::Vec3& axis) const;
++    void      applyPain (const Injury& inj, Work& w, const Tempest::Vec3& fwd) const;
 +    void      applyReach(const Injury& inj, Work& w, const Tempest::Vec3& fwd) const;
 +  };
 diff --git a/common/graphics/mesh/limbik.h b/common/graphics/mesh/limbik.h
@@ -12032,10 +12087,10 @@ index daa4a7d..455d40d 100644
  #include <BulletCollision/CollisionShapes/btBoxShape.h>
 diff --git a/common/physics/ragdoll.cpp b/common/physics/ragdoll.cpp
 new file mode 100644
-index 0000000..c7cb159
+index 0000000..85711fb
 --- /dev/null
 +++ b/common/physics/ragdoll.cpp
-@@ -0,0 +1,3195 @@
+@@ -0,0 +1,3180 @@
 +#include "ragdoll.h"
 +
 +#include <Tempest/Log>
@@ -12501,6 +12556,7 @@ index 0000000..c7cb159
 +    float     buckle= 0;                  // 0..1
 +    float     flinch= 0;                  // руки - прикрыться, 0..1
 +    uint8_t   arms  = 0;                  // какими руками (биты)
++    Vec3      recoil= {};                 // таз уходит по удару, м - в системе персонажа
 +    float     end() const { return at+rise+hold+fall; }
 +    float     env(float t) const { return LimbIk::envelope(t-at,rise,hold,fall); }
 +    };
@@ -13501,7 +13557,7 @@ index 0000000..c7cb159
 +  b.pain = std::max(0.f, b.pain - 2.5f*dt);
 +
 +  // ---- рефлексы
-+  Vec3  bend   = {}, headR = {};
++  Vec3  bend   = {}, headR = {}, recoil = {};
 +  float twist  = 0, dip = 0, buckle[2] = {0,0}, flinch[2] = {0,0};
 +  for(size_t i=0; i<b.reflex.size();) {
 +    const auto& r = b.reflex[i];
@@ -13512,6 +13568,7 @@ index 0000000..c7cb159
 +    const float e = r.env(b.now);
 +    bend   += r.bend*e;
 +    headR  += r.head*e;
++    recoil += r.recoil*e;
 +    twist  += r.twist*e;
 +    dip    += r.dip*e;
 +    if(r.leg>=0)
@@ -13536,9 +13593,11 @@ index 0000000..c7cb159
 +    drop += 0.11f*buckle[k];
 +    roll += deg(10.f)*buckle[k]*(k==0 ? 1.f : -1.f);
 +    }
-+  // поворот вокруг «вперёд»: положительный поднимает левую сторону (left), значит больная - вниз
-+  b.pelShift = -up*drop;
-+  b.pelRot   = b.fwd*(-roll);
++  // поворот вокруг «вперёд»: положительный поднимает левую сторону (left), значит больная - вниз.
++  // От удара откликается всё тело, а не только корпус на неподвижных ногах: таз уходит по удару, наклоняется и
++  // поворачивается вместе с корпусом (четверть сгиба, треть поворота), ступни стоят - ноги сгибаются (IK)
++  b.pelShift = -up*drop + b.toWorld(recoil);
++  b.pelRot   = b.fwd*(-roll) + b.toWorld(bend)*0.25f + up*(twist*0.35f);
 +  const btTransform pt = drive[0].target;
 +  btTransform pg = pt;
 +  const btVector3 pelOrigin = toBt(bones[lay->parts[0].bone]).getOrigin();
@@ -13560,7 +13619,7 @@ index 0000000..c7cb159
 +    btTransform cur = dp.goal*(dp.target.inverse()*d.target);
 +    btQuaternion q  = btQuaternion::getIdentity();
 +    if(std::find(lay->spineChain.begin(),lay->spineChain.end(),i)!=lay->spineChain.end())
-+      q = rotOf(bendW/nSpine)*rotOf(up*(twist/nSpine));
++      q = rotOf(bendW*(0.8f/nSpine))*rotOf(up*(twist*0.7f/nSpine));
 +    else if(i==lay->neck)
 +      q = rotOf(headW*0.4f + bendW*0.1f);
 +    else if(i==lay->head)
@@ -14132,7 +14191,9 @@ index 0000000..c7cb159
 +    if(p.pinned)
 +      continue;
 +    const bool  near = (i==part || p.parent==part || lay->parts[part].parent==i);
-+    const float k    = (i==part) ? 1.f : (near ? 0.7f : 0.45f);
++    const bool  arm  = (p.kind==K_UpperArm || p.kind==K_ForeArm || p.kind==K_Hand);
++    // незадетая рука слабеет меньше: ею тянутся к ране и прикрываются
++    const float k    = (i==part) ? 1.f : (near ? 0.7f : (arm ? 0.25f : 0.45f));
 +    auto&       d    = drive[i];
 +    const float cur  = 1.f-toneOf(i);
 +    d.dip0   = std::max(cur, dipHit*k);
@@ -14173,6 +14234,7 @@ index 0000000..c7cb159
 +    r.head = b.toLocal(bendAxis*deg(std::clamp(6.f*react, 10.f, 28.f))); else
 +    r.head = r.bend*0.35f;
 +  r.dip = std::clamp(0.007f*react, 0.006f, 0.035f);
++  r.recoil = b.toLocal(hp*(std::clamp(0.008f*react, 0.006f, 0.04f)*zoneK));
 +  if((zone==K_Thigh || zone==K_Calf) && lay->stance) {
 +    // удар в ногу: она подгибается, таз опускается и заваливается к ней, корпус - вперёд, к ране
 +    for(int k=0; k<2; ++k)
@@ -14196,28 +14258,6 @@ index 0000000..c7cb159
 +  if(b.reflex.size()>=6)
 +    b.reflex.erase(b.reflex.begin());
 +  b.reflex.push_back(r);
-+
-+  // боль: когда отдача прошла (~0,25 с), тело сжимается вокруг раны - корпус сгибается к ней (рана сзади -
-+  // выгибается назад), голова опускается, колени чуть подгибаются; держит тем дольше, чем сильнее рана
-+  if(dmg>0.02f || react>2.5f) {
-+    Behave::Reflex g;
-+    g.at   = b.now + 0.2f + 0.1f*rnd;
-+    g.rise = 0.3f;
-+    g.hold = std::clamp(0.15f + 1.5f*dmg, 0.15f, 0.9f);
-+    g.fall = 1.f;
-+    btVector3 w = at - body[lay->chest].rb->getWorldTransform().getOrigin();
-+    w.setY(0);
-+    if(w.length()<0.04f || zone==K_Thigh || zone==K_Calf)
-+      w = b.fwd;
-+    w.normalize();
-+    const float ang = deg(std::clamp(5.f + 45.f*dmg, 5.f, 18.f))*(0.85f+0.3f*rnd);
-+    g.bend = b.toLocal(up.cross(w)*ang);
-+    g.head = b.toLocal(up.cross(b.fwd)*deg(std::clamp(6.f + 20.f*dmg, 6.f, 16.f)));
-+    g.dip  = std::clamp(0.01f + 0.05f*dmg, 0.01f, 0.04f);
-+    if(b.reflex.size()>=6)
-+      b.reflex.erase(b.reflex.begin());
-+    b.reflex.push_back(g);
-+    }
 +
 +  // рана: часть и точка в системе её тела - держаться за неё, лёжа (tickFallPose) и оседая
 +  b.woundPart  = int(part);
@@ -20984,7 +21024,7 @@ index b45a9bd..35a566d 100644
      bool                isCracked() const { return isLockCracked; }
      bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..0766713 100644
+index e015398..edbd541 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -3,11 +3,15 @@
@@ -21199,7 +21239,7 @@ index e015398..0766713 100644
 +    power = 4.f;
 +    }
 +  else {
-+    at = other.visual.mapWeaponBone();
++    at = meleeHitPoint(other);
 +    if(other.weaponState()==WeaponState::W2H)
 +      power *= 1.3f;
 +    }
@@ -21536,7 +21576,7 @@ index e015398..0766713 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4818,7 +5091,732 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4818,7 +5091,783 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
      durtyTranform = 0;
      }
  
@@ -21833,16 +21873,26 @@ index e015398..0766713 100644
 +  const uint64_t now = owner.tickCount();
 +  const int8_t   arm = rig->reachArm(w,ragdollFreeArms());
 +  // царапина - рука не тянется: в драке каждый удар превращал бы бой в суету
-+  if(arm>=0 && damage>=0.06f) {
++  if(arm>=0 && damage>=0.04f) {
 +    const bool fight = weaponState()!=WeaponState::NoWeapon;
 +    WoundReach::Wound wr;
 +    wr.bone   = w.bone;
 +    wr.arm    = arm;
++    wr.zone   = w.zone;
 +    wr.local  = w.local;
 +    wr.normal = w.normal;
-+    // в бою - коротко (рука нужна для драки), без оружия - дольше; дольше и от сильной раны
-+    wound.add(wr, int64_t(now), int64_t(fight ? 900.f + 2500.f*damage : 1800.f + 6000.f*damage));
++    // в бою - короче (рука нужна для драки), без оружия - дольше; дольше и от сильной раны
++    wound.add(wr, int64_t(now), int64_t(fight ? 1500.f + 3000.f*damage : 2200.f + 6000.f*damage));
 +    }
++  // боль: тело сгибается к ране - чем сильнее удар, тем глубже и дольше (рана на ноге - корпус к ней вперёд)
++  {
++  const float c = painNow(now);
++  const float p = std::max(std::clamp(0.3f + 2.5f*damage, 0.3f, 1.f), c);
++  // удар поверх боли - без провала: огибающая продолжается с нынешнего уровня
++  painPower = p;
++  painAt    = now - uint64_t(450.f*c/p);
++  painSide  = (w.zone==InjuryRig::Z_Leg) ? 0.f : (w.side==0 ? 1.f : -1.f)*(w.zone==InjuryRig::Z_Arm ? 0.4f : 0.7f);
++  }
 +  if(w.zone==InjuryRig::Z_Leg && damage>=0.08f) {
 +    const float p = std::clamp(damage*2.5f, 0.3f, 1.f);
 +    limpPower = std::max(limpNow(now), p);
@@ -21850,6 +21900,45 @@ index e015398..0766713 100644
 +    limpFrom  = now;
 +    limpUntil = now + uint64_t(std::min(8000.f + 40000.f*damage, 30000.f));
 +    }
++  }
++
++float Npc::painNow(uint64_t now) const {
++  // согнуться от боли: нарастает 0,45 с, держит (дольше от сильного удара), отходит 1,6 с
++  if(painPower<=0.f || now<painAt)
++    return 0.f;
++  const float t = float(now-painAt)/1000.f;
++  return painPower*LimbIk::envelope(t, 0.45f, 0.3f+1.2f*painPower, 1.6f);
++  }
++
++Vec3 Npc::meleeHitPoint(const Npc& other) const {
++  // Куда пришёлся удар ближнего боя (регдолл, рука к ране, боль). Сама игра точку удара не считает:
++  // MdlVisual::mapWeaponBone для меча и кулака - это ноги нападающего, и каждый удар выходил ударом по голени.
++  // Высота - того, чем бьют: правая кисть (меч, кулак) у людей и орков, у зверей - голова (зубы); точка - на теле
++  // задетого со стороны нападающего, по высоте - от бёдер до макушки, вбок - как кисть от оси нападающего
++  Vec3 by = other.visual.mapHeadBone();
++  if(other.isHuman() || other.weaponState()==WeaponState::W1H || other.weaponState()==WeaponState::W2H) {
++    if(auto sk = other.visual.visualSkeleton()) {
++      size_t id = sk->findNode("ZS_RIGHTHAND");
++      if(id==size_t(-1))
++        id = sk->findNode("BIP01 R HAND");
++      if(id!=size_t(-1))
++        by = other.visual.mapBone(id);
++      }
++    }
++  const Vec3  me    = position();
++  const float footY = me.y;
++  const float headY = std::max(visual.mapHeadBone().y, footY+40.f);
++  const float top   = headY + 0.06f*(headY-footY);
++  const float h     = top-footY;
++  Vec3 dir = Vec3(other.x-x, 0, other.z-z);
++  if(dir.length()<1.f)
++    dir = Vec3(std::sin(angle*float(M_PI)/180.f), 0, std::cos(angle*float(M_PI)/180.f));
++  dir = Vec3::normalize(dir);
++  const Vec3  side = Vec3(-dir.z, 0, dir.x);
++  const float r    = 0.11f*h;
++  const float lat  = std::clamp(Vec3::dotProduct(by-other.position(), side)*0.5f, -r, r);
++  const float y    = std::clamp(by.y, footY+0.4f*h, top-0.04f*h);
++  return Vec3(me.x, y, me.z) + dir*r + side*lat;
 +  }
 +
 +float Npc::limpNow(uint64_t now) const {
@@ -21895,6 +21984,8 @@ index e015398..0766713 100644
 +    const float hp = float(attribute(ATR_HITPOINTS))/float(std::max(attribute(ATR_HITPOINTSMAX),1));
 +    if(hp<0.25f)
 +      inj.hunch = (0.25f-hp)/0.25f*0.7f;
++    inj.pain     = painNow(now);
++    inj.painSide = painSide;
 +    }
 +  // дальние - без слоя: его не разглядеть, а кости считать надо
 +  float dist = 0;
@@ -22270,7 +22361,7 @@ index e015398..0766713 100644
 +  ragFollowVer = ragdoll!=nullptr ? ragdoll->version() : 0;
 +  }
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..7c8c52a 100644
+index 7309936..66c2531 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
 @@ -10,6 +10,7 @@
@@ -22391,7 +22482,7 @@ index 7309936..7c8c52a 100644
  
        void             save(Serialize& fout) const;
        void             load(Serialize&  fin);
-@@ -514,6 +596,31 @@ class Npc final {
+@@ -514,6 +596,33 @@ class Npc final {
      Npc*      updateNearestBody();
      bool      checkHealth(bool onChange, bool forceKill);
      void      onNoHealth(bool death, HitSound sndMask);
@@ -22418,12 +22509,14 @@ index 7309936..7c8c52a 100644
 +    void      noteWound(const Tempest::Vec3& at, float damage);
 +    void      tickInjury();
 +    float     limpNow(uint64_t now) const;
++    float     painNow(uint64_t now) const;
++    Tempest::Vec3 meleeHitPoint(const Npc& other) const;
 +    void      saveRagdoll(Serialize& fout, size_t id, std::string_view directory) const;
 +    void      loadRagdoll(Serialize& fin,  size_t id, std::string_view directory);
      bool      hasAutoroll() const;
      bool      prepareTurn();
      void      stopWalkAnimation();
-@@ -555,10 +662,53 @@ class Npc final {
+@@ -555,10 +664,57 @@ class Npc final {
  
      // visual props (cache)
      uint8_t                        durtyTranform=0;
@@ -22472,12 +22565,16 @@ index 7309936..7c8c52a 100644
 +    float                          limpPower = 0;
 +    uint64_t                       limpFrom  = 0;
 +    uint64_t                       limpUntil = 0;
++    // боль после удара: тело сгибается к ране (сила 0..1, когда, в какую сторону наклон)
++    float                          painPower = 0;
++    uint64_t                       painAt    = 0;
++    float                          painSide  = 0;
 +    bool                           injuryShown = false;
 +
      WalkBit                        wlkMode                 =WalkBit::WM_Run;
      int32_t                        trGuild                 =GIL_NONE;
      int32_t                        talentsSk[TALENT_MAX_G2]={};
-@@ -608,6 +758,8 @@ class Npc final {
+@@ -608,6 +764,8 @@ class Npc final {
      AiQueue                        aiQueue;
      AiQueue                        aiQueueOverlay;
      std::vector<Routine>           routines;
@@ -22486,7 +22583,7 @@ index 7309936..7c8c52a 100644
  
      Interactive*                   currentInteract=nullptr;
      Npc*                           currentOther   =nullptr;
-@@ -629,6 +781,7 @@ class Npc final {
+@@ -629,6 +787,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;
