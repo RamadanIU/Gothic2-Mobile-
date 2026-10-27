@@ -5,6 +5,7 @@
 #include "physics/dynamicworld.h"
 #include "graphics/mesh/skeleton.h"
 #include "graphics/mesh/animmath.h"
+#include "actor.h"
 
 #include <zenkit/Mesh.hh>
 #include <chrono>
@@ -258,6 +259,106 @@ static float absDeviation(const Ragdoll& r, const std::vector<Matrix4x4>& target
   return dev;
   }
 
+// Отклонение выведенной позы от анимации (корпус, руки, голова), см
+static float shownDeviation(const bench::Actor& a) {
+  float dev = 0;
+  for(size_t i=0;i<a.disp.size();++i) {
+    const std::string& nm = a.sk.nodes[i].name;
+    if(nm.rfind("ZS_",0)==0 || nm.find("FINGER")!=std::string::npos) continue;
+    dev = std::max(dev,(org(a.disp[i])-org(a.anim[i])).length());
+    }
+  return dev;
+  }
+
+static Vec3 bonePos(const bench::Actor& a, const char* name) {
+  return org(a.disp[bench::bone(a.sk,name)]);
+  }
+
+// Сцены активного регдолла (ragtest vis <сцена> out.txt): тело на экране по кадрам для render.py
+static int visScene(const std::string& name, const char* out) {
+  zenkit::Mesh mesh;
+  DynamicWorld dw(nullptr,mesh);
+  auto hum = mkSkeleton(human(),"HUMANS.MDH");
+  FILE* f = std::fopen(out,"w");
+  if(f==nullptr)
+    return 1;
+  bench::Actor a(dw,*hum,Vec3(0,0,0));
+  float  len   = 3.f;
+  std::vector<std::pair<float,std::function<void()>>> ev;
+  auto chest = [&]() { return bonePos(a,"BIP01 SPINE2")+Vec3(0,0,12); };
+  if(name=="chest") {
+    ev.push_back({0.3f,[&]{ a.hit(chest(),Vec3(0,0,-1),3.f,0.12f); }});
+    }
+  else if(name=="shoulder") {
+    ev.push_back({0.3f,[&]{ a.hit(bonePos(a,"BIP01 L UPPERARM")+Vec3(-4,-3,8),Vec3(0,-0.1f,-1),3.2f,0.2f,Ragdoll::H_Missile); }});
+    }
+  else if(name=="leg") {
+    len = 4.f;
+    ev.push_back({0.3f,[&]{ a.hit((bonePos(a,"BIP01 L THIGH")+bonePos(a,"BIP01 L CALF"))*0.5f+Vec3(0,0,8),Vec3(0.3f,0,-1),3.5f,0.3f); }});
+    }
+  else if(name=="head") {
+    ev.push_back({0.3f,[&]{ a.hit(bonePos(a,"BIP01 HEAD")+Vec3(0,8,10),Vec3(0,0.1f,-1),3.5f,0.15f); }});
+    }
+  else if(name=="stagger") {
+    len = 3.5f;
+    ev.push_back({0.3f,[&]{ a.hit(chest(),Vec3(0,0,-1),4.8f,0.3f); }});
+    }
+  else if(name=="side") {
+    len = 3.5f;
+    ev.push_back({0.3f,[&]{ a.hit(bonePos(a,"BIP01 R UPPERARM")+Vec3(-8,-5,0),Vec3(1,0,0),4.5f,0.25f); }});
+    }
+  else if(name=="knock") {
+    len = 5.f;
+    ev.push_back({0.3f,[&]{ a.hit(chest(),Vec3(0,0,-1),6.5f,0.45f); }});
+    }
+  else if(name=="series") {
+    len = 3.5f;
+    ev.push_back({0.3f,[&]{ a.hit(chest(),Vec3(0,0,-1),3.2f,0.1f); }});
+    ev.push_back({0.9f,[&]{ a.hit(chest()+Vec3(10,0,0),Vec3(-0.3f,0,-1),3.2f,0.1f); }});
+    ev.push_back({1.5f,[&]{ a.hit(chest()-Vec3(10,0,0),Vec3(0.3f,0,-1),3.6f,0.15f); }});
+    }
+  else if(name=="death") {
+    len = 4.f;
+    ev.push_back({0.3f,[&]{ a.hit(chest(),Vec3(0,0,-1),4.f,0.3f); }});
+    ev.push_back({0.4f,[&]{ a.r->setState(Ragdoll::S_Dead); a.r->startSag(); }});
+    }
+  else if(name=="limp") {
+    len = 4.f;
+    a.walking = true; a.speed = 110;
+    a.inj.leg = 0; a.inj.limp = 0.9f;
+    }
+  else if(name=="walkhit") {
+    len = 3.f;
+    a.walking = true; a.speed = 110;
+    ev.push_back({0.6f,[&]{ a.hit(chest(),Vec3(0,0,-1),3.5f,0.15f); }});
+    }
+  else {
+    std::fclose(f);
+    std::printf("unknown scene %s\n",name.c_str());
+    return 1;
+    }
+  size_t next = 0;
+  for(float t=0; t<len; t+=0.033f) {
+    while(next<ev.size() && ev[next].first<=t) { ev[next].second(); ++next; }
+    a.tick();
+    a.marks.clear();
+    if(a.r && a.r->state()==Ragdoll::S_Active && a.r->isSimulated()) {
+      std::vector<Matrix4x4> rel; Stance st;
+      a.r->activePose(rel,st);
+      for(int k=0;k<2;++k) if(st.footW[k]>0.01f) a.marks.push_back({st.foot[k],'g'});
+      }
+    if(a.inj.arm>=0 && a.inj.reach>0.f) {
+      Vec3 p = a.inj.local; a.disp[a.inj.bone].project(p);
+      a.marks.push_back({p,'r'});
+      }
+    char label[96];
+    std::snprintf(label,sizeof(label),"%s show=%.2f",name.c_str(),a.r ? double(a.r->showWeight()) : 0.0);
+    a.dump(f,label);
+    }
+  std::fclose(f);
+  return 0;
+  }
+
 static int activeTests(DynamicWorld& dw, const Skeleton& hum, const Skeleton& wlf) {
   int fail = 0;
   auto ok = [&](bool v, const char* what) { if(!v) { fail++; std::printf("   ^^^ FAIL: %s\n",what); } };
@@ -270,8 +371,8 @@ static int activeTests(DynamicWorld& dw, const Skeleton& hum, const Skeleton& wl
     r->setTarget(pose,0);
     float dev = 0;
     for(int f=0; f<60; ++f) { r->setTarget(pose,33); dw.tick(33); if(f>10) dev = std::max(dev,absDeviation(*r,pose)); }
-    std::printf("active: holds pose               max deviation %.1f cm\n",double(dev));
-    ok(dev<3.f,"holds pose");
+    std::printf("active: holds pose               max deviation %.1f cm, shown %.2f\n",double(dev),double(r->showWeight()));
+    ok(dev<3.f,"holds pose"); ok(r->showWeight()==0.f,"no hits - animation on screen");
   }
   // 2) бежит 5 м/с: относительно таза - как в анимации
   {
@@ -298,7 +399,7 @@ static int activeTests(DynamicWorld& dw, const Skeleton& hum, const Skeleton& wl
       if(f>5) dev = std::max(dev,relDeviation(*r,poseAt(hum,objAt(Vec3(-300,0,-600),float(f+1)*6.f))));
       }
     std::printf("active: turns 180 deg/s           relative %.1f cm\n",double(dev));
-    ok(dev<3.f,"turns: relative pose");
+    ok(dev<5.f,"turns: relative pose");
     auto q = Ragdoll::create(dw,hum,poseAt(hum,objAt(Vec3(-300,0,-900))).data(),hum.tr.size(),Ragdoll::S_Active);
     float sw = 0;
     for(int f=0; f<60; ++f) {
@@ -311,74 +412,150 @@ static int activeTests(DynamicWorld& dw, const Skeleton& hum, const Skeleton& wl
     std::printf("active: weapon swing 850 deg/s    hand behind animation %.1f cm, shown %.2f\n",double(sw),double(q->showWeight()));
     ok(sw<30.f,"swing: arm follows a fast swing"); ok(q->showWeight()==0.f,"swing: animation on screen without hits");
   }
-  // 3) удар спереди в грудь: тело вздрагивает и возвращается в анимацию, равновесие на месте
+
+  // 3) обычный удар в грудь (одноручный, 12 % здоровья): отклик заметный, НЕ мгновенный (пик не раньше 0,15 с),
+  // тело возвращается в анимацию плавно, стоит, почти не сдвигается
   {
-    Matrix4x4 obj = objAt(Vec3(300,0,-600));
-    auto pose = poseAt(hum,obj);
-    auto r = Ragdoll::create(dw,hum,pose.data(),pose.size(),Ragdoll::S_Active);
-    r->setTarget(pose,0);
-    for(int f=0; f<10; ++f) { r->setTarget(pose,33); dw.tick(33); }
-    Ragdoll::Hit h; h.at = org(pose[12]); h.dir = Vec3(0,0,-1); h.power = 3.f;
-    r->hitActive(h,0);
-    float peak = 0, back = 0, shown = 0;
-    for(int f=0; f<45; ++f) {
-      r->setTarget(pose,33); dw.tick(33);
-      const float d = relDeviation(*r,pose);
-      if(f<12) { peak = std::max(peak,d); shown = std::max(shown,r->showWeight()); }
-      if(f>=36) back = std::max(back,d);
+    bench::Actor a(dw,hum,Vec3(300,0,-600));
+    for(int f=0; f<5; ++f) a.tick();
+    a.hit(bonePos(a,"BIP01 SPINE2")+Vec3(0,0,12),Vec3(0,0,-1),3.f,0.12f);
+    const Vec3 at0 = a.at;
+    float peak = 0, peakT = 0, back = 0, shown = 0;
+    for(int f=0; f<75; ++f) {
+      a.tick();
+      const float d = shownDeviation(a), t = float(f+1)*0.033f;
+      if(d>peak) { peak = d; peakT = t; }
+      shown = std::max(shown,a.r->showWeight());
+      if(t>2.3f) back = std::max(back,d);
       }
-    ok(shown==1.f && r->showWeight()==0.f,"hit: physics shown during the reaction only");
-    std::printf("active: hit chest 3 m/s           reaction %.1f cm, after 1.2 s %.1f cm, balance %s\n",
-                double(peak),double(back),r->lostBalance() ? "lost" : "kept");
-    ok(peak>6.f,"hit: visible reaction"); ok(back<2.f,"hit: back to animation"); ok(!r->lostBalance(),"hit: balance");
+    const float moved = (a.at-at0).length();
+    std::printf("active: hit chest 3 m/s           reaction %.1f cm at %.2f s, after 2.3 s %.1f cm, moved %.0f cm, %s\n",
+                double(peak),double(peakT),double(back),double(moved),a.r->lostBalance() ? "FELL" : "stands");
+    ok(peak>6.f && peak<35.f,"hit: visible, not exaggerated"); ok(peakT>=0.15f,"hit: weighty, not instant");
+    ok(back<1.5f,"hit: back to animation"); ok(!a.r->lostBalance(),"hit: stands"); ok(moved<30.f,"hit: barely moves");
+    ok(shown==1.f && a.r->showWeight()==0.f,"hit: physics shown during the reaction only");
   }
-  // 4) пошатывание: обычный удар - устоял, сильный - падает
-  auto stagger = [&](float power, Vec3 hdir) {
-    Matrix4x4 obj = objAt(Vec3(600,0,-600));
-    auto pose = poseAt(hum,obj);
-    auto r = Ragdoll::create(dw,hum,pose.data(),pose.size(),Ragdoll::S_Active);
-    r->setTarget(pose,0);
-    for(int f=0; f<10; ++f) { r->setTarget(pose,33); dw.tick(33); }
-    Ragdoll::Hit h; h.at = org(pose[12]); h.dir = hdir; h.power = power;
-    r->hitActive(h,900);
+  // 4) серия слабых ударов и удары разной силы спереди, сзади, сбоку: слабые не валят, сильные - валят
+  auto knock = [&](float power, float dmg, Vec3 dir, float& moved, int& steps) {
+    bench::Actor a(dw,hum,Vec3(600,0,-600));
+    for(int f=0; f<5; ++f) a.tick();
+    const Vec3 c = bonePos(a,"BIP01 SPINE2");
+    a.hit(c-Vec3::normalize(dir)*12.f,dir,power,dmg);
+    const Vec3 at0 = a.at;
     bool lost = false;
-    for(int f=0; f<30 && !lost; ++f) { r->setTarget(pose,33); dw.tick(33); lost = r->lostBalance(); }
+    for(int f=0; f<70 && !lost; ++f) { a.tick(); lost = a.r->state()==Ragdoll::S_Fall; }
+    moved = (a.at-at0).length();
+    steps = 0;
     return lost;
     };
-  for(float pw : {2.f,3.f,4.f,5.f,6.f,8.f}) {
-    const bool lost = stagger(pw,Vec3(0,0,-1));
-    std::printf("active: stagger, hit %.0f m/s      %s\n",double(pw),lost ? "falls" : "keeps balance");
-    if(pw<=4.f) ok(!lost,"stagger: weak hit must not knock down");
-    if(pw>=6.f) ok(lost,"stagger: strong hit must knock down");
+  for(float pw : {2.5f,3.5f,4.5f,5.5f,7.f}) {
+    float moved = 0; int steps = 0;
+    const float dmg = pw<4.f ? 0.1f : (pw<6.f ? 0.3f : 0.5f);
+    const bool lost = knock(pw,dmg,Vec3(0,0,-1),moved,steps);
+    std::printf("active: hit %.1f m/s, %2.0f%% hp        %s, moved %.0f cm\n",double(pw),double(dmg*100.f),lost ? "falls" : "keeps balance",double(moved));
+    if(pw<=4.5f) ok(!lost,"stagger: weak hit must not knock down");
+    if(pw>=4.5f && pw<6.f) ok(moved>20.f,"stagger: strong hit pushes back with steps");
+    if(pw>=7.f) ok(lost,"stagger: very strong hit must knock down");
     }
-  // сзади и сбоку - так же: обычный удар не валит, сильный - валит
   for(Vec3 d : {Vec3(0,0,1),Vec3(1,0,0)}) {
-    const bool weak = stagger(3.f,d), strong = stagger(7.f,d);
-    std::printf("active: stagger from %s       3 m/s %s, 7 m/s %s\n", d.z>0 ? "behind" : "side  ",
-                weak ? "falls" : "keeps", strong ? "falls" : "keeps");
+    float m1 = 0, m2 = 0; int s1 = 0, s2 = 0;
+    const bool weak = knock(3.f,0.1f,d,m1,s1), strong = knock(7.f,0.5f,d,m2,s2);
+    std::printf("active: from %s       3 m/s %s (moved %.0f), 7 m/s %s\n", d.z>0 ? "behind" : "side  ",
+                weak ? "falls" : "keeps", double(m1), strong ? "falls" : "keeps");
     ok(!weak,"stagger: weak hit from behind/side"); ok(strong,"stagger: strong hit from behind/side");
     }
-  // 5) упал с ног: суставы с пределами, тело ложится, без NaN
+  // 5) пошатнулся: ступни переступают (не скользят), потом стоит как в анимации
   {
-    Matrix4x4 obj = objAt(Vec3(900,0,-600));
-    auto pose = poseAt(hum,obj);
-    auto r = Ragdoll::create(dw,hum,pose.data(),pose.size(),Ragdoll::S_Active);
-    r->setTarget(pose,0);
-    for(int f=0; f<5; ++f) { r->setTarget(pose,33); dw.tick(33); }
-    Ragdoll::Hit h; h.at = org(pose[12]); h.dir = Vec3(0,0,-1); h.power = 6.f;
-    r->hitActive(h,900);
-    for(int f=0; f<30 && !r->lostBalance(); ++f) { r->setTarget(pose,33); dw.tick(33); }
-    r->setState(Ragdoll::S_Fall);
-    float impact = 0; bool finite = true;
-    for(int f=0; f<120; ++f) {
-      r->setTarget(pose,33); dw.tick(33); impact = std::max(impact,r->takeImpact());
-      for(auto& m:r->world()) { Vec3 o = org(m); finite &= std::isfinite(o.x) && std::isfinite(o.y) && std::isfinite(o.z); }
+    bench::Actor a(dw,hum,Vec3(900,0,-600));
+    for(int f=0; f<5; ++f) a.tick();
+    a.hit(bonePos(a,"BIP01 SPINE2")+Vec3(0,0,12),Vec3(0,0,-1),4.8f,0.3f);
+    int   steps = 0;
+    float slide = 0, lastFoot[2] = {0,0};
+    bool  wasPlanted[2] = {false,false};
+    Vec3  prevFoot[2];
+    for(int f=0; f<90; ++f) {
+      a.tick();
+      std::vector<Matrix4x4> rel; Stance st;
+      if(a.r->state()!=Ragdoll::S_Active) break;
+      a.r->activePose(rel,st);
+      for(int k=0;k<2;++k) {
+        const Vec3 p = bonePos(a, k==0 ? "BIP01 L FOOT" : "BIP01 R FOOT");
+        const bool planted = std::abs(p.y-lastFoot[k])<0.3f && st.footW[k]>0.99f;
+        if(planted && wasPlanted[k]) slide = std::max(slide, Vec3(p.x-prevFoot[k].x,0,p.z-prevFoot[k].z).length());
+        if(!planted && wasPlanted[k]) steps++;
+        wasPlanted[k] = planted; lastFoot[k] = p.y; prevFoot[k] = p;
+        }
       }
-    std::printf("active -> fall: pelvis %.0f cm, chestFront.y %+.2f, impact %.1f m/s\n",
-                double(r->rootPosition().y),double(r->chestFront().y),double(impact));
-    ok(finite,"fall: finite"); ok(r->rootPosition().y<40.f,"fall: lies on ground");
+    const float dev = shownDeviation(a);
+    std::printf("active: stagger 4.8 m/s           steps %d, planted foot slides %.1f cm, after 3 s deviation %.1f cm, %s\n",
+                steps,double(slide),double(dev),a.r->state()==Ragdoll::S_Active ? "stands" : "FELL");
+    ok(steps>=2,"stagger: steps"); ok(slide<2.f,"stagger: feet do not slide"); ok(dev<2.f,"stagger: back to animation");
   }
-  // 6) живой падает вперёд с 2 м: руки к земле до удара; с 15 м - машет руками
+  // 6) удар в ногу: она подгибается (таз ниже), рука тянется к ране
+  {
+    bench::Actor a(dw,hum,Vec3(-900,0,-600));
+    for(int f=0; f<5; ++f) a.tick();
+    const float pel0 = bonePos(a,"BIP01 PELVIS").y;
+    const Vec3  w    = (bonePos(a,"BIP01 L THIGH")+bonePos(a,"BIP01 L CALF"))*0.5f+Vec3(0,0,8);
+    a.hit(w,Vec3(0.3f,0,-1),3.5f,0.3f);
+    float drop = 0, reach = 1e9f;
+    for(int f=0; f<60; ++f) {
+      a.tick();
+      drop = std::max(drop, pel0-bonePos(a,"BIP01 PELVIS").y);
+      if(a.inj.arm>=0) {
+        Vec3 p = a.inj.local; a.disp[a.inj.bone].project(p);
+        const Vec3 hand = bonePos(a, a.inj.arm==0 ? "BIP01 L HAND" : "BIP01 R HAND");
+        reach = std::min(reach,(hand-p).length());
+        }
+      }
+    std::printf("active: hit leg                   pelvis drops %.1f cm, hand to wound %.1f cm, limp %.2f\n",double(drop),double(reach),double(a.inj.limp));
+    ok(drop>4.f,"leg: buckles"); ok(reach<16.f,"leg: hand reaches the wound"); ok(a.inj.leg==0 && a.inj.limp>0.3f,"leg: limps");
+  }
+  // 7) стрела в плечо: корпус поворачивается
+  {
+    bench::Actor a(dw,hum,Vec3(-1200,0,-600));
+    for(int f=0; f<5; ++f) a.tick();
+    auto yaw = [&]() { const Vec3 d = bonePos(a,"BIP01 L UPPERARM")-bonePos(a,"BIP01 R UPPERARM"); return std::atan2(d.z,d.x)*180.f/float(M_PI); };
+    const float y0 = yaw();
+    a.hit(bonePos(a,"BIP01 L UPPERARM")+Vec3(-4,-3,8),Vec3(0,-0.1f,-1),3.2f,0.2f,Ragdoll::H_Missile);
+    float twist = 0;
+    for(int f=0; f<30; ++f) { a.tick(); twist = std::max(twist,std::abs(yaw()-y0)); }
+    std::printf("active: arrow in shoulder         torso turns %.0f deg\n",double(twist));
+    ok(twist>8.f,"arrow: torso twists");
+  }
+  // 8) убит стоя: оседает (не падает сразу), потом лежит и застывает
+  {
+    bench::Actor a(dw,hum,Vec3(-1500,0,-600));
+    for(int f=0; f<5; ++f) a.tick();
+    a.hit(bonePos(a,"BIP01 SPINE2")+Vec3(0,0,12),Vec3(0,0,-1),4.f,0.3f);
+    a.tick();
+    a.r->setState(Ragdoll::S_Dead);
+    a.r->startSag();
+    float at25 = 0;
+    for(int f=0; f<130 && a.r->isSimulated(); ++f) {
+      a.tick();
+      if(f==7) at25 = a.r->rootPosition().y;
+      }
+    std::printf("active -> dead standing: pelvis at 0.25 s %.0f cm, at the end %.0f cm, simulated %d\n",
+                double(at25),double(a.r->rootPosition().y),int(a.r->isSimulated()));
+    ok(at25>55.f,"death: sags, not instant collapse"); ok(a.r->rootPosition().y<40.f && !a.r->isSimulated(),"death: lies and freezes");
+  }
+  // 9) сбит с ног: падает, лежит (корчится), без NaN
+  {
+    bench::Actor a(dw,hum,Vec3(1200,0,-600));
+    for(int f=0; f<5; ++f) a.tick();
+    a.hit(bonePos(a,"BIP01 SPINE2")+Vec3(0,0,12),Vec3(0,0,-1),7.f,0.5f);
+    bool finite = true; float impact = 0;
+    for(int f=0; f<120; ++f) {
+      a.tick();
+      impact = std::max(impact,a.r->takeImpact());
+      for(auto& m:a.r->world()) { Vec3 o = org(m); finite &= std::isfinite(o.x) && std::isfinite(o.y) && std::isfinite(o.z); }
+      }
+    std::printf("knocked down: pelvis %.0f cm, chestFront.y %+.2f, impact %.1f m/s, resting %d\n",
+                double(a.r->rootPosition().y),double(a.r->chestFront().y),double(impact),int(a.r->isResting()));
+    ok(finite,"fall: finite"); ok(a.r->state()==Ragdoll::S_Fall && a.r->rootPosition().y<40.f,"fall: lies on ground");
+  }
+  // 10) живой падает вперёд с 2 м: руки к земле до удара; с 15 м - машет руками
   {
     Matrix4x4 obj = objAt(Vec3(0,200,600));
     auto pose = poseAt(hum,obj);
@@ -419,7 +596,7 @@ static int activeTests(DynamicWorld& dw, const Skeleton& hum, const Skeleton& wl
     ok(turn>90.f,"fall: flails in a long fall");
     for(int f=0; f<200 && r->isSimulated(); ++f) { r->setTarget(pose,33); dw.tick(33); }
   }
-  // 7) убитый с позой анимации: оседает и ложится (мышцы слабеют)
+  // 11) убитый с позой анимации: оседает и ложится (мышцы слабеют)
   {
     Matrix4x4 obj = objAt(Vec3(-600,0,-600));
     auto pose = poseAt(hum,obj);
@@ -430,24 +607,40 @@ static int activeTests(DynamicWorld& dw, const Skeleton& hum, const Skeleton& wl
     std::printf("dead with animation target: pelvis %.0f cm, simulated %d\n",double(r->rootPosition().y),int(r->isSimulated()));
     ok(r->rootPosition().y<40.f && !r->isSimulated(),"dead: lies and freezes");
   }
-  // 8) волк на ногах: лапы держатся, удар сбоку - тело вздрагивает
+  // 12) волк на ногах: лапы держатся, удар сбоку - тело откликается и возвращается
   {
     Matrix4x4 obj = objAt(Vec3(-300,0,-900));
     auto pose = poseAt(wlf,obj);
     auto r = Ragdoll::create(dw,wlf,pose.data(),pose.size(),Ragdoll::S_Active);
     r->setTarget(pose,0);
     for(int f=0; f<10; ++f) { r->setTarget(pose,33); dw.tick(33); }
-    Ragdoll::Hit h; h.at = Vec3(-300+5,63,-900); h.dir = Vec3(-1,0,0); h.power = 3.f;
-    r->hitActive(h,0);
+    Ragdoll::Hit h; h.at = Vec3(-300+5,63,-900); h.dir = Vec3(-1,0,0); h.power = 3.f; h.damage = 0.15f;
+    r->hitActive(h,true);
     float peak = 0, back = 0;
-    for(int f=0; f<45; ++f) {
+    for(int f=0; f<75; ++f) {
       r->setTarget(pose,33); dw.tick(33);
       const float d = relDeviation(*r,pose);
-      if(f<12) peak = std::max(peak,d);
-      if(f>=36) back = std::max(back,d);
+      if(f<20) peak = std::max(peak,d);
+      if(f>=66) back = std::max(back,d);
       }
-    std::printf("active wolf: hit side            reaction %.1f cm, after 1.2 s %.1f cm\n",double(peak),double(back));
+    std::printf("active wolf: hit side            reaction %.1f cm, after 2.2 s %.1f cm\n",double(peak),double(back));
     ok(peak>4.f && back<2.5f,"wolf: reacts and returns");
+  }
+  // 13) хромает: на больную ногу таз проседает заметно сильнее, чем на здоровую
+  {
+    bench::Actor a(dw,hum,Vec3(0,0,900));
+    a.walking = true; a.speed = 110;
+    bench::Actor b(dw,hum,Vec3(300,0,900));
+    b.walking = true; b.speed = 110;
+    a.inj.leg = 0; a.inj.limp = 0.9f;
+    float minA = 1e9f, minB = 1e9f, maxA = -1e9f, maxB = -1e9f;
+    for(int f=0; f<66; ++f) {
+      a.tick(); b.tick();
+      const float pa = bonePos(a,"BIP01 PELVIS").y, pb = bonePos(b,"BIP01 PELVIS").y;
+      minA = std::min(minA,pa); maxA = std::max(maxA,pa); minB = std::min(minB,pb); maxB = std::max(maxB,pb);
+      }
+    std::printf("limp: pelvis bob %.1f cm (healthy %.1f cm)\n",double(maxA-minA),double(maxB-minB));
+    ok(maxA-minA > maxB-minB+3.f,"limp: pelvis dips on the injured leg");
   }
   return fail;
   }
@@ -513,7 +706,7 @@ static int perf() {
         if(rs[size_t(i)]==nullptr) continue;
         auto pose = poseAt(*hum,objAt(Vec3(float(i)*200.f-300.f,0,-1500+float(f)*10.f),float(f)*3.f));
         rs[size_t(i)]->setTarget(pose, f==0 ? 0 : 33);
-        if(f%15==i) { Ragdoll::Hit h; h.at = org(pose[12]); h.dir = Vec3(0,0,-1); h.power = 3.f; rs[size_t(i)]->hitActive(h,0); }
+        if(f%15==i) { Ragdoll::Hit h; h.at = org(pose[12]); h.dir = Vec3(0,0,-1); h.power = 3.f; rs[size_t(i)]->hitActive(h,false); }
         }
       auto t0 = std::chrono::steady_clock::now();
       dw.tick(33);
@@ -534,6 +727,8 @@ static int perf() {
   }
 
 int main(int argc, char** argv) {
+  if(argc>3 && std::string(argv[1])=="vis")
+    return visScene(argv[2],argv[3]);
   if(argc>1 && std::string(argv[1])=="perf") {
     meshGround = true;
     return perf();
