@@ -319,6 +319,13 @@ final class GeraltBrain {
                         + " Скажи герою пару слов, если есть что, иначе промолчи.", false, false, act);
                 }
                 break;
+            case "teach":
+                // Уроки в разговоре («Научи меня.»): чему научил героя - помнить; после разговора можно сказать пару слов
+                memory.add(stamp() + " " + text);
+                if (ready && !talking) {
+                    turn(text + " Скажи герою пару слов о его выучке, если есть что, иначе промолчи.", false, false, act);
+                }
+                break;
             case "hero_left":
                 heroNear = false;
                 memory.add(stamp() + " " + text);

@@ -262,6 +262,10 @@ public class AiLogicTest {
         assertTrue(p.contains("equip_item"));
         // не выдумывает слов героя: прежде отвечал, будто герой уже что-то сказал
         assertTrue(p.contains("Не выдумывай за него слов"));
+        // учит всему и даёт вещи из запаса - выбором в разговоре, сам запасом не пользуется
+        assertTrue(p.contains("«Научи меня.»"));
+        assertTrue(p.contains("«Покажи свои товары.»"));
+        assertTrue(p.contains("запасом не пользуешься"));
     }
 
     @Test
