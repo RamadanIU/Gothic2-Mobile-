@@ -118,11 +118,13 @@ struct Actor {
   float                    speed = 0;          // см/с вперёд (ходьба)
   float                    time  = 0;
   bool                     walking = false;
+  float                    stumbleAt = -1;     // анимация игры «отшатнуться» (T_STUMBLE) с этого времени, с
   std::unique_ptr<Ragdoll> r;
   const InjuryRig*         rig = nullptr;
   Injury                   inj;
   // рука к ране, как Npc: после удара - через 0,2 с, держит hold с
-  float                    woundAt = -1, woundHold = 2.f;
+  WoundReach               wound;              // рука к ране - как у Npc
+  float                    woundHold = 2.f;
   std::vector<Matrix4x4>   anim, prevAnim, disp;
   std::vector<std::pair<Vec3,char>> marks;
   uint64_t                 dt = 33;
@@ -138,11 +140,27 @@ struct Actor {
 
   void mkAnim() {
     auto local = walking ? walkPose(sk,time) : stancePose(sk);
+    if(stumbleAt>=0.f)
+      stumble(local,time-stumbleAt);
     const Matrix4x4 o = obj();
     anim.resize(local.size());
     for(size_t i=0;i<local.size();++i) anim[i] = o*local[i];
     if(rig!=nullptr && inj.isActive())
       rig->apply(inj,o,anim.data(),anim.size());
+    }
+
+  // как T_STUMBLE в Gothic: игра обрывает анимацию (рывок без перехода) и за 0,1 с откидывает корпус и руки назад,
+  // за 0,35 с возвращает - быстрая анимация, которую кукла не должна повторять рывком
+  void stumble(std::vector<Matrix4x4>& w, float t) const {
+    if(t<0.f || t>0.6f)
+      return;
+    const float a = (t<0.1f ? t/0.1f : std::max(0.f, 1.f-(t-0.1f)/0.35f));
+    const size_t sp = bone(sk,"BIP01 SPINE1");
+    const Vec3   at = org(w[sp]);
+    const float  ang = -0.35f*a; // назад
+    for(size_t i=0;i<w.size();++i)
+      if(isUnder(sk,i,sp))
+        LimbIk::rotateAround(w[i],at,Vec3(1,0,0),ang);
     }
 
   bool startActive() {
@@ -161,8 +179,9 @@ struct Actor {
     if(rig!=nullptr && rig->woundAt(disp.data(),disp.size(),atPt,w)) {
       const int8_t arm = rig->reachArm(w,1|2);
       if(arm>=0) {
-        inj.arm = arm; inj.bone = w.bone; inj.local = w.local; inj.normal = w.normal;
-        woundAt = time;
+        WoundReach::Wound wr;
+        wr.bone = w.bone; wr.arm = arm; wr.local = w.local; wr.normal = w.normal;
+        wound.add(wr, int64_t(time*1000.f), int64_t(woundHold*1000.f));
         }
       if(w.zone==InjuryRig::Z_Leg && damage>0.15f) {
         inj.leg  = w.side;
@@ -178,10 +197,10 @@ struct Actor {
       const float a = rotY*float(M_PI)/180.f;
       at += Vec3(std::sin(a),0,std::cos(a))*(speed*dts);
       }
-    if(woundAt>=0.f) {
-      const float t = time-woundAt;
-      inj.reach = (t<0.2f) ? 0.f : LimbIk::envelope(t-0.2f, 0.4f, woundHold, 0.6f);
-      if(t>0.2f+0.4f+woundHold+0.6f) { woundAt = -1; inj.reach = 0; }
+    if(wound.active()) {
+      inj.reach  = wound.weight(int64_t(time*1000.f));
+      inj.arm    = wound.cur.arm;  inj.bone   = wound.cur.bone;
+      inj.local  = wound.cur.local; inj.normal = wound.cur.normal;
       }
     prevAnim = anim;
     if(r && r->state()==Ragdoll::S_Active) {
