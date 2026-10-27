@@ -60,7 +60,7 @@ final class AiOverlay {
                 return;
             }
             LinearLayout box = panel();
-            TextView title = label("Говори… (" + name(who) + " слушает)", 17, GOLD);
+            TextView title = label("Говори… Слушает: " + name(who), 17, GOLD);
             TextView heard = label("", 16, TEXT);
             box.addView(title);
             box.addView(heard);
@@ -151,7 +151,7 @@ final class AiOverlay {
         main.post(() -> {
             close();
             LinearLayout box = panel();
-            box.addView(label(who == null ? "Что сказать Геральту?" : "Что сказать: " + who + "?", 17, GOLD));
+            box.addView(label(who == null ? "Что сказать Геральту?" : "Что сказать? Слушает: " + who, 17, GOLD));
             EditText edit = new EditText(activity);
             edit.setTextColor(TEXT);
             edit.setHintTextColor(Color.rgb(0x8A, 0x80, 0x70));

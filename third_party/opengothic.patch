@@ -340,10 +340,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..cfc52d7
+index 0000000..2cb21a2
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,2887 @@
+@@ -0,0 +1,3348 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -406,6 +406,14 @@ index 0000000..cfc52d7
 +  const float    MobDist     = 1500.f;
 +  const float    HearDist    = 3000.f;  // дальше реплику вне диалога не слышно
 +  const float    SayDist     = 1200.f;  // кнопка «Сказать»: герой не дальше
++  // Кто слышит реплику: люди не дальше 10 м от говорящего (решение пользователя 2026-10-26). Дальше 30 м от героя
++  // родные реплики не разбираются - там никто не говорит с ним
++  const float    HearRange   = 1000.f;
++  const size_t   HearMax     = 8;
++  // Происшествия: люди не дальше 30 м от героя; движок помнит их 15 мин (дальше - память приложения)
++  const float    IncidentDist = 3000.f;
++  const float    WitnessDist  = 1500.f;
++  const uint64_t IncidentKeep = 15*60*1000;
 +  const uint64_t BusyMax     = 120000;  // «думает» не дольше - иначе диалог мог бы зависнуть
 +  const uint64_t LineKeep    = 120000;  // реплика, которую так и не сказали, забывается
 +
@@ -468,6 +476,16 @@ index 0000000..cfc52d7
 +    for(auto& c:r)
 +      c = char(std::toupper(uint8_t(c)));
 +    return r;
++    }
++
++  // Строка UTF-8 не длиннее max байт, не посреди буквы
++  std::string cutText(std::string_view s, size_t max) {
++    if(s.size()<=max)
++      return std::string(s);
++    size_t n = max;
++    while(n>0 && (uint8_t(s[n]) & 0xC0)==0x80)
++      --n;
++    return std::string(s.substr(0,n))+"…";
 +    }
 +
 +  // Где относительно смотрящего: спереди, сбоку, сзади (лево и право модели не нужны)
@@ -542,6 +560,53 @@ index 0000000..cfc52d7
 +  // Дела по пути: идущий с героем делает их и возвращается в строй (отряд ждёт, пока дело не кончится)
 +  bool isErrand(std::string_view n) {
 +    return n=="go_to_place" || n=="go_to_npc" || n=="approach" || n=="loot" || n=="take_item" || n=="use_mob";
++    }
++
++  // Состояние явно: на ногах, без сознания, мёртв. По одной полоске здоровья модели путали очнувшегося с лежащим
++  // (после драки здоровья остаётся мало, а человек уже стоит)
++  const char* condOf(const Npc& n) {
++    if(n.isDead())
++      return "dead";
++    if(n.isUnconscious())
++      return "down";
++    return "up";
++    }
++
++  // Спит (в кровати или от заклинания): не слышит, что говорят рядом
++  bool isAsleep(const Npc& n) {
++    const std::string_view st = n.stateName();
++    return equalsNoCase(st,"ZS_SLEEP") || equalsNoCase(st,"ZS_MAGICSLEEP");
++    }
++
++  // Состояние и занятие (ZS_… распорядка: спит, у наковальни, на страже) - приложение говорит их словами
++  void putCond(JsonOut& j, const Npc& n) {
++    put(j,"cond",condOf(n));
++    const std::string_view st = n.stateName();
++    if(!st.empty())
++      put(j,"zs",upper(st));
++    }
++
++  // Чем бьёт: для происшествий («избил кулаками», «ранил оружием «Палаш»»)
++  std::string weaponOf(Npc& a) {
++    switch(a.weaponState()) {
++      case WeaponState::NoWeapon:
++      case WeaponState::Fist:
++        return a.isMonster() ? std::string() : std::string("кулаками");
++      case WeaponState::W1H:
++      case WeaponState::W2H:
++        if(auto* mw = a.currentMeleeWeapon())
++          return "оружием «"+fromCp1251(mw->displayName())+"»";
++        return "оружием";
++      case WeaponState::Bow:
++        return "из лука";
++      case WeaponState::CBow:
++        return "из арбалета";
++      case WeaponState::Mage:
++        if(auto* sp = a.inventory().activeWeapon())
++          return "магией («"+fromCp1251(sp->displayName())+"»)";
++        return "магией";
++      }
++    return {};
 +    }
 +
 +  const char* attitudeName(Attitude a) {
@@ -660,14 +725,54 @@ index 0000000..cfc52d7
 +      return candidate;
 +    }
 +  // Мир сменился, а tick ещё не нашёл Геральта заново - указатель от прежнего мира
-+  if(geralt==nullptr || geraltWorld!=Gothic::inst().world() || talking)
++  const bool geraltHere = geralt!=nullptr && geraltWorld==Gothic::inst().world() && !talking &&
++                          !geralt->isDead() && !geralt->isUnconscious();
++  if(geraltHere && player.qDistTo(*geralt)<SayDist*SayDist)
++    return geralt;
++  // Никого не выбрал и ни на кого не смотрит (или смотрит на зверя) - сказать вслух ближнему человеку (слышат все
++  // рядом): «Сказать» есть везде, где есть люди, а не только у Геральта
++  auto* w = Gothic::inst().world();
++  if(w==nullptr)
 +    return nullptr;
-+  if(geralt->isDead() || geralt->isUnconscious())
-+    return nullptr;
-+  return player.qDistTo(*geralt)<SayDist*SayDist ? geralt : nullptr;
++  Npc*  best  = nullptr;
++  float bestD = SayDist*SayDist;
++  w->detectNpc(player.position(),SayDist,[&](Npc& n) {
++    if(&n==&player || n.isPlayer() || n.isMonster() || n.isDown() || isAsleep(n) || (&n==geralt && !geraltHere))
++      return;
++    const float d = player.qDistTo(n);
++    if(d<bestD) {
++      best  = &n;
++      bestD = d;
++      }
++    });
++  return best;
 +  }
 +
-+void AiNpc::heroSpeak(Npc& to) {
++void AiNpc::listeners(Npc& speaker, const Npc* to, float range, std::vector<Npc*>& out) const {
++  out.clear();
++  auto* w = Gothic::inst().world();
++  if(w==nullptr)
++    return;
++  std::vector<std::pair<float,Npc*>> near;
++  w->detectNpc(speaker.position(),range,[&](Npc& n) {
++    if(&n==&speaker || &n==to || n.isPlayer() || n.isMonster() || n.isDown() || isAsleep(n))
++      return;
++    const float d = speaker.qDistTo(n);
++    if(d<range*range)
++      near.emplace_back(d,&n);
++    });
++  std::sort(near.begin(),near.end(),[](auto& a, auto& b){ return a.first<b.first; });
++  for(size_t i=0; i<near.size() && i<HearMax; ++i)
++    out.push_back(near[i].second);
++  }
++
++int AiNpc::hearersOf(const Npc& player, const Npc* to) const {
++  std::vector<Npc*> l;
++  listeners(const_cast<Npc&>(player),to,HearRange,l);
++  return int(l.size());
++  }
++
++void AiNpc::heroSpeak(Npc& to, bool priv) {
 +  auto* w = world();
 +  if(w==nullptr || w->player()==nullptr)
 +    return;
@@ -676,7 +781,9 @@ index 0000000..cfc52d7
 +  if(to.isAiQueueEmpty() && !to.isAttack() && to.interactive()==nullptr && to.bodyStateMasked()==BS_STAND)
 +    to.aiPush(AiQueue::aiTurnToNpc(pl));
 +  to.aiPush(AiQueue::aiLookAtNpc(pl));
-+  // free - без диалога: слова героя и ответ - субтитрами над миром; target - кому (self - Геральт)
++  // free - без диалога: слова героя и ответ - субтитрами над миром; target - кому (self - Геральт).
++  // private - выбран касанием: слышит только он. Иначе near - кто ещё слышит (в 10 м): приложение отдаёт слова тому,
++  // кого герой назвал по имени («Мика, ...»), а остальные запоминают услышанное
 +  rapidjson::StringBuffer buf;
 +  JsonOut j(buf);
 +  j.StartObject();
@@ -684,6 +791,24 @@ index 0000000..cfc52d7
 +  put(j,"free",1);
 +  put(j,"target",&to==geralt ? std::string("self") : refOf(to));
 +  put(j,"name",fromCp1251(to.displayName()));
++  put(j,"id",npcId(to));
++  if(priv) {
++    put(j,"private",1);
++    } else {
++    std::vector<Npc*> near;
++    listeners(*pl,&to,HearRange,near);
++    j.Key("near");
++    j.StartArray();
++    for(auto* n:near) {
++      j.StartObject();
++      put(j,"ref",n==geralt ? std::string("self") : refOf(*n));
++      put(j,"id",npcId(*n));
++      put(j,"name",fromCp1251(n->displayName()));
++      putMeters(j,"dist",dist(*pl,*n));
++      j.EndObject();
++      }
++    j.EndArray();
++    }
 +  j.EndObject();
 +  AiLink::send(buf.GetString());
 +  }
@@ -1084,6 +1209,8 @@ index 0000000..cfc52d7
 +    // Жители, которых герой куда-то увёл (aivar[99]), после загрузки или смены мира - к своему распорядку:
 +    // прежний распорядок в сохранение не пишется (Npc::saveRoutines). Идущие с героем - остаются с ним
 +    residents.clear();
++    // Происшествия прежнего мира: указатели на его NPC
++    incidents.clear();
 +    for(uint32_t i=0; i<w->npcCount(); ++i) {
 +      Npc* n = w->npcById(i);
 +      if(n==nullptr || n->isPlayer() || n->isDead())
@@ -1116,6 +1243,7 @@ index 0000000..cfc52d7
 +  tickActions(now);
 +  tickLines(now);
 +  tickResidents(now);
++  tickIncidents(now);
 +
 +  if(geralt==nullptr)
 +    return;
@@ -1160,7 +1288,7 @@ index 0000000..cfc52d7
 +
 +  if(cmd=="say") {
 +    cmdSay(str(d,"id"),str(d,"who"),str(d,"text"),uint32_t(std::clamp<int64_t>(num(d,"ms",2000),300,60000)),
-+           str(d,"to"),str(d,"mood"));
++           str(d,"to"),str(d,"mood"),flag(d,"private",false));
 +    }
 +  else if(cmd=="act") {
 +    auto it = d.FindMember("args");
@@ -1191,7 +1319,7 @@ index 0000000..cfc52d7
 +  }
 +
 +void AiNpc::cmdSay(const std::string& id, const std::string& who, const std::string& text, uint32_t ms,
-+                   const std::string& to, const std::string& mood) {
++                   const std::string& to, const std::string& mood, bool priv) {
 +  auto* w = world();
 +  if(w==nullptr || id.empty() || text.empty())
 +    return;
@@ -1224,6 +1352,8 @@ index 0000000..cfc52d7
 +  ln.speaker = std::string(speaker->displayName());
 +  ln.ms      = ms;
 +  ln.npc     = speaker;
++  ln.to      = target;
++  ln.priv    = priv;
 +  ln.endsAt  = owner.tickCount()+LineKeep;
 +  lines.push_back(ln);
 +
@@ -1284,10 +1414,14 @@ index 0000000..cfc52d7
 +  if(ln==nullptr)
 +    return false;
 +  const uint64_t now = owner.tickCount();
++  const bool wasStarted = ln->started;
 +  ln->started   = true;
 +  ln->overlay   = !inDialog;
 +  ln->endsAt    = now+ln->ms;
 +  ln->shownTill = inDialog ? 0 : now+ln->ms+600;
++  // Сказанное вслух слышат люди рядом (сказанное лично - нет): они запомнят, о чём говорили при них
++  if(!wasStarted && !ln->priv)
++    sendHeard(speaker,ln->to!=nullptr && npcAlive(ln->to) ? ln->to : nullptr,fromCp1251(ln->text),true);
 +
 +  // Громкость: в диалоге - полная, вне его - по расстоянию до героя
 +  float vol = 1.f;
@@ -1317,6 +1451,72 @@ index 0000000..cfc52d7
 +  // «Назад», пока модель молчит: выбор реплик возвращается (можно уйти), ответ придёт позже субтитрами
 +  if(!any && busy)
 +    busy = false;
++  }
++
++void AiNpc::onOutput(Npc& speaker, Npc* target, std::string_view msg) {
++  if(!AiLink::enabled() || msg.empty())
++    return;
++  // Реплики модели - в lineStart: там известно, сказано ли лично
++  if(msg.size()>7 && equalsNoCase(msg.substr(0,7),"G2M_AI_"))
++    return;
++  auto* w = world();
++  if(w==nullptr || w->player()==nullptr || w->player()->qDistTo(speaker)>IncidentDist*IncidentDist)
++    return;
++  const auto txt = owner.messageByName(msg);
++  if(txt.empty())
++    return;
++  sendHeard(speaker,target,fromCp1251(txt),false);
++  }
++
++void AiNpc::sendHeard(Npc& speaker, Npc* to, std::string_view text, bool ai) {
++  // Кто что слышал: говорящий, кому сказано и кто ещё рядом (люди в 10 м). Приложение пишет это в память: жителю,
++  // который говорил сам (и в родном диалоге с героем), - в его беседы, остальным - «слышал рядом». Прежде NPC не
++  // знали, о чём говорили у них под носом
++  if(text.empty())
++    return;
++  std::vector<Npc*> near;
++  listeners(speaker,to,HearRange,near);
++  const bool resident = (!speaker.isPlayer() && !speaker.isMonster()) ||
++                        (to!=nullptr && !to->isPlayer() && !to->isMonster());
++  // Реплики модели участники запоминают сами (приложение); родная реплика нужна и без слушателей - её запомнит житель
++  if(near.empty() && (ai || !resident))
++    return;
++  Npc* prevSelf = refSelf;
++  refSelf = nullptr; // self - Геральт
++  rapidjson::StringBuffer buf;
++  JsonOut j(buf);
++  auto person = [&](Npc& n) {
++    j.StartObject();
++    put(j,"ref",refOf(n));
++    if(!n.isPlayer()) {
++      put(j,"id",npcId(n));
++      put(j,"name",fromCp1251(n.displayName()));
++      if(n.handle().voice==16 || n.handle().voice==17)
++        put(j,"female",1);
++      } else {
++      put(j,"name","Герой");
++      }
++    j.EndObject();
++    };
++  j.StartObject();
++  put(j,"ev","heard");
++  if(ai)
++    put(j,"ai",1);
++  j.Key("speaker");
++  person(speaker);
++  if(to!=nullptr && to!=&speaker) {
++    j.Key("to");
++    person(*to);
++    }
++  put(j,"text",cutText(text,500));
++  j.Key("near");
++  j.StartArray();
++  for(auto* n:near)
++    person(*n);
++  j.EndArray();
++  j.EndObject();
++  refSelf = prevSelf;
++  AiLink::send(buf.GetString());
 +  }
 +
 +void AiNpc::tickLines(uint64_t now) {
@@ -1546,7 +1746,10 @@ index 0000000..cfc52d7
 +  }
 +
 +void AiNpc::onHit(Npc& attacker, Npc& victim) {
-+  if(geralt==nullptr || !AiLink::enabled())
++  if(!AiLink::enabled())
++    return;
++  noteHit(attacker,victim);
++  if(geralt==nullptr)
 +    return;
 +  auto* w = world();
 +  if(w==nullptr)
@@ -1575,6 +1778,186 @@ index 0000000..cfc52d7
 +    return;
 +  else if(victim.isPlayer() && attacker.qDistTo(*geralt)<SeeDist*SeeDist)
 +    sendEvent("hero_attacked","На героя напал(а) "+fromCp1251(attacker.displayName())+".",&attacker);
++  }
++
++void AiNpc::noteHit(Npc& attacker, Npc& victim) {
++  // Кто бьёт людей рядом с героем (и самого героя) и чем: очнувшийся узнает, кто его избил, соседи - что случилось
++  auto* w = world();
++  if(w==nullptr || w->player()==nullptr || victim.isMonster() || &attacker==&victim)
++    return;
++  if(w->player()->qDistTo(victim)>IncidentDist*IncidentDist)
++    return;
++  const uint64_t now = owner.tickCount();
++  auto& in = incidents[&victim];
++  if(!in.tracked) {
++    in.tracked = true;
++    in.down    = victim.isUnconscious();
++    in.dead    = victim.isDead();
++    }
++  // Другой обидчик или давняя драка - новая драка
++  if(in.hitBy!=&attacker || now>in.hitAt+60000)
++    in.hits = 0;
++  in.hitBy    = &attacker;
++  in.byHero   = attacker.isPlayer();
++  in.byFemale = attacker.handle().voice==16 || attacker.handle().voice==17;
++  in.byName   = attacker.isPlayer() ? std::string("герой") : fromCp1251(attacker.displayName());
++  in.weapon   = weaponOf(attacker);
++  in.hitAt    = now;
++  in.seenAt   = now;
++  ++in.hits;
++  }
++
++void AiNpc::tickIncidents(uint64_t now) {
++  // Сбит с ног, очнулся, погиб - переходы у людей рядом с героем, которых кто-то бил (incidents): событие с тем, кто
++  // это видел. Лежавших ещё до прихода героя событием не трогаем - их состояние и так видно в снимке
++  if(now<incidentTick)
++    return;
++  incidentTick = now+500;
++  auto* w  = world();
++  Npc*  pl = w!=nullptr ? w->player() : nullptr;
++  if(pl==nullptr || incidents.empty())
++    return;
++  std::vector<std::pair<const char*,Npc*>> fired;
++  w->detectNpc(pl->position(),IncidentDist,[&](Npc& n) {
++    auto it = incidents.find(&n);
++    if(it==incidents.end() || n.isMonster())
++      return;
++    auto&      in   = it->second;
++    const bool dead = n.isDead();
++    const bool down = !dead && n.isUnconscious();
++    in.seenAt = now;
++    if(dead && !in.dead) {
++      in.dead   = true;
++      in.down   = false;
++      in.deadAt = now;
++      fired.emplace_back("dead",&n);
++      }
++    else if(down && !in.down) {
++      in.down   = true;
++      in.downAt = now;
++      in.upAt   = 0;
++      fired.emplace_back("down",&n);
++      }
++    else if(!down && !dead && in.down) {
++      in.down = false;
++      in.upAt = now;
++      fired.emplace_back("up",&n);
++      }
++    });
++  for(auto& [k,n]:fired)
++    sendIncident(k,*n,incidents[n],now);
++  for(auto it=incidents.begin(); it!=incidents.end();) {
++    auto& in = it->second;
++    const uint64_t last = std::max(std::max(in.hitAt,in.downAt),std::max(in.upAt,in.deadAt));
++    if(!in.down && now>last+IncidentKeep && now>in.seenAt+60000)
++      it = incidents.erase(it); else
++      ++it;
++    }
++  }
++
++void AiNpc::sendIncident(std::string_view kind, Npc& victim, const Incident& in, uint64_t now) {
++  // Кто это видел: люди в 15 м, которые видят его (и сам обидчик). Приложение пишет им в память, очнувшемуся жителю
++  // рядом с героем - ход модели: кто его избил, чем, кто вокруг
++  auto* w = world();
++  if(w==nullptr || w->player()==nullptr)
++    return;
++  std::vector<Npc*> near, seen;
++  listeners(victim,nullptr,WitnessDist,near);
++  for(auto* n:near)
++    if(n->canSeeNpc(victim,false))
++      seen.push_back(n);
++  Npc* prevSelf = refSelf;
++  refSelf = nullptr; // self - Геральт
++  rapidjson::StringBuffer buf;
++  JsonOut j(buf);
++  auto person = [&](Npc& n) {
++    j.StartObject();
++    put(j,"ref",refOf(n));
++    if(!n.isPlayer()) {
++      put(j,"id",npcId(n));
++      put(j,"name",fromCp1251(n.displayName()));
++      put(j,"voice",n.handle().voice);
++      }
++    if(n.handle().voice==16 || n.handle().voice==17)
++      put(j,"female",1);
++    j.EndObject();
++    };
++  j.StartObject();
++  put(j,"ev","incident");
++  put(j,"kind",kind);
++  j.Key("victim");
++  person(victim);
++  j.Key("by");
++  j.StartObject();
++  if(in.hitBy!=nullptr && npcAlive(in.hitBy))
++    put(j,"ref",refOf(*const_cast<Npc*>(in.hitBy)));
++  put(j,"name",in.byName);
++  if(in.byHero)
++    put(j,"hero",1);
++  if(in.byFemale)
++    put(j,"female",1);
++  j.EndObject();
++  if(!in.weapon.empty())
++    put(j,"weapon",in.weapon);
++  put(j,"hits",int64_t(in.hits));
++  if(kind=="up" && in.downAt!=0)
++    put(j,"lay",int64_t((now-in.downAt)/1000));
++  putMeters(j,"heroDist",dist(*w->player(),victim));
++  j.Key("witnesses");
++  j.StartArray();
++  for(auto* n:seen)
++    person(*n);
++  j.EndArray();
++  j.EndObject();
++  refSelf = prevSelf;
++  AiLink::send(buf.GetString());
++  Log::i("[g2m] ai: incident ",kind," \"",victim.displayName(),"\" by ",in.byHero ? "hero" : "npc",
++         ", witnesses=",int(seen.size()));
++  }
++
++std::string AiNpc::incidentJson(Npc& n, uint64_t now) {
++  // Происшествие в снимке: кто бил (ref - глазами того, чей снимок), чем, сколько секунд назад, сбит ли с ног и
++  // очнулся ли. Модель узнаёт, что человек с низким здоровьем уже на ногах, и кто его избил
++  auto it = incidents.find(&n);
++  if(it==incidents.end() || it->second.hitAt==0)
++    return {};
++  const auto& in = it->second;
++  const uint64_t last = std::max(in.hitAt,std::max(in.upAt,in.deadAt));
++  if(!in.down && now>last+IncidentKeep)
++    return {};
++  rapidjson::StringBuffer buf;
++  JsonOut j(buf);
++  j.StartObject();
++  if(in.hitBy!=nullptr && npcAlive(in.hitBy))
++    put(j,"by",refOf(*const_cast<Npc*>(in.hitBy)));
++  put(j,"byName",in.byName);
++  if(in.byHero)
++    put(j,"byHero",1);
++  if(in.byFemale)
++    put(j,"byFemale",1);
++  if(!in.weapon.empty())
++    put(j,"weapon",in.weapon);
++  put(j,"hits",int64_t(in.hits));
++  put(j,"ago",int64_t((now-in.hitAt)/1000));
++  if(in.downAt!=0)
++    put(j,"downAgo",int64_t((now-in.downAt)/1000));
++  if(in.upAt!=0 && in.upAt>=in.downAt) {
++    put(j,"upAgo",int64_t((now-in.upAt)/1000));
++    put(j,"lay",int64_t((in.upAt-in.downAt)/1000));
++    }
++  if(in.deadAt!=0)
++    put(j,"deadAgo",int64_t((now-in.deadAt)/1000));
++  j.EndObject();
++  return buf.GetString();
++  }
++
++std::string AiNpc::incidentText(const Incident& in, uint64_t now) {
++  // Для событий самого Геральта: «тебя сбил с ног Мика кулаками»
++  (void)now;
++  std::string by = in.byHero ? std::string("герой") : in.byName;
++  if(by.empty())
++    return {};
++  return by+(in.weapon.empty() ? std::string() : " "+in.weapon);
 +  }
 +
 +void AiNpc::sendEvent(std::string_view kind, std::string_view text, Npc* who) {
@@ -1620,12 +2003,29 @@ index 0000000..cfc52d7
 +    sendEvent("hero_left","Герой ушёл.",pl);
 +    }
 +
-+  // Сам без сознания / очнулся
++  // Сам без сознания / очнулся: кто сбил с ног и чем, сколько пролежал (происшествие - noteHit)
 +  const bool down = geralt->isUnconscious();
-+  if(down && !wasDown)
-+    sendEvent("down","Тебя сбили с ног, ты без сознания.",nullptr);
-+  else if(!down && wasDown)
-+    sendEvent("up","Ты пришёл в себя.",nullptr);
++  if(down!=wasDown) {
++    std::string by;
++    uint64_t    lay = 0;
++    if(auto it = incidents.find(geralt); it!=incidents.end() && now<it->second.hitAt+120000) {
++      by = incidentText(it->second,now);
++      if(it->second.downAt!=0 && now>it->second.downAt)
++        lay = (now-it->second.downAt)/1000;
++      }
++    if(down) {
++      sendEvent("down",by.empty() ? std::string("Тебя сбили с ног, ты без сознания.")
++                                  : "Тебя сбил(а) с ног "+by+", ты без сознания.",nullptr);
++      } else {
++      std::string t = "Ты только что пришёл в себя";
++      if(!by.empty())
++        t += ": тебя избил(а) до потери сознания "+by;
++      if(lay>0)
++        t += ", ты пролежал без сознания "+std::to_string(lay)+" с";
++      t += ". Посмотри, кто вокруг и что изменилось.";
++      sendEvent("up",t,nullptr);
++      }
++    }
 +  wasDown = down;
 +
 +  // Враги рядом и смерти: каждого - один раз
@@ -1829,6 +2229,18 @@ index 0000000..cfc52d7
 +    putLooks(j,*n);
 +    const int32_t hmax = std::max(1,n->attribute(ATR_HITPOINTSMAX));
 +    put(j,"hp%",int64_t(n->attribute(ATR_HITPOINTS))*100/hmax);
++    putCond(j,*n);
++    {
++    // Ссылки происшествия - глазами слушающего
++    Npc* prevSelf = refSelf;
++    refSelf = v;
++    const auto inc = incidentJson(*n,owner.tickCount());
++    refSelf = prevSelf;
++    if(!inc.empty()) {
++      j.Key("inc");
++      j.RawValue(inc.c_str(),inc.size(),rapidjson::kObjectType);
++      }
++    }
 +    if(n==geralt)
 +      put(j,"geralt",1);
 +    if(owner.isHired(*n))
@@ -2469,6 +2881,7 @@ index 0000000..cfc52d7
 +std::string AiNpc::snapshot(Npc& me) {
 +  auto* w  = world();
 +  Npc*  pl = w->player();
++  const uint64_t now = owner.tickCount();
 +
 +  rapidjson::StringBuffer buf;
 +  JsonOut j(buf);
@@ -2531,6 +2944,29 @@ index 0000000..cfc52d7
 +  if(owner.isPartyMember(me) && owner.squadIsWaiting(me))
 +    put(j,"waiting",1);
 +  put(j,"down",me.isUnconscious() ? 1 : 0);
++  putCond(j,me);
++  {
++  const auto inc = incidentJson(me,now);
++  if(!inc.empty()) {
++    j.Key("inc");
++    j.RawValue(inc.c_str(),inc.size(),rapidjson::kObjectType);
++    }
++  }
++  // Родная память игры о герое (aivar скриптов): последняя драка с ним, преступление героя, которое он видел и ещё
++  // не простил (B_GetPlayerCrime), говорил ли с ним в диалоге игры
++  if(!me.isMonster()) {
++    auto aiv = [&](const char* name, int32_t def) -> int32_t {
++      const int32_t i = owner.scriptConst(name,def);
++      return (i>=0 && uint32_t(i)<zenkit::INpc::aivar_count) ? me.handle().aivar[size_t(i)] : 0;
++      };
++    if(const int32_t f = aiv("AIV_LASTFIGHTAGAINSTPLAYER",0); f!=0)
++      put(j,"fightHero",f);   // 1 - проиграл герою, 2 - победил героя, 3 - драка прервана
++    if(const int32_t c = owner.playerCrime(me); c>0)
++      put(j,"crime",c);       // 1 - убил овцу, 2 - напал, 3 - кража, 4 - убийство
++    // У Геральта родных диалогов нет - метка ничего не значит
++    if(&me!=geralt)
++      put(j,"talked",aiv("AIV_TALKEDTOPLAYER",5)!=0 ? 1 : 0);
++    }
 +  {
 +  const char* ws = "убрано";
 +  switch(me.weaponState()) {
@@ -2574,6 +3010,23 @@ index 0000000..cfc52d7
 +    put(j,"ranged",fromCp1251(rw->displayName()));
 +  put(j,"weaponDrawn",pl->weaponState()!=WeaponState::NoWeapon ? 1 : 0);
 +  put(j,"sees",me.canSeeNpc(*pl,false) ? 1 : 0);
++  // Что с героем сейчас: на ногах ли, сидит, плывёт, крадётся, с факелом; кто его бил
++  putCond(j,*pl);
++  if(auto* mob = pl->interactive())
++    put(j,"using",fromCp1251(mob->displayName()));
++  if(pl->isSwim())
++    put(j,"swim",1);
++  if((pl->walkMode() & WalkBit::WM_Sneak)==WalkBit::WM_Sneak)
++    put(j,"sneak",1);
++  if(pl->isUsingTorch())
++    put(j,"torch",1);
++  {
++  const auto inc = incidentJson(*pl,now);
++  if(!inc.empty()) {
++    j.Key("inc");
++    j.RawValue(inc.c_str(),inc.size(),rapidjson::kObjectType);
++    }
++  }
 +  {
 +  // Злость «враждебно» (set_attitude hostile) - временное отношение поверх постоянного «сердито»
 +  auto att = owner.personAttitude(me,*pl);
@@ -2630,6 +3083,14 @@ index 0000000..cfc52d7
 +      st = "лежит";
 +    if(*st)
 +      put(j,"state",st);
++    putCond(j,n);
++    if(!n.isMonster()) {
++      const auto inc = incidentJson(n,now);
++      if(!inc.empty()) {
++        j.Key("inc");
++        j.RawValue(inc.c_str(),inc.size(),rapidjson::kObjectType);
++        }
++      }
 +    if(!n.isDead() && owner.personAttitude(n,me)==ATT_HOSTILE)
 +      put(j,"hostile",1);
 +    if(auto* tg = n.target(); tg!=nullptr && n.isAttack())
@@ -3233,10 +3694,10 @@ index 0000000..cfc52d7
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..615eb59
+index 0000000..698a180
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,292 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -3287,9 +3748,14 @@ index 0000000..615eb59
 +    void enterWorld(Npc& npc, Npc& hero, World& w);
 +
 +    // Кнопка «Сказать» (TouchInput): кому герой скажет - выбранному или тому, на кого смотрит (живые жители), иначе
-+    // Геральту рядом; nullptr - некому. Сказать без диалога: слова - модели этого жителя
++    // Геральту рядом, иначе ближнему человеку; nullptr - некому. Сказать без диалога: слова - модели этого жителя.
++    // priv - выбран касанием: слышит только он; иначе слова слышат все люди в 10 м (HearRange)
 +    Npc* addressee(const Npc& player, Npc* candidate) const;
-+    void heroSpeak(Npc& to);
++    void heroSpeak(Npc& to, bool priv);
++    // Сколько людей, кроме to, услышат героя (подпись кнопки «Сказать»)
++    int  hearersOf(const Npc& player, const Npc* to) const;
++    // Реплика родного диалога (AI_Output) началась: её слышат люди рядом (docs/AI_NPC.md, «Кто что слышит»)
++    void onOutput(Npc& speaker, Npc* target, std::string_view msg);
 +
 +    // Диалог с ним: свой выбор реплик вместо скриптов игры
 +    bool dialogChoices(Npc& player, Npc& npc, std::vector<GameScript::DlgChoice>& out);
@@ -3331,7 +3797,9 @@ index 0000000..615eb59
 +      uint64_t    endsAt    = 0; // когда сказать приложению, что реплика кончилась
 +      bool        started   = false;
 +      bool        overlay   = false;
++      bool        priv      = false;   // сказано лично (вполголоса): соседи не слышат
 +      Npc*        npc       = nullptr;
++      Npc*        to        = nullptr;
 +      };
 +
 +    struct Action {
@@ -3372,7 +3840,7 @@ index 0000000..615eb59
 +
 +    void   handle(const std::string& json);
 +    void   cmdSay(const std::string& id, const std::string& who, const std::string& text, uint32_t ms,
-+                  const std::string& to, const std::string& mood);
++                  const std::string& to, const std::string& mood, bool priv);
 +    void   cmdAct(Npc& actor, const std::string& id, const std::string& name, const void* args);
 +    Npc*   actorOf(std::string_view who);
 +    // Житель уходит от своего распорядка (идёт куда попросили, ждёт, идёт с героем) - распорядок запоминается;
@@ -3400,6 +3868,36 @@ index 0000000..615eb59
 +    void   sendLore(std::string_view req, std::string_view ref);
 +    void   sendDescribe(std::string_view req, std::string_view ref, std::string_view viewer);
 +    void   sendEvent(std::string_view kind, std::string_view text, Npc* who);
++
++    // Происшествия (docs/AI_NPC.md): кто кого бил, чем, когда сбил с ног, когда тот очнулся - у людей рядом с героем.
++    // По ним модель знает, что случилось с ней самой и с людьми вокруг: очнувшийся - кто его избил и чем; соседи - что
++    // он уже на ногах, хоть здоровья у него и мало
++    struct Incident {
++      const Npc*  hitBy  = nullptr;  // указатель - только для сравнения и npcAlive
++      std::string byName;            // UTF-8; «герой» - герой
++      bool        byHero = false;
++      bool        byFemale = false;
++      std::string weapon;            // «кулаками», «оружием «…»», «из лука», «магией»
++      uint32_t    hits   = 0;        // ударов за эту драку
++      uint64_t    hitAt  = 0;
++      uint64_t    downAt = 0;        // сбит с ног (без сознания)
++      uint64_t    upAt   = 0;        // очнулся
++      uint64_t    deadAt = 0;
++      uint64_t    seenAt = 0;
++      bool        down   = false;
++      bool        dead   = false;
++      bool        tracked = false;   // состояние уже видели (переход - событие)
++      };
++    void   noteHit(Npc& attacker, Npc& victim);
++    void   tickIncidents(uint64_t now);
++    void   sendIncident(std::string_view kind, Npc& victim, const Incident& in, uint64_t now);
++    // Происшествие человека для снимка: готовый объект JSON или пусто
++    std::string incidentJson(Npc& n, uint64_t now);
++    // Как это сказать ему самому (события down/up Геральта): «Тебя сбил с ног Мика кулаками»
++    std::string incidentText(const Incident& in, uint64_t now);
++    // Кто слышит: люди в сознании (не спят) не дальше HearRange от говорящего, кроме него и того, кому сказано
++    void   listeners(Npc& speaker, const Npc* to, float range, std::vector<Npc*>& out) const;
++    void   sendHeard(Npc& speaker, Npc* to, std::string_view textUtf8, bool ai);
 +    std::string snapshot(Npc& me);
 +
 +    // Сюжет игры в разговоре (docs/AI_NPC.md): темы диалогов жителя из скриптов игры (C_INFO), которые герою доступны
@@ -3482,6 +3980,8 @@ index 0000000..615eb59
 +    uint32_t                       nextRef     = 1;
 +
 +    std::unordered_map<const Npc*,Known>     known;
++    std::unordered_map<const Npc*,Incident>  incidents;
++    uint64_t                       incidentTick = 0;
 +    std::vector<std::string>       pendingEvents;
 +    uint64_t                       eventTick   = 0;
 +    uint64_t                       snapTick    = 0;
@@ -5269,7 +5769,7 @@ index b1d951f..8d5f5cd 100644
  
    if(hitFlg) {
 diff --git a/common/game/gamescript.cpp b/common/game/gamescript.cpp
-index 4b32af2..09a1c8f 100644
+index 4b32af2..2cdc1c4 100644
 --- a/common/game/gamescript.cpp
 +++ b/common/game/gamescript.cpp
 @@ -2,10 +2,12 @@
@@ -5397,7 +5897,7 @@ index 4b32af2..09a1c8f 100644
    ScopeVar self (*vm.global_self(), npc.handlePtr());
    ScopeVar other(*vm.global_other(), player.handlePtr());
  
-@@ -975,6 +1015,83 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
+@@ -975,6 +1015,93 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
    vm.call_function(vm.find_symbol_by_index(dlg.scriptFn));
    }
  
@@ -5463,6 +5963,16 @@ index 4b32af2..09a1c8f 100644
 +  return ok;
 +  }
 +
++int32_t GameScript::playerCrime(Npc& npc) {
++  // Gothic II Mobile: как скрипты диалогов - преступление «срывается» через 2 дня или после уплаты штрафа (живой NPC,
++  // docs/AI_NPC.md)
++  auto* fn = vm.find_symbol_by_name("B_GETPLAYERCRIME");
++  if(fn==nullptr || fn->type()!=zenkit::DaedalusDataType::FUNCTION)
++    return 0;
++  ScopeVar self(*vm.global_self(), npc.handlePtr());
++  return vm.call_function<int>(fn,npc.handlePtr());
++  }
++
 +void GameScript::storyExec(Npc& player, Npc& npc, zenkit::IInfo& info, uint32_t fn, StoryCapture& cap) {
 +  // Gothic II Mobile: тот же exec, что у выбора реплики в диалоге (знание темы, выбор варианта, скрипт), но реплики
 +  // пишутся в cap, а не в очередь ИИ
@@ -5481,7 +5991,7 @@ index 4b32af2..09a1c8f 100644
  void GameScript::printCannotUseError(Npc& npc, int32_t atr, int32_t nValue) {
    auto id = vm.find_symbol_by_name("G_CanNotUse");
    if(id==nullptr)
-@@ -1118,6 +1235,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
+@@ -1118,6 +1245,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
    return ret;
    }
  
@@ -5511,7 +6021,7 @@ index 4b32af2..09a1c8f 100644
  void GameScript::invokeItem(Npc *npc, ScriptFn fn) {
    if(fn==size_t(-1) || fn == 0)
      return;
-@@ -1281,6 +1421,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
+@@ -1281,6 +1431,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
    }
  
  bool GameScript::aiOutput(Npc &npc, std::string_view outputname, bool overlay) {
@@ -5523,7 +6033,7 @@ index 4b32af2..09a1c8f 100644
    string_frm name(outputname,".WAV");
    uint64_t   dt = 0;
  
-@@ -1323,6 +1468,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
+@@ -1323,6 +1478,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
    }
  
  std::string_view GameScript::messageByName(std::string_view id) const {
@@ -5534,7 +6044,7 @@ index 4b32af2..09a1c8f 100644
    auto blk = dialogs.block_by_name(id);
    if(blk == nullptr)
      return "";
-@@ -1333,6 +1482,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
+@@ -1333,6 +1492,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
    }
  
  uint32_t GameScript::messageTime(std::string_view id) const {
@@ -5545,7 +6055,7 @@ index 4b32af2..09a1c8f 100644
    static std::string tmp;
    tmp.assign(id);
  
-@@ -1472,6 +1625,10 @@ uint64_t GameScript::tickCount() const {
+@@ -1472,6 +1635,10 @@ uint64_t GameScript::tickCount() const {
  void GameScript::tick(uint64_t dt) {
    if(dma!=nullptr)
      dma->tick(dt);
@@ -5556,7 +6066,7 @@ index 4b32af2..09a1c8f 100644
    }
  
  uint32_t GameScript::rand(uint32_t max) {
-@@ -2022,6 +2179,9 @@ void GameScript::npc_settofistmode(std::shared_ptr<zenkit::INpc> npcRef) {
+@@ -2022,6 +2189,9 @@ void GameScript::npc_settofistmode(std::shared_ptr<zenkit::INpc> npcRef) {
  
  bool GameScript::npc_isinstate(std::shared_ptr<zenkit::INpc> npcRef, int stateFn) {
    auto npc = findNpc(npcRef);
@@ -5566,7 +6076,7 @@ index 4b32af2..09a1c8f 100644
    if(npc!=nullptr)
      return npc->isInState(uint32_t(stateFn));
    return false;
-@@ -2876,6 +3036,9 @@ int GameScript::npc_getactivespelllevel(std::shared_ptr<zenkit::INpc> npcRef) {
+@@ -2876,6 +3046,9 @@ int GameScript::npc_getactivespelllevel(std::shared_ptr<zenkit::INpc> npcRef) {
  void GameScript::ai_processinfos(std::shared_ptr<zenkit::INpc> npcRef) {
    auto npc = findNpc(npcRef);
    auto pl  = owner.player();
@@ -5576,7 +6086,7 @@ index 4b32af2..09a1c8f 100644
    if(pl!=nullptr && npc!=nullptr) {
      aiOutOrderId=0;
      npc->aiPush(AiQueue::aiProcessInfo(*pl));
-@@ -2889,6 +3052,13 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
+@@ -2889,6 +3062,13 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -5590,7 +6100,7 @@ index 4b32af2..09a1c8f 100644
    if(self!=nullptr && target!=nullptr) {
      self->aiPush(AiQueue::aiOutput(*target,outputname,aiOutOrderId));
      ++aiOutOrderId;
-@@ -2897,6 +3067,11 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
+@@ -2897,6 +3077,11 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
  
  void GameScript::ai_stopprocessinfos(std::shared_ptr<zenkit::INpc> selfRef) {
    auto self = findNpc(selfRef);
@@ -5602,7 +6112,7 @@ index 4b32af2..09a1c8f 100644
    if(self) {
      self->aiPush(AiQueue::aiStopProcessInfo(aiOutOrderId));
      ++aiOutOrderId;
-@@ -2981,6 +3156,13 @@ void GameScript::ai_outputsvm(std::shared_ptr<zenkit::INpc> selfRef, std::shared
+@@ -2981,6 +3166,13 @@ void GameScript::ai_outputsvm(std::shared_ptr<zenkit::INpc> selfRef, std::shared
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -5616,7 +6126,7 @@ index 4b32af2..09a1c8f 100644
    if(self!=nullptr && target!=nullptr) {
      self->aiPush(AiQueue::aiOutputSvm(*target,name,aiOutOrderId));
      ++aiOutOrderId;
-@@ -2994,6 +3176,13 @@ void GameScript::ai_outputsvm_overlay(std::shared_ptr<zenkit::INpc> selfRef, std
+@@ -2994,6 +3186,13 @@ void GameScript::ai_outputsvm_overlay(std::shared_ptr<zenkit::INpc> selfRef, std
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -5631,7 +6141,7 @@ index 4b32af2..09a1c8f 100644
      self->aiPush(AiQueue::aiOutputSvmOverlay(*target,name,aiOutOrderId));
      ++aiOutOrderId;
 diff --git a/common/game/gamescript.h b/common/game/gamescript.h
-index 2cccb63..e9327bc 100644
+index 2cccb63..1685530 100644
 --- a/common/game/gamescript.h
 +++ b/common/game/gamescript.h
 @@ -25,8 +25,11 @@ class Npc;
@@ -5664,7 +6174,7 @@ index 2cccb63..e9327bc 100644
        zenkit::IInfo*   handle   = nullptr;
        };
  
-@@ -121,6 +128,61 @@ class GameScript final {
+@@ -121,6 +128,63 @@ class GameScript final {
      auto updateDialog (const GameScript::DlgChoice &dlg, Npc &player, Npc &npc) -> std::vector<GameScript::DlgChoice>;
      void exec(const DlgChoice &dlg, Npc &player, Npc &npc);
  
@@ -5707,6 +6217,8 @@ index 2cccb63..e9327bc 100644
 +      };
 +    void   storyPrepare  (Npc& player, Npc& npc);
 +    bool   storyAvailable(Npc& player, Npc& npc, zenkit::IInfo& info);
++    // Gothic II Mobile: преступление героя, которое житель видел и ещё не простил (B_GetPlayerCrime): 0 - нет
++    int32_t playerCrime(Npc& npc);
 +    void   storyExec     (Npc& player, Npc& npc, zenkit::IInfo& info, uint32_t fn, StoryCapture& cap);
 +    // Герой перенёсся («Путь», мгновенно): кто идёт следом - рядом с ним в строю; ждущие - в лагере
 +    void   squadArrive ();
@@ -5726,7 +6238,7 @@ index 2cccb63..e9327bc 100644
      void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
      void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
      void  printCannotBuyError         (Npc &npc);
-@@ -445,6 +507,62 @@ class GameScript final {
+@@ -445,6 +509,62 @@ class GameScript final {
      void exitsession         ();
  
      void sort(std::vector<DlgChoice>& dlg);
@@ -5789,7 +6301,7 @@ index 2cccb63..e9327bc 100644
      void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
      bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
  
-@@ -460,6 +578,7 @@ class GameScript final {
+@@ -460,6 +580,7 @@ class GameScript final {
      NpcProcessPolicy                                            aiProcessPolicy = NpcProcessPolicy::AiNormal;
  
      std::unique_ptr<DirectMemory>                               dma;
@@ -5797,7 +6309,7 @@ index 2cccb63..e9327bc 100644
  
      std::unique_ptr<SpellDefinitions>                           spells;
      std::unique_ptr<SvmDefinitions>                             svm;
-@@ -486,6 +605,33 @@ class GameScript final {
+@@ -486,6 +607,33 @@ class GameScript final {
      size_t                                                      gilCount=0;
      std::vector<int32_t>                                        gilAttitudes;
      int                                                         aiOutOrderId=0;
@@ -13976,10 +14488,10 @@ index 0000000..8538a5a
 +    const Tempest::Texture2d& cached(uint64_t key, const std::function<Tempest::Texture2d()>& make);
 +  };
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f1730..81dd9f8 100644
+index d9f1730..8770a61 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,2474 @@
+@@ -1,41 +1,2488 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
@@ -14250,8 +14762,9 @@ index d9f1730..81dd9f8 100644
 +      break;
 +    }
 +  return false;
-+  }
-+
+   }
+ 
+-void TouchInput::paintEvent(Tempest::PaintEvent& e) {
 +TouchInput::Ctl TouchInput::hitTest(Point p) const {
 +  // Запас вокруг кнопки: палец крупнее нарисованного круга
 +  const int slop = int(8*dp());
@@ -14352,9 +14865,8 @@ index d9f1730..81dd9f8 100644
 +  if(f.npc!=nullptr && !f.npc->isDown() && std::find(squad.begin(),squad.end(),f.npc)==squad.end())
 +    return f.npc;
 +  return nullptr;
-   }
- 
--void TouchInput::paintEvent(Tempest::PaintEvent& e) {
++  }
++
 +Npc* TouchInput::sayTarget() const {
 +  // Кому «Сказать»: выбранный касанием, иначе тот, на кого смотрит герой, иначе Геральт рядом (AiNpc::addressee)
 +  auto w  = Gothic::inst().world();
@@ -14365,6 +14877,10 @@ index d9f1730..81dd9f8 100644
 +  if(cand==nullptr)
 +    cand = w->validateFocus(ctrl.focus()).npc;
 +  return w->script().aiNpc().addressee(*pl,cand);
++  }
++
++bool TouchInput::sayPrivate(const Npc* to) const {
++  return to!=nullptr && to==ctrl.touchTarget();
 +  }
 +
 +std::string TouchInput::fit(std::string txt, int maxW, float scale) const {
@@ -14452,10 +14968,20 @@ index d9f1730..81dd9f8 100644
 +        drawBadge(p,b,squad.size());
 +        break;
 +      case C_Say: {
-+        // Подпись - кому скажешь: герой видит, к кому обращается
-+        drawRound(p,b,TouchIcons::I_Mic,pressed,false,1.f);
-+        auto* to = sayTarget();
-+        const std::string who = to!=nullptr ? std::string(to->displayName()) : toCp1251("Сказать");
++        // Подпись - кому скажешь: герой видит, к кому обращается. Выбран касанием - «лично» (слышит только он, кнопка
++        // подсвечена), иначе вслух - «+N»: сколько ещё людей рядом услышат
++        auto*      to   = sayTarget();
++        const bool priv = sayPrivate(to);
++        drawRound(p,b,TouchIcons::I_Mic,pressed,priv,1.f);
++        std::string who = to!=nullptr ? std::string(to->displayName()) : toCp1251("Сказать");
++        if(to!=nullptr && priv) {
++          who = toCp1251("Лично: ")+who;
++          }
++        else if(to!=nullptr && Gothic::inst().world()!=nullptr && Gothic::inst().player()!=nullptr) {
++          const int more = Gothic::inst().world()->script().aiNpc().hearersOf(*Gothic::inst().player(),to);
++          if(more>0)
++            who += " +"+std::to_string(more);
++          }
 +        const auto txt = fit(who,int(96*dp()),0.75f);
 +        // У правого края: подпись не вылезает за экран
 +        const int  tw  = Resources::font(Resources::FontType::Normal,Gothic::interfaceScale(this)*0.75f).textSize(txt).w;
@@ -14594,7 +15120,9 @@ index d9f1730..81dd9f8 100644
 +  auto& t = icons.pill(r.w,r.h);
 +  p.setBrush(Brush(t,Color(1.f,1.f,1.f,pressed ? 1.f : 0.92f)));
 +  p.drawRect(r.x, r.y, r.w, r.h, 0,0,t.w(),t.h());
-+
+ 
+-  p.setBrush(Color(1,1,1, 0.2f));
+-  p.drawRect(10, h()-10 - 100, 100, 100);
 +  const int   gs  = int(float(r.h)*0.48f);
 +  auto&       fnt = Resources::font(pressed ? Resources::FontType::Hi : Resources::FontType::Normal, Gothic::interfaceScale(this));
 +  const auto  ts  = fnt.textSize(label);
@@ -14603,8 +15131,11 @@ index d9f1730..81dd9f8 100644
 +  const int   x0  = r.x + (r.w-tw)/2;
 +  drawGlyph(p, ic, Point(x0+gs/2, r.y+r.h/2), gs, pressed ? GoldBright : GoldIdle);
 +  fnt.drawText(p, x0+gs+gap, r.y+(r.h+ts.h)/2, label);
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
+-  auto r = Rect(10, h()-10-100, 100, 100);
+-  if(!r.contains(e.pos())) {
 +void TouchInput::drawLabel(Painter& p, std::string_view txt, Point c, bool hi, float scale) {
 +  auto&      fnt = Resources::font(hi ? Resources::FontType::Hi : Resources::FontType::Normal, Gothic::interfaceScale(this)*scale);
 +  const auto sz  = fnt.textSize(txt);
@@ -14700,9 +15231,7 @@ index d9f1730..81dd9f8 100644
 +  kb.r = kr;
 +  drawRound(p, kb, TouchIcons::I_Dot, false, active && joyRun, alpha+0.15f);
 +  }
- 
--  p.setBrush(Color(1,1,1, 0.2f));
--  p.drawRect(10, h()-10 - 100, 100, 100);
++
 +void TouchInput::drawTarget(Painter& p) {
 +  auto tg  = ctrl.touchTarget();
 +  auto cam = Gothic::inst().camera();
@@ -14948,11 +15477,8 @@ index d9f1730..81dd9f8 100644
 +    w->script().squadOrder(ord, ord==GameScript::SquadOrder::Attack ? squadTarget() : nullptr);
 +    Gothic::inst().onPrint(toCp1251("Отряд: ") + it.label);
 +    }
-   }
- 
--void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
--  auto r = Rect(10, h()-10-100, 100, 100);
--  if(!r.contains(e.pos())) {
++  }
++
 +void TouchInput::drawWheel(Painter& p) {
 +  const auto  c  = wheelCenter();
 +  const int   R  = wheelRadius();
@@ -14986,10 +15512,12 @@ index d9f1730..81dd9f8 100644
 +void TouchInput::mouseDownEvent(MouseEvent& e) {
 +  const Ui ui = currentUi();
 +  if(ui==Ui::Hidden || e.mouseID<0 || size_t(e.mouseID)>=fingers.size()) {
-+    e.ignore();
-+    return;
-+    }
-+
+     e.ignore();
+     return;
+     }
+ 
+-  mpos = e.pos();
+-  ctrl.onKeyPressed(KeyCodec::Forward, KeyEvent::K_NoKey, KeyCodec::Mapping::Primary);
 +  auto& f  = fingers[size_t(e.mouseID)];
 +  f        = Finger();
 +  f.start  = e.pos();
@@ -15026,9 +15554,9 @@ index d9f1730..81dd9f8 100644
 +  if(c==C_None && ui==Ui::Menu) {
 +    // Меню игры: касание по пунктам, журналу, ползункам - у самого меню (слой под нами)
 +    f = Finger();
-     e.ignore();
-     return;
-     }
++    e.ignore();
++    return;
++    }
 +  if(c==C_None) {
 +    switch(ui) {
 +      case Ui::World: {
@@ -15420,7 +15948,7 @@ index d9f1730..81dd9f8 100644
 +      // Голосом или текстом - как выбрано в настройках; в панели можно переключиться
 +      if(auto w = Gothic::inst().world())
 +        if(auto* to = sayTarget())
-+          w->script().aiNpc().heroSpeak(*to);
++          w->script().aiNpc().heroSpeak(*to,sayPrivate(to));
 +      break;
 +    case C_Potion:
 +      if(!f.held)
@@ -15667,8 +16195,14 @@ index d9f1730..81dd9f8 100644
 +    if(mapSpots[i].spot.point->map==mapTab)
 +      ret.push_back(int(i));
 +  return ret;
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
+-  auto dp = e.pos() - mpos;
+-  mpos = e.pos();
+-  if(std::abs(dp.x)>0) {
+-    const float scale = 4.f;
+-    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
 +void TouchInput::selectSpot(int id) {
 +  mapSel      = (id>=0 && size_t(id)<mapSpots.size()) ? id : -1;
 +  mapStatus.clear();
@@ -15710,9 +16244,11 @@ index d9f1730..81dd9f8 100644
 +      mapScroll = y;
 +    if(y+l.rowH>mapScroll+l.list.h)
 +      mapScroll = y+l.rowH-l.list.h;
-+    }
-+  }
-+
+     }
+   }
+ 
+-void TouchInput::mouseUpEvent(Tempest::MouseEvent& e) {
+-  ctrl.onKeyReleased(KeyCodec::Forward, KeyCodec::Mapping::Primary);
 +void TouchInput::travelTo(bool instant) {
 +  if(mapSel<0) {
 +    mapStatus = toCp1251("Сначала выбери место");
@@ -16369,9 +16905,7 @@ index d9f1730..81dd9f8 100644
 +  place[editSel].dx = (cx-float(s.x))/d;
 +  place[editSel].dy = (cy-float(s.y))/d;
 +  }
- 
--  mpos = e.pos();
--  ctrl.onKeyPressed(KeyCodec::Forward, KeyEvent::K_NoKey, KeyCodec::Mapping::Primary);
++
 +void TouchInput::editUp(int id, Point p, bool moved) {
 +  if(id==editFinger) {
 +    editFinger = -1;
@@ -16386,14 +16920,8 @@ index d9f1730..81dd9f8 100644
 +  // Касание мимо кнопок - настраиваются все сразу
 +  if(editHit(p)==C_None)
 +    editSel = C_None;
-   }
- 
--void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
--  auto dp = e.pos() - mpos;
--  mpos = e.pos();
--  if(std::abs(dp.x)>0) {
--    const float scale = 4.f;
--    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
++  }
++
 +void TouchInput::editTap(Point p) {
 +  int k = -1;
 +  for(int i=0; i<6; ++i)
@@ -16428,11 +16956,9 @@ index d9f1730..81dd9f8 100644
 +      break;
 +    default:
 +      break;
-     }
-   }
- 
--void TouchInput::mouseUpEvent(Tempest::MouseEvent& e) {
--  ctrl.onKeyReleased(KeyCodec::Forward, KeyCodec::Mapping::Primary);
++    }
++  }
++
 +void TouchInput::drawEditor(Painter& p) {
 +  const float d = dp();
 +  p.setBrush(Color(0.f,0.f,0.f,0.45f));
@@ -16472,10 +16998,10 @@ index d9f1730..81dd9f8 100644
 +  paintAlpha = saved;
    }
 diff --git a/common/ui/touchinput.h b/common/ui/touchinput.h
-index f46becc..fa210e1 100644
+index f46becc..450fcc5 100644
 --- a/common/ui/touchinput.h
 +++ b/common/ui/touchinput.h
-@@ -1,21 +1,293 @@
+@@ -1,21 +1,295 @@
  #pragma once
  
  #include <Tempest/Widget>
@@ -16724,6 +17250,8 @@ index f46becc..fa210e1 100644
 +    MainCtx        mainContext() const;
 +    Npc*           squadTarget() const;
 +    Npc*           sayTarget() const;
++    // «Сказать» тому, кого выбрал касанием: слышит только он (иначе - все люди в 10 м)
++    bool           sayPrivate(const Npc* to) const;
 +    std::string    fit(std::string txt, int maxW, float scale) const;
 +
 +    void           press  (Ctl c, Finger& f);
@@ -17316,7 +17844,7 @@ index b45a9bd..35a566d 100644
      bool                isCracked() const { return isLockCracked; }
      bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..4ee07f5 100644
+index e015398..64abaa4 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -4,10 +4,12 @@
@@ -17674,7 +18202,17 @@ index e015398..4ee07f5 100644
        break;
      case AI_UseMob: {
        if(act.i0<0) {
-@@ -3504,6 +3644,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -2740,6 +2880,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+     case AI_OutputSvm:
+     case AI_OutputSvmOverlay:{
+       if(performOutput(act)) {
++        // Gothic II Mobile: родную реплику слышат люди рядом - живые жители её запомнят (AiNpc::onOutput)
++        if(act.act==AI_Output)
++          owner.script().aiNpc().onOutput(*this,act.target,act.s0);
+         if(aiPolicy!=NpcProcessPolicy::AiFar2) {
+           uint64_t msgTime = 0;
+           if(act.act==AI_Output) {
+@@ -3504,6 +3647,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -17683,7 +18221,7 @@ index e015398..4ee07f5 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +3935,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +3938,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
@@ -17694,7 +18232,7 @@ index e015398..4ee07f5 100644
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -3836,6 +3982,12 @@ bool Npc::finishingMove() {
+@@ -3836,6 +3985,12 @@ bool Npc::finishingMove() {
      return false;
  
    if(doAttack(Anim::AttackFinish,BS_HIT)) {
@@ -17707,7 +18245,7 @@ index e015398..4ee07f5 100644
      currentTarget->hnpc->attribute[ATR_HITPOINTS] = 0;
      currentTarget->checkHealth(true,false);
      owner.sendPassivePerc(*this,*this,*currentTarget,PERC_ASSESSMURDER);
-@@ -4158,10 +4310,69 @@ bool Npc::isPrehit() const {
+@@ -4158,10 +4313,69 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -17777,7 +18315,7 @@ index e015398..4ee07f5 100644
  void Npc::setPerceptionTime(uint64_t time) {
    perceptionTime = time;
    }
-@@ -4238,6 +4449,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4452,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -17788,7 +18326,7 @@ index e015398..4ee07f5 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4292,6 +4507,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
+@@ -4292,6 +4510,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
  void Npc::quitInteraction() {
    if(currentInteract==nullptr)
      return;
@@ -17798,7 +18336,7 @@ index e015398..4ee07f5 100644
    if(invTorch)
      processDefInvTorch();
    setDirectionY(0);
-@@ -4356,6 +4574,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4577,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -17836,7 +18374,7 @@ index e015398..4ee07f5 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4818,7 +5067,405 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4818,7 +5070,405 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
      durtyTranform = 0;
      }
  

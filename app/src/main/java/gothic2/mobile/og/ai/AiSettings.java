@@ -141,6 +141,11 @@ public final class AiSettings {
         return !"0".equals(get("stt_voice"));
     }
 
+    /** Слова героя («Сказать», «Написать») звучат его голосом, как реплики героя в диалогах игры. */
+    public boolean heroVoice() {
+        return !"0".equals(get("hero_voice"));
+    }
+
     public int autonomy() {
         try {
             return Math.max(0, Math.min(2, Integer.parseInt(get("autonomy"))));
@@ -156,18 +161,24 @@ public final class AiSettings {
             case "tts_provider": return TTS_ANDROID;
             case "tts_gemini_model": return "gemini-3.8-flash-tts";
             case "tts_gemini_voice": return "Algenib";
+            case "tts_gemini_hero": return "Iapetus";
             case "tts_speechify_model": return "simba-3.5";
             case "tts_speechify_voice": return "tikhon";
+            case "tts_speechify_hero": return "savva";
             case "tts_speechify_male": return "savva";
             case "tts_speechify_female": return "vasilisa";
             case "tts_azure_region": return "westeurope";
             case "tts_azure_voice": return "ru-RU-DmitryNeural";
+            case "tts_azure_hero": return "ru-RU-DmitryNeural";
             case "tts_eleven_voice": return "pNInz6obpgDQGcFmaJgB";
+            case "tts_eleven_hero": return "ErXwobaYiN019PkySvjV";
             case "tts_eleven_model": return "eleven_multilingual_v2";
             case "tts_openai_url": return "https://api.openai.com/v1";
             case "tts_openai_model": return "gpt-4o-mini-tts";
             case "tts_openai_voice": return "onyx";
+            case "tts_openai_hero": return "alloy";
             case "stt_voice": return "1";
+            case "hero_voice": return "1";
             case "autonomy": return "1";
             default: return "";
         }

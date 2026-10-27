@@ -140,10 +140,17 @@ public final class AiBridge {
             case "listen": {
                 // free - кнопка «Сказать» без диалога: ответ субтитрами над миром
                 // target - кому: self (Геральт) или житель nN, на которого смотрит герой
+                // private - выбран касанием: слышит только он; иначе near - кто ещё рядом слышит (в 10 м)
                 boolean free = Json.bool(ev, "free", false);
                 String target = Json.str(ev, "target");
-                String who = target.isEmpty() || "self".equals(target) ? null : Json.str(ev, "name");
-                Consumer<String> done = t -> said(t, free, target, Json.str(ev, "name"));
+                boolean priv = Json.bool(ev, "private", false);
+                String name = Json.str(ev, "name");
+                String who = target.isEmpty() || "self".equals(target) ? null : name;
+                // Подпись панели: кому и кто ещё услышит
+                if (who != null && priv) who = who + " — лично (другие не слышат)";
+                else if (who != null && !Json.arr(ev.get("near")).isEmpty()) who = who + " и все рядом";
+                Consumer<String> done = t -> brain.post(Json.of("ev", "said", "text", t == null ? "" : t, "free", free,
+                    "target", target, "name", name, "private", priv, "near", Json.arr(ev.get("near"))));
                 if (settings.voiceInput() && hasMic()) overlay.listen(who, done);
                 else overlay.type(who, done, voice(who, done));
                 return;
