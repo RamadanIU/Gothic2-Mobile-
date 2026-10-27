@@ -360,6 +360,25 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
     // удар в грудь и анимация игры «отшатнуться» одновременно, как в бою
     ev.push_back({0.3f,[&]{ a.hit(chest(),Vec3(0,0,-1),3.2f,0.12f); a.stumbleAt = a.time; }});
     }
+  else if(name=="fight" || name=="fight2h") {
+    // драка, как в игре: меч в правой (свободна левая), удар за ударом; точка удара - как Npc::meleeHitPoint
+    // (высота кисти нападающего на теле со стороны нападающего, вбок по замаху)
+    len = 5.f;
+    a.fight = true; a.freeArms = 1;
+    const bool  big = (name=="fight2h");
+    const float pw  = big ? 4.2f : 3.f;
+    struct Blow { float t, handY, lat, dmg; };
+    static const Blow blows[] = {{0.3f,130,10,0.14f}, {1.1f,112,-14,0.12f}, {1.9f,140,0,0.16f}, {2.7f,104,12,0.13f}};
+    for(auto& bl:blows) {
+      ev.push_back({bl.t,[&a,bl,pw,big]{
+        const float h = 180.f, r = 0.11f*h;
+        const Vec3  me = a.at;
+        const float y  = std::clamp(bl.handY, me.y+0.4f*h, me.y+h);
+        const Vec3  at = Vec3(me.x, y, me.z) + Vec3(0,0,1)*r + Vec3(-1,0,0)*std::clamp(bl.lat*0.5f,-r,r);
+        a.hit(at, Vec3(0,0,-1), pw, big ? bl.dmg*1.8f : bl.dmg);
+        }});
+      }
+    }
   else if(name=="walkhit") {
     len = 3.f;
     a.walking = true; a.speed = 110;
