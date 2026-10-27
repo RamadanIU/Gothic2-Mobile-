@@ -99,8 +99,14 @@ void CollisionWorld::removeRagdollBody(btRigidBody* b) {
   }
 
 void CollisionWorld::tick(uint64_t dt) {
-  if(ragBodies.size()>0)
-    this->stepSimulation(float(dt)/1000.f, 3);
+  // как в collisionworld.cpp
+  if(ragBodies.size()>0) {
+    const float t = float(dt)/1000.f;
+    const int   n = std::clamp(int(std::ceil(t*60.f-0.01f)), 1, 3);
+    const float h = std::min(t/float(n), 1.f/30.f);
+    if(t>0.f)
+      this->stepSimulation(h*float(n), n, h);
+    }
   }
 
 // --- DynamicWorld: земля - плоскость или неровная сетка треугольников (как земля мира игры), куклы в физике
@@ -176,6 +182,27 @@ size_t DynamicWorld::ragdollsSimulated() const {
 void DynamicWorld::tick(uint64_t dt) {
   world->tick(dt);
   Ragdoll::tickAll(ragdolls->active, dt, -1e9f);
+  }
+
+DynamicWorld::RayLandResult DynamicWorld::ray(const Tempest::Vec3& from, const Tempest::Vec3& to) const {
+  // земля стенда: ближайшее попадание луча (тела кукол лучи не видят - как в игре)
+  struct CB : btCollisionWorld::ClosestRayResultCallback {
+    using ClosestRayResultCallback::ClosestRayResultCallback;
+    bool needsCollision(btBroadphaseProxy* p) const override {
+      auto o = reinterpret_cast<const btCollisionObject*>(p->m_clientObject);
+      return o->getUserIndex()==C_Landscape;
+      }
+    };
+  const btVector3 a(from.x*0.01f,from.y*0.01f,from.z*0.01f), b(to.x*0.01f,to.y*0.01f,to.z*0.01f);
+  CB cb(a,b);
+  world->rayTest(a,b,cb);
+  RayLandResult r;
+  if(cb.hasHit()) {
+    r.hasCol = true;
+    r.v      = Tempest::Vec3(cb.m_hitPointWorld.x(),cb.m_hitPointWorld.y(),cb.m_hitPointWorld.z())*100.f;
+    r.hitFraction = cb.m_closestHitFraction;
+    }
+  return r;
   }
 
 float waterLevel = -1e9f;

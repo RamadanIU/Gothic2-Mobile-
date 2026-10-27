@@ -78,6 +78,17 @@ final class GraphicsSettings {
         "Регдолл и у живых: долгое падение, удар тролля",
         new String[]{"включён", "выключен"}, new String[]{"1", "0"}, true);
     /**
+     * Активный регдолл (как Euphoria): живые на ногах откликаются телом на удары — голова откидывается, плечо уходит
+     * назад, тело вздрагивает и возвращается в анимацию. Действует только с {@link #RAGDOLL}.
+     */
+    static final Option RAGDOLL_ACTIVE = new Option("gfx_ragdoll_active", "ragdollActive",
+        "Активный регдолл: тело откликается на удары",
+        new String[]{"включён", "выключен"}, new String[]{"1", "0"}, true);
+    /** Сильный удар (двуручник, огненный шар) или серия ударов шатает и может сбить с ног; встаёт сам. */
+    static final Option RAGDOLL_KNOCKDOWN = new Option("gfx_ragdoll_knockdown", "ragdollKnockdown",
+        "Сильные удары сбивают с ног",
+        new String[]{"включено", "выключено"}, new String[]{"1", "0"}, true);
+    /**
      * Не рисовать заслонённое (карта перекрытий движка): быстрее. Выключить — если пропадают стены, предметы или
      * тело героя, хотя видны: тогда рисуется всё в кадре.
      */
@@ -92,7 +103,7 @@ final class GraphicsSettings {
     static final Option LIGHTING = new Option("gfx_lighting", "lighting", "Освещение",
         new String[]{"мягкое — тени видны", "светлое — тени ещё светлее", "контрастное — тёмные тени, как раньше"},
         new String[]{"1", "2", "0"});
-    static final Option[] EXTRA = {LIGHTING, SHOW_FPS, RAGDOLL, RAGDOLL_FALL, OCCLUSION};
+    static final Option[] EXTRA = {LIGHTING, SHOW_FPS, RAGDOLL, RAGDOLL_FALL, RAGDOLL_ACTIVE, RAGDOLL_KNOCKDOWN, OCCLUSION};
 
     /** Готовые наборы: индексы вариантов в порядке {@link #ALL}. */
     static final String[] PRESET_NAMES = {"Экономно", "Сбалансированно", "Красиво"};
@@ -124,6 +135,16 @@ final class GraphicsSettings {
         // набор, на котором начали менять, - запомнить до изменения: остальные параметры остаются его
         if (!prefs.contains(PREF_PRESET)) e.putInt(PREF_PRESET, basePreset());
         e.putInt(o.key, (get(o) + 1) % o.labels.length).apply();
+    }
+
+    /**
+     * Действует ли галочка: регдолл живых и активный — только с регдоллом, сбивание с ног — с активным и с регдоллом
+     * живых (сбитый падает и встаёт, как упавший). Недействующая галочка на экране неактивна.
+     */
+    boolean isAvailable(Option o) {
+        if (o == RAGDOLL_FALL || o == RAGDOLL_ACTIVE) return isOn(RAGDOLL);
+        if (o == RAGDOLL_KNOCKDOWN) return isOn(RAGDOLL) && isOn(RAGDOLL_ACTIVE) && isOn(RAGDOLL_FALL);
+        return true;
     }
 
     /** Галочка стоит (первый вариант). */
