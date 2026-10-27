@@ -23,8 +23,12 @@ public final class Memory {
     public static final int JOURNAL_MAX = 80;
     public static final int JOURNAL_KEEP = 30;
     /** Беседы с жителями: последние реплики с каждым (житель помнит, о чём говорили), не больше TALKS_NPCS жителей. */
-    public static final int TALK_LINES = 16;
+    public static final int TALK_LINES = 20;
     public static final int TALKS_NPCS = 40;
+    /** Что житель (или Геральт) видел и слышал рядом: последние HEARD_LINES записей, не больше TALKS_NPCS жителей. */
+    public static final int HEARD_LINES = 12;
+    /** Ключ Геральта в беседах и «слышал рядом» (id экземпляра в скриптах). */
+    public static final String GERALT = "VLK_2000_THORUS";
     private static final int FILES_MAX = 60;
 
     private final File dir;
@@ -36,6 +40,11 @@ public final class Memory {
     public final Map<String, List<String>> talks = new LinkedHashMap<>();
     /** id жителя → что он запомнил сам (remember в его ходе), до NPC_NOTES штук. */
     public final Map<String, List<String>> npcNotes = new LinkedHashMap<>();
+    /**
+     * id жителя (и Геральта) → что он видел и слышал рядом: реплики чужих разговоров (вслух, до 10 м), кто кого
+     * избил, кто очнулся. Прежде NPC не знали, о чём говорили и что случилось у них под носом.
+     */
+    public final Map<String, List<String>> heard = new LinkedHashMap<>();
     public static final int NPC_NOTES = 10;
 
     public Memory(File dir) {
@@ -54,6 +63,7 @@ public final class Memory {
         journal.clear();
         talks.clear();
         npcNotes.clear();
+        heard.clear();
         if (token == 0) return;
         File f = file(story, token);
         if (!f.isFile()) return;
@@ -72,6 +82,11 @@ public final class Memory {
                 for (Object o : Json.arr(e.getValue())) lines.add(String.valueOf(o));
                 npcNotes.put(e.getKey(), lines);
             }
+            for (Map.Entry<String, Object> e : Json.obj(m.get("heard")).entrySet()) {
+                List<String> lines = new ArrayList<>();
+                for (Object o : Json.arr(e.getValue())) lines.add(String.valueOf(o));
+                heard.put(e.getKey(), lines);
+            }
         } catch (IOException | IllegalArgumentException e) {
             // повреждённый файл - пустая память, игра идёт
         }
@@ -88,8 +103,10 @@ public final class Memory {
         for (Map.Entry<String, List<String>> e : talks.entrySet()) t.put(e.getKey(), new ArrayList<Object>(e.getValue()));
         Map<String, Object> nn = new LinkedHashMap<>();
         for (Map.Entry<String, List<String>> e : npcNotes.entrySet()) nn.put(e.getKey(), new ArrayList<Object>(e.getValue()));
+        Map<String, Object> hh = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> e : heard.entrySet()) hh.put(e.getKey(), new ArrayList<Object>(e.getValue()));
         String text = Json.write(Json.of("story", story, "token", token, "summary", summary, "notes", n, "journal", j,
-            "talks", t, "npcNotes", nn));
+            "talks", t, "npcNotes", nn, "heard", hh));
         File f = file(story, token);
         File tmp = new File(dir, f.getName() + ".tmp");
         try (OutputStream os = new FileOutputStream(tmp)) {
@@ -142,7 +159,26 @@ public final class Memory {
         while (npcNotes.size() > TALKS_NPCS) npcNotes.remove(npcNotes.keySet().iterator().next());
     }
 
-    /** Память жителя для его хода: что запомнил и прежние беседы (с героем, Геральтом, другими). */
+    /** Что видел и слышал рядом (чужой разговор вслух, драка); старое вытесняется, жителей — не больше TALKS_NPCS. */
+    public synchronized void hear(String id, String line) {
+        String l = line.trim();
+        if (id.isEmpty() || l.isEmpty()) return;
+        List<String> h = heard.remove(id);
+        if (h == null) h = new ArrayList<>();
+        // Одну и ту же реплику могли прислать дважды (повтор строки в диалоге) - не засорять
+        if (h.isEmpty() || !h.get(h.size() - 1).equals(l)) h.add(l);
+        while (h.size() > HEARD_LINES) h.remove(0);
+        heard.put(id, h);
+        while (heard.size() > TALKS_NPCS) heard.remove(heard.keySet().iterator().next());
+    }
+
+    /** Что видел и слышал рядом (копия). */
+    public synchronized List<String> heardBy(String id) {
+        List<String> h = heard.get(id);
+        return h == null ? new ArrayList<>() : new ArrayList<>(h);
+    }
+
+    /** Память жителя для его хода: что запомнил, что видел и слышал рядом и прежние беседы (с героем, Геральтом, другими). */
     public synchronized String npcContext(String id) {
         StringBuilder sb = new StringBuilder();
         List<String> n = npcNotes.get(id);
@@ -151,12 +187,21 @@ public final class Memory {
             for (String s : n) sb.append("\n- ").append(s);
             sb.append('\n');
         }
+        appendHeard(sb, id);
         List<String> t = talks.get(id);
         if (t != null && !t.isEmpty()) {
             sb.append("Недавние разговоры:");
             for (String s : t) sb.append('\n').append(s);
         }
         return sb.toString().trim();
+    }
+
+    private void appendHeard(StringBuilder sb, String id) {
+        List<String> h = heard.get(id);
+        if (h == null || h.isEmpty()) return;
+        sb.append("Что ты видел и слышал рядом (чужие разговоры вслух, драки):");
+        for (String s : h) sb.append("\n- ").append(s);
+        sb.append('\n');
     }
 
     /** Нужно ли сжать журнал: старые записи — в сводку. */
@@ -184,6 +229,7 @@ public final class Memory {
             for (String n : notes) sb.append("\n- ").append(n);
             sb.append('\n');
         }
+        appendHeard(sb, GERALT);
         if (!journal.isEmpty()) {
             sb.append("Недавно:");
             int from = Math.max(0, journal.size() - lastEntries);

@@ -56,8 +56,9 @@ final class AndroidTts implements Tts {
             if (!ruVoices.isEmpty() && !v.geralt) tts.setVoice(ruVoices.get(Math.floorMod(v.gameVoice, ruVoices.size())));
             else if (!ruVoices.isEmpty()) tts.setVoice(ruVoices.get(0));
             else tts.setLanguage(ru);
-            float pitch = v.geralt ? 0.72f : (v.female ? 1.15f : 0.85f + Math.floorMod(v.gameVoice * 7, 9) * 0.04f);
-            float rate = v.geralt ? 0.92f : 0.95f + Math.floorMod(v.gameVoice * 3, 5) * 0.03f;
+            // Герой - обычной высотой, чуть быстрее: его легко отличить от Геральта и жителей
+            float pitch = v.geralt ? 0.72f : v.hero ? 1.0f : (v.female ? 1.15f : 0.85f + Math.floorMod(v.gameVoice * 7, 9) * 0.04f);
+            float rate = v.geralt ? 0.92f : v.hero ? 1.05f : 0.95f + Math.floorMod(v.gameVoice * 3, 5) * 0.03f;
             tts.setPitch(pitch);
             tts.setSpeechRate(rate);
 

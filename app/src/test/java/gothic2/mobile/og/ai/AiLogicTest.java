@@ -69,7 +69,11 @@ public class AiLogicTest {
             + "\"npcs\":[{\"ref\":\"n3\",\"name\":\"Молодой гоблин\",\"monster\":1,\"dist\":8.1,\"side\":\"сзади\",\"hp%\":100,\"hostile\":1,\"seen\":1}],"
             + "\"ground\":[{\"ref\":\"i4\",\"name\":\"Яблоко\",\"dist\":2}],\"mobs\":[]}";
         String d = Observation.describe(Json.obj(Json.parse(snap)));
-        assertTrue(d, d.contains("день 2, 14:05"));
+        assertTrue(d, d.contains("день 2, 14:05 (день)"));
+        assertEquals("ночь", Observation.partOfDay("23:10"));
+        assertEquals("утро", Observation.partOfDay("06:00"));
+        assertEquals("вечер", Observation.partOfDay("19:45"));
+        assertEquals("", Observation.partOfDay(""));
         assertTrue(d, d.contains("Золото [ITMI_GOLD] x250"));
         assertTrue(d, d.contains("n3 «Молодой гоблин»"));
         assertTrue(d, d.contains("ВРАГ"));
@@ -725,6 +729,150 @@ public class AiLogicTest {
         le32(b, 40, data);
         for (int i = 0; i < samples.length; i++) le16(b, 44 + 2 * i, samples[i]);
         return b;
+    }
+
+    @Test
+    public void heroNamesWhoAnswers() {
+        List<Object> near = Json.arr(Json.parse("[{\"ref\":\"n4\",\"id\":\"VLK_4_MIKA\",\"name\":\"Мика\",\"dist\":3},"
+            + "{\"ref\":\"n5\",\"id\":\"MIL_1\",\"name\":\"Ополченец\",\"dist\":5},"
+            + "{\"ref\":\"self\",\"id\":\"VLK_2000_THORUS\",\"name\":\"Геральт\",\"dist\":6},"
+            + "{\"ref\":\"n7\",\"id\":\"KDW_1\",\"name\":\"Лорд Андре\",\"dist\":8}]"));
+        assertEquals("n4", Hearing.named("Мика, дай мне меч", near));
+        assertEquals("n4", Hearing.named("Скажи Мике, что я здесь", near));
+        assertEquals("n5", Hearing.named("Эй, ополченцу передай: я ухожу", near));
+        assertEquals("self", Hearing.named("Геральт, пойдём", near));
+        assertEquals("n7", Hearing.named("Андре, мне нужна помощь", near));
+        // «лорд» сам по себе никого не называет; ничего похожего - адресат прежний
+        assertEquals("", Hearing.named("Милорд, мир вам", near));
+        assertEquals("", Hearing.named("Привет всем", near));
+        // названный раньше - главный
+        assertEquals("n5", Hearing.named("Ополченец, Мика тебя обманул", near));
+        assertTrue(Hearing.sameName("мике", "мика"));
+        assertFalse(Hearing.sameName("мир", "мика"));
+        assertEquals("Мика, Ополченец, Геральт", Hearing.names(near.subList(0, 3), ""));
+        assertEquals("Ополченец, Геральт", Hearing.names(near.subList(0, 3), "n4"));
+    }
+
+    @Test
+    public void overheardLinesGoToMemory() {
+        Map<String, Object> mika = Json.of("ref", "n4", "id", "VLK_4_MIKA", "name", "Мика");
+        Map<String, Object> hero = Json.of("ref", "hero", "name", "Герой");
+        assertEquals("Герой (собеседник — Мика): «Где Ватрас?»", Hearing.overheard(hero, mika, " Где Ватрас? "));
+        assertEquals("Мика: «Эй!»", Hearing.overheard(mika, Json.of(), "Эй!"));
+        assertEquals("Геральт (собеседник — герой): «Хм.»", Hearing.overheard(Json.of("ref", "self"), hero, "Хм."));
+
+        File dir = new File(tmp.getRoot(), "heard");
+        Memory m = new Memory(dir);
+        m.load(1, 0);
+        for (int i = 0; i < Memory.HEARD_LINES + 3; i++) m.hear("VLK_4_MIKA", "реплика " + i);
+        m.hear("VLK_4_MIKA", "реплика " + (Memory.HEARD_LINES + 2)); // повтор подряд - один раз
+        m.hear(Memory.GERALT, "Мика: «Эй!»");
+        assertEquals(Memory.HEARD_LINES, m.heardBy("VLK_4_MIKA").size());
+        m.save(1, 9);
+        Memory back = new Memory(dir);
+        back.load(1, 9);
+        String ctx = back.npcContext("VLK_4_MIKA");
+        assertTrue(ctx, ctx.contains("Что ты видел и слышал рядом"));
+        assertTrue(ctx, ctx.contains("реплика " + (Memory.HEARD_LINES + 2)));
+        assertFalse(ctx, ctx.contains("реплика 2\n"));
+        assertTrue(back.context(30), back.context(30).contains("Мика: «Эй!»"));
+    }
+
+    @Test
+    public void stateIsExplicit() {
+        // очнулся после драки: здоровья мало, но на ногах - модели прежде считали его лежащим или мёртвым
+        String obs = Observation.describe(Json.obj(Json.parse("{\"npcs\":["
+            + "{\"ref\":\"n2\",\"name\":\"Мика\",\"guild\":\"Ополченец\",\"dist\":4,\"side\":\"спереди\",\"hp%\":3,\"cond\":\"up\","
+            + "\"inc\":{\"by\":\"hero\",\"byName\":\"герой\",\"byHero\":1,\"weapon\":\"кулаками\",\"hits\":3,\"ago\":70,"
+            + "\"downAgo\":65,\"upAgo\":40,\"lay\":25}},"
+            + "{\"ref\":\"n3\",\"name\":\"Ханна\",\"female\":1,\"dist\":5,\"side\":\"сбоку\",\"hp%\":1,\"state\":\"без сознания\",\"cond\":\"down\"},"
+            + "{\"ref\":\"n6\",\"name\":\"Бандит\",\"dist\":9,\"side\":\"сзади\",\"hp%\":0,\"state\":\"мёртв\",\"cond\":\"dead\"},"
+            + "{\"ref\":\"n8\",\"name\":\"Вино\",\"dist\":7,\"side\":\"сзади\",\"hp%\":100,\"state\":\"лежит\",\"cond\":\"up\",\"zs\":\"ZS_SLEEP\"}]}")));
+        assertTrue(obs, obs.contains("состояние — то, что видно сейчас"));
+        assertTrue(obs, obs.contains("ранен (здоровье 3%), но в сознании и на ногах"));
+        assertTrue(obs, obs.contains("был сбит с ног 1 мин назад (бил: герой, кулаками, 3 удара), пролежал без сознания 25 с, очнулся 40 с назад"));
+        assertTrue(obs, obs.contains("n3 «Ханна» (человек, женщина, 5,0 м, сбоку, БЕЗ СОЗНАНИЯ (лежит, дышит, скоро очнётся)"));
+        assertTrue(obs, obs.contains("МЁРТВ"));
+        assertTrue(obs, obs.contains("n8 «Вино» (человек, 7,0 м, сзади, спит"));
+        assertFalse(obs, obs.contains("сзади, лежит"));
+        assertEquals("сидит на скамье", Observation.activity("ZS_SIT_BENCH"));
+        assertEquals("работает в кузнице", Observation.activity("zs_smith_anvil"));
+        assertEquals("", Observation.activity("ZS_STAND_WP"));
+        // сам: кто избил, родная память игры о герое
+        String self = Observation.describe(Json.obj(Json.parse("{\"self\":{\"hp\":2,\"hpMax\":60,\"weapon\":\"убрано\","
+            + "\"female\":1,\"items\":[],\"cond\":\"up\",\"fightHero\":1,\"crime\":3,\"talked\":0,"
+            + "\"inc\":{\"by\":\"n5\",\"byName\":\"Бандит\",\"weapon\":\"оружием «Ржавый меч»\",\"hits\":1,\"ago\":30,"
+            + "\"downAgo\":30,\"upAgo\":5,\"lay\":25}},"
+            + "\"hero\":{\"dist\":2,\"side\":\"спереди\",\"hp\":5,\"hpMax\":40,\"level\":3,\"attitude\":\"сердито\",\"cond\":\"down\","
+            + "\"inc\":{\"by\":\"self\",\"byName\":\"Мика\",\"weapon\":\"кулаками\",\"ago\":10,\"downAgo\":8}}}")));
+        assertTrue(self, self.contains("Недавно тебя сбили с ног (30 с назад): бил Бандит [n5], оружием «Ржавый меч»."));
+        assertTrue(self, self.contains("Ты пролежала без сознания 25 с и очнулась 5 с назад — сейчас ты на ногах."));
+        assertTrue(self, self.contains("В последней драке с героем ты проиграл"));
+        assertTrue(self, self.contains("Ты видел, как герой украл"));
+        assertTrue(self, self.contains("Раньше ты с героем не разговаривал"));
+        assertTrue(self, self.contains("БЕЗ СОЗНАНИЯ"));
+        assertTrue(self, self.contains("сбит с ног 8 с назад (бил: ты, кулаками)"));
+        // кто говорит - ранен, но на ногах
+        String sp = Observation.speaker(Json.obj(Json.parse("{\"name\":\"Мика\",\"hp%\":4,\"cond\":\"up\"}")), "Мика", "");
+        assertTrue(sp, sp.contains("Ранен: здоровье 4%, но в сознании и на ногах."));
+    }
+
+    @Test
+    public void incidentsAreRemembered() {
+        Map<String, Object> mika = Json.of("ref", "n4", "id", "VLK_4_MIKA", "name", "Мика");
+        Map<String, Object> hanna = Json.of("ref", "n5", "id", "VLK_5_HANNA", "name", "Ханна", "female", 1L);
+        Map<String, Object> hero = Json.of("ref", "hero", "name", "герой", "hero", 1L);
+        assertEquals("Мика сбит с ног (бил: герой, кулаками) — без сознания.",
+            Incidents.seen("down", mika, hero, "кулаками", 0));
+        assertEquals("Ханна очнулась и встала на ноги (пролежала без сознания 20 с).",
+            Incidents.seen("up", hanna, hero, "", 20));
+        assertEquals("Мика убит (бил: Геральт, оружием «Меч»).",
+            Incidents.seen("dead", mika, Json.of("ref", "self", "name", "Геральт"), "оружием «Меч»", 0));
+        assertEquals("", Incidents.seen("other", mika, hero, "", 0));
+        assertEquals("Меня сбили с ног (бил: герой, кулаками), я была без сознания.",
+            Incidents.victimNote("down", hanna, hero, "кулаками"));
+        assertEquals("", Incidents.victimNote("up", hanna, hero, ""));
+        String w = Incidents.wokeUp(mika, hero, "кулаками", 25);
+        assertTrue(w, w.startsWith("Ты только что пришёл в себя: тебя сбили с ног (бил: герой, кулаками), ты пролежал без сознания 25 с."));
+        assertTrue(w, w.contains("герой — тот, кто тебя избил"));
+        assertTrue(w, w.contains("Можно и промолчать"));
+        String r = Persona.residentEvent("Мика", "Ополченец", false, "", new ArrayList<>(), new ArrayList<>());
+        assertTrue(r, r.contains(Persona.FIGHT));
+        assertTrue(r, r.contains(Persona.DEEDS));
+        assertTrue(r, r.contains(Persona.STATE));
+    }
+
+    @Test
+    public void rulesOfStateAndHearing() {
+        assertTrue(Persona.system().contains(Persona.STATE));
+        assertTrue(Persona.system().contains(Persona.HEARING));
+        String res = Persona.resident("Мика", "Ополченец", false, "", new ArrayList<>(), new ArrayList<>());
+        assertTrue(res, res.contains(Persona.STATE));
+        assertTrue(res, res.contains(Persona.HEARING));
+        String reply = Persona.npcReply("Мика", "", false, "", new ArrayList<>(), new ArrayList<>(), "Геральт");
+        assertTrue(reply, reply.contains(Persona.HEARING));
+    }
+
+    @Test
+    public void heroHasOwnVoice() {
+        Tts.Voice h = Tts.Voice.hero();
+        assertTrue(h.hero);
+        assertFalse(h.geralt);
+        assertEquals(Tts.Voice.HERO_VOICE, h.gameVoice);
+        assertFalse(new Tts.Voice(false, false, 3, "").hero);
+        AiSettings s = AiSettings.inMemory();
+        assertTrue(s.heroVoice());
+        s.set("hero_voice", "0");
+        assertFalse(s.heroVoice());
+        s.set("tts_speechify_key", "k");
+        Speechify sp = new Speechify(s);
+        assertEquals("savva", sp.voiceFor(h));
+        s.set("tts_speechify_hero", "my-hero");
+        assertEquals("my-hero", new Speechify(s).voiceFor(h));
+        assertEquals("tikhon", new Speechify(s).voiceFor(Tts.Voice.geralt("")));
+        // герою - без своей высоты и темпа, как Геральту
+        assertEquals("Я", Speechify.prosody("Я", h));
+        assertTrue(Tts.style(h), Tts.style(h).contains("странник"));
     }
 
     private static void put(byte[] b, int at, String s) {

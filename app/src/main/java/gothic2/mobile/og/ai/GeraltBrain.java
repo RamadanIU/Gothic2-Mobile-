@@ -80,7 +80,11 @@ final class GeraltBrain {
     /** Слушающий может заговорить с третьим (передать, разобраться), но третий — уже нет. */
     private static final int MAX_TALK_DEPTH = 2;
     /** Геральт в скриптах игры (ainpc.cpp): житель может заговорить и с ним. */
-    private static final String GERALT_ID = "VLK_2000_THORUS";
+    private static final String GERALT_ID = Memory.GERALT;
+    /** Очнувшийся житель отвечает на то, что с ним сделали, если герой не дальше (м) — иначе только помнит. */
+    private static final double REACT_DIST = 20;
+    /** Один и тот же житель отвечает на происшествие не чаще (мс). */
+    private static final long REACT_GAP = 60000;
 
     private final AiSettings settings;
     private final Engine engine;
@@ -106,6 +110,14 @@ final class GeraltBrain {
     private final LinkedBlockingQueue<Map<String, Object>> queue = new LinkedBlockingQueue<>();
     private final ArrayDeque<Map<String, Object>> deferred = new ArrayDeque<>();
     private final ExecutorService ttsPool = Executors.newSingleThreadExecutor();
+    /** Слова героя: голос готовится здесь, пока модель думает над ответом (ответ ждёт конца его слов). */
+    private final ExecutorService heroPool = Executors.newSingleThreadExecutor();
+    private volatile Future<?> heroLine;
+    private volatile long heroVoiceUntil;
+    /** Герой говорит лично (выбрал адресата касанием): ответ тоже вполголоса — соседи не слышат. */
+    private boolean whisper;
+    /** Когда житель последний раз отвечал на происшествие (ключ жителя → время). */
+    private final Map<String, Long> reacted = new java.util.HashMap<>();
     private final Map<String, String> pendingActs = new java.util.HashMap<>();
     /** Кто такой житель (id экземпляра → событие lore движка): запрашивается один раз за сеанс. */
     private final Map<String, Map<String, Object>> lore = new java.util.HashMap<>();
@@ -143,6 +155,7 @@ final class GeraltBrain {
         running = false;
         if (worker != null) worker.interrupt();
         ttsPool.shutdownNow();
+        heroPool.shutdownNow();
     }
 
     /** Событие движка или панели (из любого потока). */
@@ -214,21 +227,43 @@ final class GeraltBrain {
                     AiLog.i("said superseded: «" + AiLog.cut(text, 120) + "»");
                     break;
                 }
-                // «Сказать», обращённое к жителю (фокус или выбранный касанием) - отвечает модель этого жителя
+                // «Сказать», обращённое к жителю (фокус или выбранный касанием) - отвечает модель этого жителя.
+                // Лично (выбран касанием) - слышит только он; вслух - все в 10 м (near), отвечает названный по имени
                 String target = Json.str(ev, "target");
+                String name = Json.str(ev, "name");
+                boolean priv = Json.bool(ev, "private", false);
+                List<Object> near = Json.arr(ev.get("near"));
+                if (!priv && !talking) {
+                    String named = Hearing.named(text, near);
+                    if (!named.isEmpty()) {
+                        for (Object o : near) {
+                            Map<String, Object> n = Json.obj(o);
+                            if (named.equals(Json.str(n, "ref"))) name = Json.str(n, "name");
+                        }
+                        // Прежний адресат - тоже слышит: он стоит рядом
+                        near = withPerson(near, target, Json.str(ev, "name"), named);
+                        AiLog.i("said to named " + named + " «" + name + "» instead of " + target);
+                        target = named;
+                    }
+                }
+                String heard = priv ? "Герой сказал это тебе лично, вполголоса: другие рядом не слышали."
+                    : Hearing.names(near, target).isEmpty() ? ""
+                    : "Герой сказал это вслух; рядом слышали: " + Hearing.names(near, target) + ".";
                 if (!target.isEmpty() && !"self".equals(target) && !talking) {
-                    residentTurn(target, Json.str(ev, "name"), text);
+                    residentTurn(target, name, text, priv, heard);
                     break;
                 }
                 boolean free = Json.bool(ev, "free", false) && !talking;
-                if (talking || free) {
-                    // Слова героя - его субтитром, без голоса: в диалоге - очередью реплик, без диалога - над миром
-                    engine.send(Json.of("cmd", "say", "id", nextLine("H"), "who", "hero", "to", "self", "text", text,
-                        "ms", Math.min(4000, Speech.estimateMs(text))));
-                }
+                // Слова героя - его субтитром и голосом: в диалоге - очередью реплик, без диалога - над миром
+                if (talking || free) heroSays("self", text, priv && !talking);
                 memory.add(stamp() + " Герой: «" + text + "»");
-                turn("Герой говорит тебе: «" + text + "»" + (free ? " (вы не в диалоге: он сказал это, стоя рядом)" : ""),
-                    talking, true, chat);
+                whisper = priv && !talking;
+                try {
+                    turn("Герой говорит тебе: «" + text + "»" + (free ? " (вы не в диалоге: он сказал это, стоя рядом)" : "")
+                        + (heard.isEmpty() || talking ? "" : "\n" + heard), talking, true, chat);
+                } finally {
+                    whisper = false;
+                }
                 break;
             }
             case "bye":
@@ -239,6 +274,12 @@ final class GeraltBrain {
                 break;
             case "event":
                 onEvent(ev);
+                break;
+            case "heard":
+                onHeard(ev);
+                break;
+            case "incident":
+                onIncident(ev);
                 break;
             default:
                 break;
@@ -284,6 +325,15 @@ final class GeraltBrain {
                 memory.add(stamp() + " " + text);
                 autoTurn(text + " Реши, как ответить: словами, предупреждением или сталью.", true);
                 break;
+            case "down":
+                memory.add(stamp() + " " + text);
+                break;
+            case "up":
+                // Очнулся: кто сбил с ног и чем - в тексте события, кто вокруг - в обстановке хода
+                memory.add(stamp() + " " + text);
+                if (a >= 1 || heroNear) autoTurn(text + " Реши, что сказать и сделать (тому, кто тебя избил, герою или тем, "
+                    + "кто рядом); можно и промолчать.", true);
+                break;
             case "hit":
             case "enemy":
             case "hero_attacks":
@@ -301,6 +351,120 @@ final class GeraltBrain {
                 memory.add(stamp() + " " + text);
                 if (a >= 2 && heroNear) autoTurn(text, false);
                 break;
+        }
+    }
+
+    /**
+     * Реплику слышали рядом (движок, heard): реплики вслух — героя, Геральта, жителей и родных диалогов игры. Тем, кто
+     * стоял рядом (до 10 м), — в память «видел и слышал рядом»; жителю, который сам говорил в родном диалоге (с героем
+     * или другим), — в его беседы: потом он помнит, о чём шла речь. Реплики модели участники запоминают сами.
+     */
+    private void onHeard(Map<String, Object> ev) {
+        Map<String, Object> sp = Json.obj(ev.get("speaker"));
+        Map<String, Object> to = Json.obj(ev.get("to"));
+        String text = Json.str(ev, "text").trim();
+        if (text.isEmpty() || sp.isEmpty()) return;
+        if (!Json.bool(ev, "ai", false)) {
+            String own = Hearing.who(sp, true) + ": " + text;
+            if (isResident(sp)) memory.addTalk(Json.str(sp, "id"), own);
+            if (isResident(to)) memory.addTalk(Json.str(to, "id"), own);
+        }
+        String line = stamp() + " " + Hearing.overheard(sp, to, text);
+        for (Object o : Json.arr(ev.get("near"))) {
+            Map<String, Object> n = Json.obj(o);
+            memory.hear("self".equals(Json.str(n, "ref")) ? GERALT_ID : Json.str(n, "id"), line);
+        }
+    }
+
+    /** Житель (не герой и не Геральт) с id экземпляра — ключом его памяти. */
+    private static boolean isResident(Map<String, Object> p) {
+        String ref = Json.str(p, "ref");
+        return !p.isEmpty() && !"hero".equals(ref) && !"self".equals(ref) && !Json.str(p, "id").isEmpty();
+    }
+
+    /**
+     * Происшествие рядом с героем (движок, incident): человека сбили с ног, он очнулся или погиб. Кто видел — запоминает
+     * (кто кого и чем); пострадавший житель — что его избили; очнувшийся рядом с героем — сразу отвечает на это
+     * (residentReact): кто его избил, кто вокруг, что делать. Геральт о себе узнаёт событиями down/up.
+     */
+    private void onIncident(Map<String, Object> ev) {
+        String kind = Json.str(ev, "kind");
+        Map<String, Object> v = Json.obj(ev.get("victim"));
+        Map<String, Object> by = Json.obj(ev.get("by"));
+        String seen = Incidents.seen(kind, v, by, Json.str(ev, "weapon"), Json.num(ev, "lay", 0));
+        if (seen.isEmpty()) return;
+        String st = stamp();
+        String victimKey = "self".equals(Json.str(v, "ref")) ? GERALT_ID : Json.str(v, "id");
+        for (Object o : Json.arr(ev.get("witnesses"))) {
+            Map<String, Object> n = Json.obj(o);
+            String key = "self".equals(Json.str(n, "ref")) ? GERALT_ID : Json.str(n, "id");
+            if (!key.equals(victimKey)) memory.hear(key, st + " Видел: " + seen);
+        }
+        AiLog.i("incident " + kind + ": " + seen);
+        if (!isResident(v)) return;
+        String note = Incidents.victimNote(kind, v, by, Json.str(ev, "weapon"));
+        if (!note.isEmpty()) memory.npcNote(victimKey, st + " " + note);
+        if ("up".equals(kind) && Json.dbl(ev, "heroDist", 99) <= REACT_DIST && !talking) {
+            String byRef = Json.str(by, "ref");
+            residentReact(Json.str(v, "ref"), v, Incidents.wokeUp(v, by, Json.str(ev, "weapon"), Json.num(ev, "lay", 0)),
+                byRef.isEmpty() ? "hero" : byRef);
+        }
+    }
+
+    /**
+     * Житель очнулся после драки рядом с героем: ход его модели — кто его избил и чем (событие), кто вокруг (снимок его
+     * глазами), что сказать и сделать: пожаловаться страже, дать сдачи, уйти или промолчать. Говорит вслух — слышат все
+     * рядом. Прежде очнувшийся ничего не знал о том, что с ним случилось, и вёл себя, будто ничего не было.
+     */
+    private void residentReact(String ref, Map<String, Object> v, String trigger, String to) {
+        if (!ready || !settings.act().isSet()) return;
+        String key = Json.str(v, "id");
+        long t = now();
+        Long last = reacted.get(key);
+        if (last != null && t - last < REACT_GAP) return;
+        reacted.put(key, t);
+        AiLog.i("react " + key + ": " + AiLog.cut(trigger, 200));
+        Map<String, Object> snap = requestSnapshot(ref);
+        Map<String, Object> me = Json.obj(snap.get("self"));
+        if (me.isEmpty()) return;
+        String name = Json.str(me, "name").isEmpty() ? Json.str(v, "name") : Json.str(me, "name");
+        Actor a = new Actor(ref, key.isEmpty() ? name : key, name, Json.str(me, "guild"), Json.bool(me, "female", false),
+            (int) Json.num(me, "voice", 1));
+        String old = purpose;
+        purpose = trigger;
+        try {
+            Map<String, Object> info = loreOf(a.key, ref);
+            List<Map<String, Object>> msgs = new ArrayList<>();
+            msgs.add(Json.of("role", "system", "content", Persona.residentEvent(a.name, a.guild, a.female, NpcLore.of(key),
+                strings(info.get("topics")), strings(info.get("lines")))));
+            String mem = memory.npcContext(a.key);
+            msgs.add(Json.of("role", "user", "content",
+                (mem.isEmpty() ? "" : mem + "\n\n") + Observation.describe(snap) + "\n\n" + trigger));
+            for (int step = 0; step < MAX_STEPS; step++) {
+                LlmClient.Reply r = act.chat(msgs, tools, 900);
+                String speech = heroSpeech(r);
+                StringBuilder calls = new StringBuilder();
+                for (LlmClient.ToolCall c : r.calls) calls.append(' ').append(c.name).append(c.rawArgs);
+                AiLog.i("react model: «" + AiLog.cut(speech, 200) + "»" + calls);
+                if (!speech.isEmpty()) {
+                    memory.addTalk(a.key, a.name + ": " + speech);
+                    speak(ref, to, speech, a.tts(), false);
+                }
+                if (r.calls.isEmpty()) break;
+                msgs.add(r.message);
+                boolean again = false;
+                for (LlmClient.ToolCall c : r.calls) {
+                    String[] res = runTool(c, a, snap);
+                    msgs.add(Json.of("role", "tool", "tool_call_id", c.id, "content", res[0]));
+                    if ("again".equals(res[1])) again = true;
+                }
+                if (!again) break;
+            }
+        } catch (IOException e) {
+            showError("модель — " + LlmClient.describe(e));
+        } finally {
+            purpose = old;
+            lastActivity = now();
         }
     }
 
@@ -376,7 +540,7 @@ final class GeraltBrain {
                 if (!speech.isEmpty()) {
                     spoke = true;
                     memory.add(stamp() + " Ты: «" + speech + "»");
-                    speak("self", "hero", speech, Tts.Voice.geralt(""));
+                    speak("self", "hero", speech, Tts.Voice.geralt(""), whisper);
                 }
                 if (r.calls.isEmpty()) break;
                 msgs.add(r.message);
@@ -401,7 +565,7 @@ final class GeraltBrain {
                 String speech = forceWords(msgs, llm);
                 if (!speech.isEmpty()) {
                     memory.add(stamp() + " Ты: «" + speech + "»");
-                    speak("self", "hero", speech, Tts.Voice.geralt(""));
+                    speak("self", "hero", speech, Tts.Voice.geralt(""), whisper);
                 }
             }
         } catch (IOException e) {
@@ -497,15 +661,14 @@ final class GeraltBrain {
      * Живой житель: герой сказал ему что-то кнопкой «Сказать». Ход — как у Геральта (те же инструменты), но
      * глазами жителя (снимок с who), с его характером (NpcLore, его реплики из игры), памятью бесед и голосом.
      */
-    private void residentTurn(String ref, String name, String text) {
+    private void residentTurn(String ref, String name, String text, boolean priv, String heard) {
         if (!settings.chat().isSet()) {
             showError("в настройках ИИ не задан адрес или модель");
             return;
         }
         String who = name.isEmpty() ? "Житель" : name;
-        // Слова героя - его субтитром над миром
-        engine.send(Json.of("cmd", "say", "id", nextLine("H"), "who", "hero", "to", ref, "text", text,
-            "ms", Math.min(4000, Speech.estimateMs(text))));
+        // Слова героя - его субтитром над миром и его голосом
+        heroSays(ref, text, priv);
         ui.status(who + " думает…", 0);
         AiLog.i("resident " + ref + " «" + who + "»: " + AiLog.cut(text, 160));
         purpose = "герой сказал тебе: «" + text + "»";
@@ -529,8 +692,8 @@ final class GeraltBrain {
                 (mem.isEmpty() ? "" : mem + "\n\n") + Observation.describe(snap)
                     + (topics.isEmpty() ? "" : "\n\n" + topics)
                     + "\n\nКто с тобой говорит: " + Observation.speaker(Json.obj(snap.get("hero")), "Герой (безымянный странник)", "")
-                    + "\n\nГерой говорит тебе: «" + text + "»"));
-            memory.addTalk(a.key, "Герой: " + text);
+                    + "\n\nГерой говорит тебе: «" + text + "»" + (heard.isEmpty() ? "" : "\n" + heard)));
+            memory.addTalk(a.key, "Герой" + (priv ? " (лично)" : "") + ": " + text);
             int steps = MAX_STEPS;
             int silent = 0;
             boolean spoke = false;
@@ -555,7 +718,7 @@ final class GeraltBrain {
                 if (!speech.isEmpty()) {
                     spoke = true;
                     memory.addTalk(a.key, a.name + ": " + speech);
-                    speak(ref, "hero", speech, a.tts());
+                    speak(ref, "hero", speech, a.tts(), priv);
                 }
                 if (r.calls.isEmpty()) break;
                 msgs.add(r.message);
@@ -581,7 +744,7 @@ final class GeraltBrain {
                 String speech = forceWords(msgs, chat);
                 if (!speech.isEmpty()) {
                     memory.addTalk(a.key, a.name + ": " + speech);
-                    speak(ref, "hero", speech, a.tts());
+                    speak(ref, "hero", speech, a.tts(), priv);
                 }
             }
         } catch (IOException e) {
@@ -682,7 +845,7 @@ final class GeraltBrain {
         List<String> transcript = new ArrayList<>();
         int rounds = talkDepth > 1 ? 1 : TALK_ROUNDS;
         for (int round = 0; ; round++) {
-            speak(speaker.ref, ref, said, speaker.tts());
+            speak(speaker.ref, ref, said, speaker.tts(), false);
             String line = speaker.name + ": " + said;
             transcript.add(line);
             String[] heard = listen(speaker, listener, toGeralt, who, ref, key, said, looks, transcript);
@@ -775,7 +938,7 @@ final class GeraltBrain {
             memory.addTalk(speaker.key, line);
             if (!reply.isEmpty()) memory.addTalk(speaker.key, name + ": " + reply);
         }
-        if (!reply.isEmpty()) speak(ref, speaker.ref, reply, listener.tts());
+        if (!reply.isEmpty()) speak(ref, speaker.ref, reply, listener.tts(), false);
         // Ответ делом - после слов: «Ладно, ухожу» - и уходит. Беседа с третьим - ради сказанного говорящим
         String old = purpose;
         purpose = "«" + speaker.name + "» сказал тебе: «" + said + "»";
@@ -881,7 +1044,7 @@ final class GeraltBrain {
      * готов за VOICE_WAIT_MS, не ждём: реплика идёт субтитром, остальные куски этой реплики — тоже без голоса
      * (прежде ждали по 40 с на кусок — Геральт «молчал» минутами, пока сервер озвучки тормозил).
      */
-    private void speak(String who, String to, String text, Tts.Voice voice) {
+    private void speak(String who, String to, String text, Tts.Voice voice, boolean priv) {
         List<String> parts = Speech.chunks(text);
         List<Future<Pcm>> pcm = new ArrayList<>();
         for (String p : parts) {
@@ -910,12 +1073,78 @@ final class GeraltBrain {
                     showError("озвучка — " + (cause instanceof IOException ? LlmClient.describe((IOException) cause) : String.valueOf(cause)));
                 }
             }
+            // Ответ - после слов героя: не перебивать его голос
+            if (i == 0) awaitHero();
             String id = nextLine("L");
             int ms = sound != null ? Math.max(400, sound.ms()) : Speech.estimateMs(part);
             if (sound != null) audio.put(id, sound);
-            engine.send(Json.of("cmd", "say", "id", id, "who", who, "to", to, "text", part, "ms", ms, "mood", voice.mood));
+            Map<String, Object> say = Json.of("cmd", "say", "id", id, "who", who, "to", to, "text", part, "ms", ms,
+                "mood", voice.mood);
+            if (priv) say.put("private", true);
+            engine.send(say);
             waitFor(e -> "line_end".equals(Json.str(e, "ev")) && id.equals(Json.str(e, "id")), ms + 20000L);
         }
+    }
+
+    /**
+     * Слова героя — субтитром и его голосом (Tts.Voice.hero, если включено «Озвучивать слова героя»), как реплики героя
+     * в диалогах игры; прежде шли только субтитром. Голос готовится в своём потоке, пока модель думает над ответом, и
+     * реплика уходит в движок, когда голос готов (не дольше VOICE_WAIT_MS — дальше без голоса). priv — лично: соседи не
+     * слышат (движок не рассылает её как heard).
+     */
+    private void heroSays(String to, String text, boolean priv) {
+        String id = nextLine("H");
+        String clean = Speech.clean(text);
+        int est = Math.min(6000, Speech.estimateMs(text));
+        Map<String, Object> say = Json.of("cmd", "say", "id", id, "who", "hero", "to", to, "text", text, "ms", est);
+        if (priv) say.put("private", true);
+        if (tts == null || !settings.heroVoice() || clean.isEmpty()) {
+            heroVoiceUntil = 0;
+            engine.send(say);
+            return;
+        }
+        Future<Pcm> voice = ttsPool.submit(() -> tts.synth(clean, Tts.Voice.hero()));
+        heroLine = heroPool.submit(() -> {
+            Pcm pcm = null;
+            try {
+                pcm = voice.get(VOICE_WAIT_MS, TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException e) {
+                voice.cancel(true);
+                AiLog.i("hero voice: not ready in " + VOICE_WAIT_MS + " ms");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                AiLog.i("hero voice: " + (e.getCause() != null ? e.getCause() : e));
+            }
+            int ms = pcm != null ? Math.max(400, pcm.ms()) : est;
+            if (pcm != null) audio.put(id, pcm);
+            say.put("ms", ms);
+            heroVoiceUntil = now() + ms + 250;
+            engine.send(say);
+        });
+    }
+
+    /** Ответ NPC ждёт, пока герой договорит (его голос готовится и звучит параллельно с ходом модели). */
+    private void awaitHero() {
+        Future<?> f = heroLine;
+        if (f != null) {
+            try {
+                f.get(VOICE_WAIT_MS + 3000, TimeUnit.MILLISECONDS);
+            } catch (Exception e) {
+                // не дождались голоса героя - отвечаем
+            }
+            heroLine = null;
+        }
+        long left = heroVoiceUntil - now();
+        if (left > 0) waitFor(e -> false, Math.min(left, 20000));
+    }
+
+    /** near с добавленным человеком (ref, name), кроме except: прежний адресат тоже слышал слова героя. */
+    private static List<Object> withPerson(List<Object> near, String ref, String name, String except) {
+        List<Object> out = new ArrayList<>();
+        if (!ref.isEmpty() && !ref.equals(except)) out.add(Json.of("ref", ref, "name", name));
+        for (Object o : near) if (!except.equals(Json.str(Json.obj(o), "ref"))) out.add(o);
+        return out;
     }
 
     /**

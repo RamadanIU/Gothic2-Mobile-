@@ -100,6 +100,7 @@ public final class Speechify implements Tts {
     private final String key;
     private final String model;
     private final String geraltVoice;
+    private final String heroVoice;
     private final String[] male;
     private final String[] female;
 
@@ -108,6 +109,7 @@ public final class Speechify implements Tts {
         // Пустое поле — значение по умолчанию: без модели Speechify берёт simba-3.0, а в ней нет русского
         model = orDefault(s.get("tts_speechify_model"), "tts_speechify_model");
         geraltVoice = orDefault(s.get("tts_speechify_voice"), "tts_speechify_voice");
+        heroVoice = orDefault(s.get("tts_speechify_hero"), "tts_speechify_hero");
         male = ids(s.get("tts_speechify_male"), geraltVoice);
         female = ids(s.get("tts_speechify_female"), geraltVoice);
     }
@@ -132,6 +134,7 @@ public final class Speechify implements Tts {
 
     String voiceFor(Voice v) {
         if (v.geralt) return geraltVoice;
+        if (v.hero) return heroVoice;
         return Tts.pick(v.female ? female : male, v.gameVoice);
     }
 
@@ -146,7 +149,7 @@ public final class Speechify implements Tts {
     }
 
     static String prosody(String escaped, Voice v) {
-        if (v.geralt) return escaped;
+        if (v.geralt || v.hero) return escaped;
         // Один голос на многих жителей: высота и темп по номеру голоса из скриптов — каждый звучит по-своему
         int pitch = Math.floorMod(v.gameVoice * 5, 17) - 8;
         int rate = Math.floorMod(v.gameVoice * 3, 9) - 4;

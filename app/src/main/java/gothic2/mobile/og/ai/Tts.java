@@ -12,19 +12,30 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Озвучка реплик. Голос выбирается по говорящему: Геральт — свой низкий голос, другие NPC — по полу и
- * номеру голоса из скриптов игры (каждый житель звучит одинаково от разговора к разговору).
+ * Озвучка реплик. Голос выбирается по говорящему: Геральт — свой низкий голос, герой — свой (слова игрока, как в
+ * диалогах игры), другие NPC — по полу и номеру голоса из скриптов игры (каждый житель звучит одинаково от
+ * разговора к разговору).
  */
 public interface Tts {
     /** Кто говорит и как. */
     final class Voice {
+        /** Голос героя в скриптах игры (SVM 15). */
+        public static final int HERO_VOICE = 15;
+
         public final boolean geralt;
+        /** Герой — слова игрока («Сказать», «Написать»): свой голос из настроек. */
+        public final boolean hero;
         public final boolean female;
         public final int gameVoice;
         public final String mood;
 
         public Voice(boolean geralt, boolean female, int gameVoice, String mood) {
+            this(geralt, false, female, gameVoice, mood);
+        }
+
+        private Voice(boolean geralt, boolean hero, boolean female, int gameVoice, String mood) {
             this.geralt = geralt;
+            this.hero = hero;
             this.female = female;
             this.gameVoice = gameVoice;
             this.mood = mood == null ? "" : mood;
@@ -32,6 +43,10 @@ public interface Tts {
 
         public static Voice geralt(String mood) {
             return new Voice(true, false, 0, mood);
+        }
+
+        public static Voice hero() {
+            return new Voice(false, true, false, HERO_VOICE, "");
         }
     }
 
@@ -54,6 +69,7 @@ public interface Tts {
     static String style(Voice v) {
         String base = v.geralt
             ? "Низкий, хрипловатый, спокойный мужской голос; говорит сдержанно, сухо, с лёгкой мрачной иронией"
+            : v.hero ? "Молодой мужчина, странник и искатель приключений; говорит уверенно, живо, с лёгкой усмешкой"
             : (v.female ? "Простая женщина из средневековой деревни" : "Грубоватый мужчина из средневековой деревни");
         switch (v.mood) {
             case "angry": return base + "; раздражённо, жёстко";
@@ -78,16 +94,18 @@ public interface Tts {
         private final String key;
         private final String model;
         private final String geraltVoice;
+        private final String heroVoice;
 
         Gemini(AiSettings s) {
             key = s.get("tts_gemini_key");
             model = s.get("tts_gemini_model");
             geraltVoice = s.get("tts_gemini_voice");
+            heroVoice = s.get("tts_gemini_hero");
         }
 
         @Override
         public Pcm synth(String text, Voice v) throws IOException {
-            String voice = v.geralt ? geraltVoice : pick(v.female ? FEMALE : MALE, v.gameVoice);
+            String voice = v.geralt ? geraltVoice : v.hero ? heroVoice : pick(v.female ? FEMALE : MALE, v.gameVoice);
             Map<String, Object> content = Json.of("type", "text", "text", text,
                 "annotations", list(Json.of("type", "speech_metadata", "style", style(v))));
             Map<String, Object> req = Json.of("model", model,
@@ -133,19 +151,21 @@ public interface Tts {
         private final String key;
         private final String region;
         private final String geraltVoice;
+        private final String heroVoice;
 
         Azure(AiSettings s) {
             key = s.get("tts_azure_key");
             region = s.get("tts_azure_region");
             geraltVoice = s.get("tts_azure_voice");
+            heroVoice = s.get("tts_azure_hero");
         }
 
         @Override
         public Pcm synth(String text, Voice v) throws IOException {
-            String voice = v.geralt ? geraltVoice : pick(v.female ? FEMALE : MALE, v.gameVoice);
-            // Разные жители одним голосом Дмитрия - разной высотой и темпом
-            int pitch = v.geralt ? -12 : (Math.floorMod(v.gameVoice * 5, 21) - 10);
-            int rate = v.geralt ? -6 : (Math.floorMod(v.gameVoice * 3, 11) - 5);
+            String voice = v.geralt ? geraltVoice : v.hero ? heroVoice : pick(v.female ? FEMALE : MALE, v.gameVoice);
+            // Разные жители одним голосом Дмитрия - разной высотой и темпом; герой - чуть выше и быстрее обычного
+            int pitch = v.geralt ? -12 : v.hero ? 4 : (Math.floorMod(v.gameVoice * 5, 21) - 10);
+            int rate = v.geralt ? -6 : v.hero ? 4 : (Math.floorMod(v.gameVoice * 3, 11) - 5);
             String ssml = "<speak version='1.0' xml:lang='ru-RU'><voice name='" + voice + "'>"
                 + "<prosody pitch='" + pitch + "%' rate='" + rate + "%'>" + xml(text) + "</prosody></voice></speak>";
             byte[] resp = post("https://" + region + ".tts.speech.microsoft.com/cognitiveservices/v1",
@@ -161,20 +181,23 @@ public interface Tts {
     final class ElevenLabs implements Tts {
         private final String key;
         private final String geraltVoice;
+        private final String heroVoice;
         private final String model;
 
         ElevenLabs(AiSettings s) {
             key = s.get("tts_eleven_key");
             geraltVoice = s.get("tts_eleven_voice");
+            heroVoice = s.get("tts_eleven_hero");
             model = s.get("tts_eleven_model");
         }
 
         @Override
         public Pcm synth(String text, Voice v) throws IOException {
-            // Другим NPC - тот же голос: на бесплатном уровне своих голосов мало, высота не меняется
+            // Другим NPC - тот же голос: на бесплатном уровне своих голосов мало, высота не меняется. Герою - свой
+            String voice = v.hero && !heroVoice.isEmpty() ? heroVoice : geraltVoice;
             Map<String, Object> req = Json.of("text", text, "model_id", model,
                 "voice_settings", Json.of("stability", v.geralt ? 0.55 : 0.4, "similarity_boost", 0.75));
-            byte[] resp = post("https://api.elevenlabs.io/v1/text-to-speech/" + geraltVoice + "?output_format=pcm_24000",
+            byte[] resp = post("https://api.elevenlabs.io/v1/text-to-speech/" + voice + "?output_format=pcm_24000",
                 Json.write(req).getBytes(StandardCharsets.UTF_8), "application/json", new String[]{"xi-api-key", key});
             return Pcm.fromRaw(resp, 24000);
         }
@@ -189,17 +212,19 @@ public interface Tts {
         private final String key;
         private final String model;
         private final String geraltVoice;
+        private final String heroVoice;
 
         OpenAi(AiSettings s) {
             url = s.get("tts_openai_url");
             key = s.get("tts_openai_key");
             model = s.get("tts_openai_model");
             geraltVoice = s.get("tts_openai_voice");
+            heroVoice = s.get("tts_openai_hero");
         }
 
         @Override
         public Pcm synth(String text, Voice v) throws IOException {
-            String voice = v.geralt ? geraltVoice : pick(v.female ? FEMALE : MALE, v.gameVoice);
+            String voice = v.geralt ? geraltVoice : v.hero ? heroVoice : pick(v.female ? FEMALE : MALE, v.gameVoice);
             Map<String, Object> req = Json.of("model", model, "input", text, "voice", voice,
                 "response_format", "wav", "instructions", style(v));
             byte[] resp = post(LlmClient.endpoint(url, "audio/speech"), Json.write(req).getBytes(StandardCharsets.UTF_8),

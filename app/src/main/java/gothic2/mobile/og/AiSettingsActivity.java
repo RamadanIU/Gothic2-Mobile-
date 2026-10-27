@@ -115,7 +115,7 @@ public class AiSettingsActivity extends Activity {
         field(col, "act_model", "Модель", false);
         col.addView(smallButton("Список моделей", v -> pickModel("act_url", "act_key", "act_model")));
 
-        section(col, "Голос Геральта и жителей");
+        section(col, "Голоса: Геральт, жители и герой");
         RadioGroup tts = new RadioGroup(this);
         String cur = ai.ttsProvider();
         for (int i = 0; i < AiSettings.TTS_IDS.length; i++) {
@@ -139,6 +139,7 @@ public class AiSettingsActivity extends Activity {
             + "используются Google для улучшения сервисов. Голоса: Algenib (хриплый), Charon, Orus, Fenrir…", 13, DIM));
         field(gem, "tts_gemini_key", "Ключ Gemini", true);
         field(gem, "tts_gemini_voice", "Голос Геральта", false);
+        field(gem, "tts_gemini_hero", "Голос героя (Iapetus, Puck, Orus…)", false);
         field(gem, "tts_gemini_model", "Модель озвучки", false);
 
         LinearLayout sp = box(col, AiSettings.TTS_SPEECHIFY);
@@ -151,6 +152,8 @@ public class AiSettingsActivity extends Activity {
         sp.addView(smallButton("Список моделей", v -> pickSpeechifyModel()));
         field(sp, "tts_speechify_voice", "Голос Геральта (id)", false);
         sp.addView(smallButton("Выбрать голос Геральта", v -> pickSpeechifyVoices("tts_speechify_voice", "", true)));
+        field(sp, "tts_speechify_hero", "Голос героя (id)", false);
+        sp.addView(smallButton("Выбрать голос героя", v -> pickSpeechifyVoices("tts_speechify_hero", "male", true)));
         field(sp, "tts_speechify_male", "Голоса мужчин (id через запятую)", false);
         sp.addView(smallButton("Выбрать голоса мужчин", v -> pickSpeechifyVoices("tts_speechify_male", "male", true)));
         field(sp, "tts_speechify_female", "Голоса женщин (id через запятую)", false);
@@ -161,11 +164,13 @@ public class AiSettingsActivity extends Activity {
         field(az, "tts_azure_key", "Ключ", true);
         field(az, "tts_azure_region", "Регион (например westeurope)", false);
         field(az, "tts_azure_voice", "Голос Геральта (ru-RU-DmitryNeural)", false);
+        field(az, "tts_azure_hero", "Голос героя (ru-RU-DmitryNeural)", false);
 
         LinearLayout el = box(col, AiSettings.TTS_ELEVENLABS);
         el.addView(text("elevenlabs.io → профиль → API Keys. Голос — id из библиотеки голосов.", 13, DIM));
         field(el, "tts_eleven_key", "Ключ", true);
         field(el, "tts_eleven_voice", "Id голоса", false);
+        field(el, "tts_eleven_hero", "Id голоса героя", false);
         field(el, "tts_eleven_model", "Модель", false);
 
         LinearLayout oa = box(col, AiSettings.TTS_OPENAI);
@@ -174,8 +179,10 @@ public class AiSettingsActivity extends Activity {
         field(oa, "tts_openai_key", "Ключ", true);
         field(oa, "tts_openai_model", "Модель", false);
         field(oa, "tts_openai_voice", "Голос Геральта", false);
+        field(oa, "tts_openai_hero", "Голос героя", false);
 
-        col.addView(smallButton("Прослушать голос Геральта", v -> testVoice()));
+        col.addView(smallButton("Прослушать голос Геральта", v -> testVoice(false)));
+        col.addView(smallButton("Прослушать голос героя", v -> testVoice(true)));
         voiceResult = text("", 13, DIM);
         col.addView(voiceResult);
         showTts(cur);
@@ -187,6 +194,14 @@ public class AiSettingsActivity extends Activity {
         stt.setChecked(ai.voiceInput());
         stt.setOnCheckedChangeListener((b, c) -> ai.set("stt_voice", c ? "1" : "0"));
         col.addView(stt);
+        CheckBox heroVoice = new CheckBox(this);
+        heroVoice.setText("Озвучивать слова героя — его голосом, как в диалогах игры");
+        heroVoice.setTextColor(TEXT);
+        heroVoice.setChecked(ai.heroVoice());
+        heroVoice.setOnCheckedChangeListener((b, c) -> ai.set("hero_voice", c ? "1" : "0"));
+        col.addView(heroVoice);
+        col.addView(text("Кому говоришь: коснись человека — скажешь ему лично, остальные не услышат. Без касания — "
+            + "говоришь вслух тому, на кого смотришь (или кого назовёшь по имени), и слышат все рядом, до 10 шагов.", 13, DIM));
 
         section(col, "Самостоятельность");
         col.addView(text("Как часто Геральт думает сам, без твоего вопроса: заговаривает первым, отвечает на "
@@ -278,7 +293,7 @@ public class AiSettingsActivity extends Activity {
         }).start();
     }
 
-    private void testVoice() {
+    private void testVoice(boolean hero) {
         saveFields();
         voiceResult.setText("Озвучиваю…");
         // Голос телефона (TextToSpeech) создаётся в главном потоке, синтез - в фоне
@@ -295,7 +310,8 @@ public class AiSettingsActivity extends Activity {
         }
         new Thread(() -> {
             try {
-                Pcm pcm = tts.synth("Ведьмак. Монстров убиваю за плату. Тебе что-то нужно?", Tts.Voice.geralt(""));
+                Pcm pcm = hero ? tts.synth("Я ищу работу. И, пожалуй, кружку пива.", Tts.Voice.hero())
+                    : tts.synth("Ведьмак. Монстров убиваю за плату. Тебе что-то нужно?", Tts.Voice.geralt(""));
                 play(pcm);
                 runOnUiThread(() -> voiceResult.setText("Голос работает (" + pcm.ms() + " мс)."));
             } catch (Throwable e) {
@@ -344,7 +360,8 @@ public class AiSettingsActivity extends Activity {
         saveFields();
         String key = ai.get("tts_speechify_key");
         String model = ai.get("tts_speechify_model");
-        boolean multi = !gender.isEmpty();
+        // Жителям - несколько голосов, Геральту и герою - один
+        boolean multi = "tts_speechify_male".equals(fieldKey) || "tts_speechify_female".equals(fieldKey);
         voiceResult.setText("Загружаю голоса Speechify…");
         new Thread(() -> {
             try {
@@ -370,8 +387,7 @@ public class AiSettingsActivity extends Activity {
         String[] items = new String[list.size()];
         for (int i = 0; i < items.length; i++) items[i] = list.get(i).title();
         List<String> current = Arrays.asList(ai.get(fieldKey).replace(" ", "").split(","));
-        String title = (gender.isEmpty() ? "Голос Геральта" : "male".equals(gender) ? "Голоса мужчин" : "Голоса женщин")
-            + (russianOnly ? " — русские" : " — все языки");
+        String title = voiceTitle(fieldKey) + (russianOnly ? " — русские" : " — все языки");
         AlertDialog.Builder b = new AlertDialog.Builder(this).setTitle(title);
         if (multi) {
             boolean[] checked = new boolean[list.size()];
@@ -396,13 +412,22 @@ public class AiSettingsActivity extends Activity {
             b.setPositiveButton("Выбрать", (d, w) -> {
                 if (chosen[0] < 0) return;
                 setField(fieldKey, list.get(chosen[0]).id);
-                voiceResult.setText("Голос Геральта: " + list.get(chosen[0]).title());
+                voiceResult.setText(voiceTitle(fieldKey) + ": " + list.get(chosen[0]).title());
             });
         }
         b.setNeutralButton(russianOnly ? "Все языки" : "Только русские", (d, w) -> pickSpeechifyVoices(fieldKey, gender, !russianOnly));
         b.setNegativeButton("Отмена", null);
         b.setOnDismissListener(d -> stopPreview());
         b.show();
+    }
+
+    private static String voiceTitle(String fieldKey) {
+        switch (fieldKey) {
+            case "tts_speechify_hero": return "Голос героя";
+            case "tts_speechify_male": return "Голоса мужчин";
+            case "tts_speechify_female": return "Голоса женщин";
+            default: return "Голос Геральта";
+        }
     }
 
     /** Образец голоса по ссылке из списка (без трат знаков тарифа). */
