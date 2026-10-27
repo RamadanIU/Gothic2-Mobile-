@@ -371,7 +371,7 @@ public class LauncherActivity extends Activity {
         return col;
     }
 
-    /** Галочка настройки; регдолл у живых без регдолла не действует — тогда флажок неактивен. */
+    /** Галочка настройки; недействующая (регдолл живых без регдолла и т. п.) — неактивна. */
     private CheckBox checkBox(GraphicsSettings.Option o) {
         CheckBox c = new CheckBox(this);
         c.setText(o.title);
@@ -384,7 +384,7 @@ public class LauncherActivity extends Activity {
         c.setLayoutParams(lp);
         graphicsRefresh.add(() -> {
             c.setChecked(graphics.isOn(o));
-            boolean enabled = o != GraphicsSettings.RAGDOLL_FALL || graphics.isOn(GraphicsSettings.RAGDOLL);
+            boolean enabled = graphics.isAvailable(o);
             c.setEnabled(enabled);
             c.setAlpha(enabled ? 1f : 0.5f);
         });

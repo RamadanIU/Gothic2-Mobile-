@@ -134,6 +134,26 @@ public class GraphicsSettingsTest {
     }
 
     @Test
+    public void activeRagdollAndKnockdownAreOnByDefaultAndDependOnRagdoll() {
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        // ключи читает Gothic::Gothic (patch движка): ragdollActive - отклик тела на удары, ragdollKnockdown - сбивание с ног
+        assertTrue(g.iniText().contains("\nragdollActive=1\n"));
+        assertTrue(g.iniText().contains("\nragdollKnockdown=1\n"));
+        assertTrue(g.isAvailable(GraphicsSettings.RAGDOLL_KNOCKDOWN));
+        g.setOn(GraphicsSettings.RAGDOLL_FALL, false);
+        assertFalse(g.isAvailable(GraphicsSettings.RAGDOLL_KNOCKDOWN));
+        assertTrue(g.isAvailable(GraphicsSettings.RAGDOLL_ACTIVE));
+        g.setOn(GraphicsSettings.RAGDOLL_FALL, true);
+        g.setOn(GraphicsSettings.RAGDOLL, false);
+        assertFalse(g.isAvailable(GraphicsSettings.RAGDOLL_ACTIVE));
+        assertFalse(g.isAvailable(GraphicsSettings.RAGDOLL_FALL));
+        assertFalse(g.isAvailable(GraphicsSettings.RAGDOLL_KNOCKDOWN));
+        assertTrue(g.isAvailable(GraphicsSettings.SHOW_FPS));
+        g.setOn(GraphicsSettings.RAGDOLL_ACTIVE, false);
+        assertTrue(g.iniText().contains("\nragdollActive=0\n"));
+    }
+
+    @Test
     public void ragdollKeepsOldSetting() {
         // прежняя версия хранила тот же ключ с вариантами «по физике»/«анимацией игры» - значение не меняется
         MemoryPrefs prefs = new MemoryPrefs();
