@@ -110,20 +110,24 @@ void CollisionWorld::tick(uint64_t dt) {
   }
 
 // --- DynamicWorld: земля - плоскость или неровная сетка треугольников (как земля мира игры), куклы в физике
+// земля - своя у каждого мира (проверки тряски строят мир сцены внутри мира проверок)
 struct DynamicWorld::RagdollList final {
-  std::vector<Ragdoll*> active;
+  std::vector<Ragdoll*>             active;
+  std::unique_ptr<btCollisionShape> groundShape;
+  std::unique_ptr<btRigidBody>      groundBody;
+  std::unique_ptr<btTriangleMesh>   groundMesh;
   };
 
-std::unique_ptr<btCollisionShape> groundShape;
-std::unique_ptr<btRigidBody>      groundBody;
-std::unique_ptr<btTriangleMesh>   groundMesh;
-bool                              meshGround = false;
+bool meshGround = false;
 
 DynamicWorld::DynamicWorld(World*, const zenkit::Mesh&) {
   world.reset(new CollisionWorld());
   ragdolls.reset(new RagdollList());
   world->setInternalTickCallback(&DynamicWorld::ragdollPreTick, this, true);
 
+  auto& groundMesh  = ragdolls->groundMesh;
+  auto& groundShape = ragdolls->groundShape;
+  auto& groundBody  = ragdolls->groundBody;
   if(meshGround) {
     // 60x60 м, клетка 1 м, бугры до ±8 см
     groundMesh.reset(new btTriangleMesh());
@@ -147,7 +151,7 @@ DynamicWorld::DynamicWorld(World*, const zenkit::Mesh&) {
   }
 
 DynamicWorld::~DynamicWorld() {
-  world->removeCollisionObject(groundBody.get());
+  world->removeCollisionObject(ragdolls->groundBody.get());
   }
 
 // как в dynamicworld.cpp

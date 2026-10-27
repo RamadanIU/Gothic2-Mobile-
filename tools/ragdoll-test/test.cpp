@@ -274,13 +274,38 @@ static Vec3 bonePos(const bench::Actor& a, const char* name) {
   return org(a.disp[bench::bone(a.sk,name)]);
   }
 
+// Тряска: наибольшая скорость частей корпуса, головы и рук на экране относительно таза, м/с (бег и шаги не в счёт)
+struct Shake {
+  std::vector<Vec3> prev, prevAnim;
+  float             maxV = 0, maxAnim = 0, at = 0;
+  const char*       worst = "";
+  void tick(const bench::Actor& a) {
+    const size_t pel = bench::bone(a.sk,"BIP01 PELVIS");
+    std::vector<Vec3> cur, anim;
+    for(auto nm:{"BIP01 SPINE2","BIP01 HEAD","BIP01 L HAND","BIP01 R HAND","BIP01 L FOREARM","BIP01 R FOREARM"}) {
+      const size_t b = bench::bone(a.sk,nm);
+      cur .push_back(org(a.disp[b])-org(a.disp[pel]));
+      anim.push_back(org(a.anim[b])-org(a.anim[pel]));
+      }
+    static const char* names[] = {"spine2","head","l.hand","r.hand","l.forearm","r.forearm"};
+    const float dt = float(a.dt)/1000.f;
+    if(prev.size()==cur.size())
+      for(size_t i=0;i<cur.size();++i) {
+        const float v = (cur[i]-prev[i]).length()*0.01f/dt;
+        if(v>maxV) { maxV = v; worst = names[i]; at = a.time; }
+        maxAnim = std::max(maxAnim,(anim[i]-prevAnim[i]).length()*0.01f/dt);
+        }
+    prev = cur; prevAnim = anim;
+    }
+  };
+
 // Сцены активного регдолла (ragtest vis <сцена> out.txt): тело на экране по кадрам для render.py
-static int visScene(const std::string& name, const char* out) {
+static int visScene(const std::string& name, const char* out, Shake* shake = nullptr, float* peakT = nullptr) {
   zenkit::Mesh mesh;
   DynamicWorld dw(nullptr,mesh);
   auto hum = mkSkeleton(human(),"HUMANS.MDH");
-  FILE* f = std::fopen(out,"w");
-  if(f==nullptr)
+  FILE* f = out!=nullptr ? std::fopen(out,"w") : nullptr;
+  if(f==nullptr && out!=nullptr)
     return 1;
   bench::Actor a(dw,*hum,Vec3(0,0,0));
   float  len   = 3.f;
@@ -327,17 +352,27 @@ static int visScene(const std::string& name, const char* out) {
     a.walking = true; a.speed = 110;
     a.inj.leg = 0; a.inj.limp = 0.9f;
     }
+  else if(name=="arm") {
+    // удар приходится в лёгкое предплечье (в бою оружие часто бьёт по рукам)
+    ev.push_back({0.3f,[&]{ a.hit(bonePos(a,"BIP01 R FOREARM")+Vec3(0,0,6),Vec3(0,0,-1),3.5f,0.12f); }});
+    }
+  else if(name=="stumble") {
+    // удар в грудь и анимация игры «отшатнуться» одновременно, как в бою
+    ev.push_back({0.3f,[&]{ a.hit(chest(),Vec3(0,0,-1),3.2f,0.12f); a.stumbleAt = a.time; }});
+    }
   else if(name=="walkhit") {
     len = 3.f;
     a.walking = true; a.speed = 110;
     ev.push_back({0.6f,[&]{ a.hit(chest(),Vec3(0,0,-1),3.5f,0.15f); }});
     }
   else {
-    std::fclose(f);
+    if(f!=nullptr)
+      std::fclose(f);
     std::printf("unknown scene %s\n",name.c_str());
     return 1;
     }
   size_t next = 0;
+  float  peakDev = 0;
   for(float t=0; t<len; t+=0.033f) {
     while(next<ev.size() && ev[next].first<=t) { ev[next].second(); ++next; }
     a.tick();
@@ -351,11 +386,82 @@ static int visScene(const std::string& name, const char* out) {
       Vec3 p = a.inj.local; a.disp[a.inj.bone].project(p);
       a.marks.push_back({p,'r'});
       }
+    if(shake!=nullptr && t>=0.25f) {
+      const float before = shake->maxV;
+      shake->tick(a);
+      if(std::getenv("SHAKE_ALL") && t>0.85f && t<1.15f) {
+        const size_t pel = bench::bone(a.sk,"BIP01 PELVIS"), hd = bench::bone(a.sk,"BIP01 R HAND");
+        const Vec3 d = org(a.disp[hd])-org(a.disp[pel]), an = org(a.anim[hd])-org(a.anim[pel]);
+        if(a.r && a.r->isSimulated()) {
+          std::vector<Matrix4x4> rel; Stance st; a.r->activePose(rel,st);
+          size_t k = 0; for(size_t q=0;q<a.r->bones().size();++q) if(a.r->bones()[q]==hd) k = q;
+          const Vec3 rh = org(rel[k]);
+          const Vec3 pp = org(a.r->world()[0]);
+          std::printf("      rel hand=(%.1f %.1f %.1f) physPelvis=(%.1f %.1f %.1f) stance w=%.0f shift=(%.1f %.1f %.1f) rot=%.3f feetW=%.2f\n",
+            double(rh.x),double(rh.y),double(rh.z),double(pp.x),double(pp.y),double(pp.z),double(st.weight),double(st.shift.x),double(st.shift.y),double(st.shift.z),
+            double(st.rot.length()),double(st.footW[0]));
+          }
+        const Vec3 pw = org(a.disp[pel]), hw = org(a.disp[hd]);
+        std::printf("   t=%.2f disp=(%.1f %.1f %.1f) anim=(%.1f %.1f %.1f) reach=%.2f arm=%d pelvis=(%.1f %.1f %.1f) hand=(%.1f %.1f %.1f) at=(%.1f %.1f)\n",double(t),double(d.x),double(d.y),double(d.z),
+                    double(an.x),double(an.y),double(an.z),double(a.inj.reach),int(a.inj.arm),
+                    double(pw.x),double(pw.y),double(pw.z),double(hw.x),double(hw.y),double(hw.z),double(a.at.x),double(a.at.z));
+        }
+      if(std::getenv("SHAKE_TRACE") && shake->maxV>before)
+        std::printf("   t=%.2f %s %.2f m/s show=%.2f\n",double(t),shake->worst,double(shake->maxV),a.r ? double(a.r->showWeight()) : 0.0);
+      }
+    if(peakT!=nullptr && t>=0.3f) {
+      const float d = shownDeviation(a);
+      if(d>peakDev) { peakDev = d; *peakT = t-0.3f; }
+      }
+    if(f==nullptr)
+      continue;
     char label[96];
     std::snprintf(label,sizeof(label),"%s show=%.2f",name.c_str(),a.r ? double(a.r->showWeight()) : 0.0);
     a.dump(f,label);
     }
-  std::fclose(f);
+  if(f!=nullptr)
+    std::fclose(f);
+  return 0;
+  }
+
+// Слой ран без рывков: рука к ране плавно (вес 0..1 мелкими шагами - кисть сдвигается понемногу), рана на голове,
+// груди, бедре, голени, руке. Возвращает наибольший сдвиг кисти за шаг 0,02 веса, см
+static float injuryJump(const char* boneName, Vec3 off, bool print) {
+  zenkit::Mesh mesh;
+  DynamicWorld dw(nullptr,mesh);
+  auto hum = mkSkeleton(human(),"HUMANS.MDH");
+  auto rig = InjuryRig::of(*hum);
+  auto base = bench::stancePose(*hum);
+  InjuryRig::Wound w;
+  const Vec3 at = org(base[bench::bone(*hum,boneName)])+off;
+  rig->woundAt(base.data(),base.size(),at,w);
+  Injury inj;
+  inj.arm = rig->reachArm(w,3); inj.bone = w.bone; inj.local = w.local; inj.normal = w.normal;
+  const size_t hand = bench::bone(*hum, inj.arm==0 ? "BIP01 L HAND" : "BIP01 R HAND");
+  const size_t head = bench::bone(*hum,"BIP01 HEAD");
+  float jump = 0, jumpHead = 0;
+  Vec3 prev, prevH;
+  for(int k=0;k<=50;++k) {
+    auto p = base;
+    inj.reach = float(k)/50.f;
+    rig->apply(inj,Matrix4x4::mkIdentity(),p.data(),p.size());
+    if(k>0) { jump = std::max(jump,(org(p[hand])-prev).length()); jumpHead = std::max(jumpHead,(org(p[head])-prevH).length()); }
+    prev = org(p[hand]); prevH = org(p[head]);
+    }
+  if(print)
+    std::printf("injury reach to %-16s hand jump per 2%% %.1f cm, head %.1f cm\n",boneName,double(jump),double(jumpHead));
+  return std::max(jump,jumpHead);
+  }
+
+// ragtest shake: скорость частей тела на экране относительно таза в сценах (тряска) и сравнение с анимацией
+static int shakeReport() {
+  for(auto nm:{"chest","arm","head","shoulder","stumble","series","stagger","leg","side"}) {
+    Shake sh;
+    float peak = 0;
+    visScene(nm,nullptr,&sh,&peak);
+    std::printf("%-9s shown %.2f m/s (%s at %.2f s; animation %.2f m/s), deviation peak at %.2f s\n",nm,double(sh.maxV),
+                sh.worst,double(sh.at),double(sh.maxAnim),double(peak));
+    }
   return 0;
   }
 
@@ -431,9 +537,23 @@ static int activeTests(DynamicWorld& dw, const Skeleton& hum, const Skeleton& wl
     const float moved = (a.at-at0).length();
     std::printf("active: hit chest 3 m/s           reaction %.1f cm at %.2f s, after 2.3 s %.1f cm, moved %.0f cm, %s\n",
                 double(peak),double(peakT),double(back),double(moved),a.r->lostBalance() ? "FELL" : "stands");
-    ok(peak>6.f && peak<35.f,"hit: visible, not exaggerated"); ok(peakT>=0.15f,"hit: weighty, not instant");
+    ok(peak>6.f && peak<35.f,"hit: visible, not exaggerated"); ok(peakT>=0.3f,"hit: weighty, not instant");
     ok(back<1.5f,"hit: back to animation"); ok(!a.r->lostBalance(),"hit: stands"); ok(moved<30.f,"hit: barely moves");
     ok(shown==1.f && a.r->showWeight()==0.f,"hit: physics shown during the reaction only");
+  }
+  // 3б) без тряски: части тела на экране относительно таза не быстрее предела - удар в грудь, в лёгкое предплечье,
+  // в голову, удар вместе с анимацией игры «отшатнуться», серия ударов, пошатывание (руки для равновесия)
+  {
+    struct { const char* scene; float limit; } lim[] = {
+      {"chest",2.2f}, {"arm",2.2f}, {"head",2.6f}, {"stumble",2.f}, {"series",2.6f}, {"stagger",3.f},
+      };
+    for(auto& l:lim) {
+      Shake sh;
+      float peak = 0;
+      visScene(l.scene,nullptr,&sh,&peak);
+      std::printf("active: shake %-8s              %.2f m/s (%s), limit %.1f\n",l.scene,double(sh.maxV),sh.worst,double(l.limit));
+      ok(sh.maxV<=l.limit,"shake: body parts move too fast");
+      }
   }
   // 4) серия слабых ударов и удары разной силы спереди, сзади, сбоку: слабые не валят, сильные - валят
   auto knock = [&](float power, float dmg, Vec3 dir, float& moved, int& steps) {
@@ -729,6 +849,17 @@ static int perf() {
 int main(int argc, char** argv) {
   if(argc>3 && std::string(argv[1])=="vis")
     return visScene(argv[2],argv[3]);
+  if(argc>1 && std::string(argv[1])=="shake")
+    return shakeReport();
+  if(argc>1 && std::string(argv[1])=="injury") {
+    injuryJump("BIP01 HEAD",Vec3(0,8,10),true);
+    injuryJump("BIP01 SPINE2",Vec3(0,0,12),true);
+    injuryJump("BIP01 L UPPERARM",Vec3(-4,-3,8),true);
+    injuryJump("BIP01 L THIGH",Vec3(0,-20,8),true);
+    injuryJump("BIP01 R CALF",Vec3(0,-15,8),true);
+    injuryJump("BIP01 R FOREARM",Vec3(0,0,6),true);
+    return 0;
+    }
   if(argc>1 && std::string(argv[1])=="perf") {
     meshGround = true;
     return perf();
