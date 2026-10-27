@@ -340,10 +340,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..e1876c7
+index 0000000..39e2b8a
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,3384 @@
+@@ -0,0 +1,3430 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -1602,6 +1602,9 @@ index 0000000..e1876c7
 +  // Сам не заговаривает: выбор реплик - сразу, говорит герой (прежде модель здоровалась, не дожидаясь героя, и
 +  // отвечала так, будто он что-то сказал)
 +  busy    = false;
++  teachPage    = TeachPage::None;
++  teachStarted = false;
++  stockPending = false;
 +  // Разговор прерывает дело: стоит лицом к герою
 +  cancelBody(geralt,"разговор с героем");
 +  rememberInventory();
@@ -1615,12 +1618,17 @@ index 0000000..e1876c7
 +    return;
 +  talking = false;
 +  busy    = false;
++  teachPage    = TeachPage::None;
++  stockPending = false;
++  stockRemove();
 +  AiLink::send("{\"ev\":\"talk_end\"}");
 +  reportTrade();
++  teachReport();
 +  }
 +
 +void AiNpc::rememberInventory() {
 +  tradeBefore.clear();
++  stockTaken.clear();
 +  tradeOpened = false;
 +  if(geralt==nullptr)
 +    return;
@@ -1678,13 +1686,23 @@ index 0000000..e1876c7
 +    if(out.size()<400)
 +      out += (out.empty() ? "" : ", ")+n+(std::abs(b-a)>1 ? " x"+std::to_string(std::abs(b-a)) : std::string());
 +    }
-+  if(got.empty() && gave.empty() && goldDiff==0)
++  // Взятое из запасов (aiteach.cpp): до и после окна их у него нет - по сравнению вещей не видно
++  std::string fromStock;
++  for(auto& [cls,n]:stockTaken)
++    if(fromStock.size()<400)
++      fromStock += (fromStock.empty() ? "" : ", ")+name(cls)+(n>1 ? " x"+std::to_string(n) : std::string());
++  if(stockTaken.size()>0 && fromStock.size()>=400)
++    fromStock += "…";
++  stockTaken.clear();
++  if(got.empty() && gave.empty() && goldDiff==0 && fromStock.empty())
 +    return;
 +  std::string text = "Обмен с героем закончен.";
 +  if(!got.empty())
 +    text += " Ты получил: "+got+".";
 +  if(!gave.empty())
 +    text += " Ты отдал: "+gave+".";
++  if(!fromStock.empty())
++    text += " Из твоих запасов герой взял даром: "+fromStock+".";
 +  if(goldDiff>0)
 +    text += " Золота стало больше на "+std::to_string(goldDiff)+".";
 +  else if(goldDiff<0)
@@ -1702,7 +1720,6 @@ index 0000000..e1876c7
 +  }
 +
 +bool AiNpc::dialogChoices(Npc& player, Npc& npc, std::vector<GameScript::DlgChoice>& out) {
-+  (void)player;
 +  if(!isAiNpc(npc) || !AiLink::enabled())
 +    return false;
 +  out.clear();
@@ -1715,20 +1732,36 @@ index 0000000..e1876c7
 +    ch.freeTrade = free;
 +    out.push_back(std::move(ch));
 +    };
++  // Уроки (aiteach.cpp): страница меню обучения вместо реплик, пока герой не вернётся «Назад»
++  if(teachPage!=TeachPage::None) {
++    teachChoices(player,out);
++    if(!out.empty())
++      return true;
++    teachPage = TeachPage::None;
++    }
 +  add(ChoiceVoice,"Сказать (голосом)",1,false,false);
 +  add(ChoiceType, "Написать",2,false,false);
-+  add(ChoiceTrade,"Покажи свои товары.",3,true,false);
-+  // Идёт с героем - вещами меняются даром, как с напарниками: отдать ему доспехи, меч, зелья
++  add(ChoiceTeach,"Научи меня.",3,false,false);
++  // Обмен даром, а у Геральта на время окна - запасы всех вещей мира (aiteach.cpp): бери что хочешь
++  add(ChoiceTrade,"Покажи свои товары.",4,true,true);
++  // Идёт с героем - вещами меняются даром, как с напарниками: отдать ему доспехи, меч, зелья (без запасов)
 +  if(owner.isPartyMember(npc))
-+    add(ChoiceSwap,"Давай обменяемся вещами.",4,true,true);
++    add(ChoiceSwap,"Давай обменяемся вещами.",5,true,true);
 +  add(ChoiceBye,  "Пока.",999,false,false);
 +  return true;
 +  }
 +
 +bool AiNpc::exec(const GameScript::DlgChoice& dlg, Npc& player, Npc& npc) {
-+  (void)player;
 +  if(!isAiNpc(npc))
 +    return false;
++  if((dlg.scriptFn & 0xFFFF0000u)==TeachChoice) {
++    // «Все сразу» - десятки уроков за одно касание: каждый их звук - один раз (GameScript::snd_play)
++    std::vector<std::string> once;
++    owner.soundOnce = &once;
++    const bool ret = execTeach(dlg.scriptFn & 0xFFFFu,player);
++    owner.soundOnce = nullptr;
++    return ret;
++    }
 +  switch(dlg.scriptFn) {
 +    case ChoiceVoice:
 +      busy      = true;
@@ -1740,10 +1773,15 @@ index 0000000..e1876c7
 +      busyUntil = owner.tickCount()+BusyMax;
 +      AiLink::send("{\"ev\":\"type\"}");
 +      return true;
++    case ChoiceTeach:
++      teachBegin(player);
++      return true;
 +    case ChoiceTrade:
 +    case ChoiceSwap:
-+      // Торговлю открывает DialogMenu (isTrade); итог - событием в конце разговора (reportTrade)
-+      tradeOpened = true;
++      // Торговлю открывает DialogMenu (isTrade); итог - событием в конце разговора (reportTrade). «Покажи свои товары.» -
++      // с запасами (onTradeOpen)
++      tradeOpened  = true;
++      stockPending = (dlg.scriptFn==ChoiceTrade);
 +      return true;
 +    case ChoiceBye:
 +      AiLink::send("{\"ev\":\"bye\"}");
@@ -1755,6 +1793,8 @@ index 0000000..e1876c7
 +  }
 +
 +void AiNpc::beforeSave() {
++  // Запасы окна торговли - не его вещи: в сохранение не идут
++  stockRemove();
 +  if(geralt==nullptr || !AiLink::enabled())
 +    return;
 +  auto& h = geralt->handle();
@@ -3024,8 +3064,14 @@ index 0000000..e1876c7
 +  put(j,"dex",me.attribute(ATR_DEXTERITY));
 +  j.Key("items");
 +  j.StartArray();
-+  for(auto it=me.inventory().iterator(Inventory::T_Inventory); it.isValid(); ++it)
-+    putItem(j,itemId(*it),*it,it.count(),me);
++  for(auto it=me.inventory().iterator(Inventory::T_Inventory); it.isValid(); ++it) {
++    size_t n = it.count();
++    // Запасы на время окна торговли (aiteach.cpp) - не его вещи: модели их не показывать
++    if(!it.isEquipped())
++      n -= std::min(n,stockShare(me,it->clsId()));
++    if(n>0)
++      putItem(j,itemId(*it),*it,n,me);
++    }
 +  j.EndArray();
 +  j.EndObject();
 +
@@ -3730,16 +3776,17 @@ index 0000000..e1876c7
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..b287f34
+index 0000000..49e4381
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,294 @@
+@@ -0,0 +1,364 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
 +#include <Tempest/Vec>
 +
 +#include <cstdint>
++#include <initializer_list>
 +#include <string>
 +#include <string_view>
 +#include <unordered_map>
@@ -3758,7 +3805,8 @@ index 0000000..b287f34
 +// Геральта в мир, описывает обстановку (снимок в JSON), исполняет действия (идти, следовать, драться,
 +// отдать, поднять, надеть, жесты, занятия, говорить с NPC) и показывает реплики - субтитры, лицо и жесты;
 +// звук реплики играет приложение. Сказать ему можно кнопкой «Сказать» рядом с ним (без диалога) или в
-+// диалоге - «Сказать голосом», «Написать», торговля.
++// диалоге - «Сказать голосом», «Написать», торговля. Ещё он учитель всему и с запасами всех вещей мира -
++// «Научи меня.», «Покажи свои товары.» (aiteach.cpp).
 +//
 +// Геральт - неиспользуемый в игре NPC Vlk_2000_Thorus (остаток от Gothic 1: без диалогов, нигде не
 +// вставляется) с другим именем, внешностью и умениями: сохраняется и загружается как обычный NPC.
@@ -3798,6 +3846,10 @@ index 0000000..b287f34
 +    bool exec         (const GameScript::DlgChoice& dlg, Npc& player, Npc& npc);
 +    void onDialogStart(Npc& player, Npc& npc);
 +    void onDialogEnd  (Npc* player, Npc* npc);
++    // Окно торговли с ним (InventoryMenu::trade/close): «Покажи свои товары.» - на время окна у него запасы всех
++    // вещей мира, как у Рокфеллера из скриптов игры (aiteach.cpp); закрылось - запасы уходят, свои вещи остаются
++    void onTradeOpen (Npc& trader);
++    void onTradeClose(Npc& trader);
 +
 +    // Реплики модели: текст (Windows-1251) и длительность для GameScript::messageByName/messageTime
 +    bool lineText (std::string_view id, std::string_view& out) const;
@@ -3821,6 +3873,9 @@ index 0000000..b287f34
 +      ChoiceTrade = 0xFFFFFF22u,
 +      ChoiceBye   = 0xFFFFFF23u,
 +      ChoiceSwap  = 0xFFFFFF24u,
++      ChoiceTeach = 0xFFFFFF25u,
++      // Урок (aiteach.cpp): младшие 16 бит - пункт меню обучения
++      TeachChoice = 0xFFFD0000u,
 +      };
 +
 +  private:
@@ -3953,6 +4008,35 @@ index 0000000..b287f34
 +    std::string storyJson  (Npc& player, Npc& npc);
 +    void        cmdStory   (Npc& npc, Action& a, std::string_view topic);
 +
++    // Учитель и запасы (aiteach.cpp, docs/AI_NPC.md, «Учитель и запасы»): Геральт учит героя всему, чему учат на
++    // острове, - даром, функциями обучения игры (B_Teach…): сила, ловкость, мана до 300, здоровье до 1000, оружие до
++    // 100 %, воровские умения, трофеи, алхимия, кузнечное дело, круги магии и руны, язык зодчих, огонёк, добыча
++    // золота. Меню - страницами выбора реплик (DialogMenu просит выбор заново после каждого урока)
++    enum class TeachPage : uint8_t { None, Main, Attr, AttrOne, Weapons, List, Magic, Other };
++    void   teachBegin  (Npc& player);
++    void   teachChoices(Npc& player, std::vector<GameScript::DlgChoice>& out);
++    bool   execTeach   (uint32_t code, Npc& player);
++    // Урок даром: очки обучения на время вызова - с запасом, потом прежние; повторы в дневнике не пишутся
++    int32_t teachCall  (std::string_view fn, Npc& player, std::initializer_list<int32_t> args);
++    bool   lessonKnown (Npc& player, size_t list, size_t lesson);
++    void   unlearned   (Npc& player, size_t list, std::vector<size_t>& out);
++    bool   listExists  (size_t list);
++    size_t learnAll    (Npc& player, size_t list);
++    void   teachAttr   (Npc& player, size_t attr, int32_t points);
++    void   teachWeapon (Npc& player, int32_t talent, int32_t points);
++    void   teachCircle (Npc& player, int32_t upTo);
++    void   teachHack   (Npc& player, int32_t points);
++    int32_t hackChance () const;
++    void   teachAllSkills(Npc& player);
++    // Чему научил за разговор - событием модели в конце (как итог торговли)
++    void   teachReport ();
++
++    // Запасы на время окна торговли: что добавлено и сколько своего было до того
++    void   buildStock  ();
++    void   stockRemove ();
++    // Сколько из count вещей класса cls - запасы, а не его (снимок обстановки их не показывает)
++    size_t stockShare  (const Npc& npc, size_t cls) const;
++
 +    // Ссылки на NPC и предметы для модели: n17, i42 - живут, пока живёт объект
 +    std::string refOf(Npc& npc);
 +    std::string refOf(Item& itm);
@@ -3988,6 +4072,38 @@ index 0000000..b287f34
 +    std::vector<std::pair<size_t,size_t>> tradeBefore;
 +    bool                           tradeOpened = false;
 +    bool                           busy        = false;
++
++    TeachPage                      teachPage   = TeachPage::None;
++    size_t                         teachAttrId = 0;   // AttrOne: какая характеристика
++    size_t                         teachListId = 0;   // List: какой список уроков
++    size_t                         teachFrom   = 0;   // List: с какого урока страница
++    TeachPage                      teachListBack = TeachPage::Main;
++    // Герой в начале уроков этого разговора - для итога модели
++    struct TeachStats {
++      int32_t atr[4] = {};  // сила, ловкость, мана, здоровье (наибольшие)
++      int32_t hit[4] = {};  // одноручное, двуручное, лук, арбалет
++      int32_t circle = 0;
++      int32_t hack   = -1;
++      };
++    bool                           teachStarted = false;
++    TeachStats                     teachBefore;
++    std::vector<std::string>       teachLearned;      // UTF-8: названия изученных умений
++
++    struct StockItem {
++      size_t cls   = 0;
++      size_t count = 0;
++      };
++    std::vector<StockItem>         stockList;
++    bool                           stockBuilt   = false;
++    struct StockAdded {
++      size_t cls   = 0;
++      size_t own   = 0;  // было своих до окна
++      size_t added = 0;
++      };
++    std::vector<StockAdded>        stockAdded;
++    std::vector<std::pair<size_t,size_t>> stockTaken; // что герой взял из запасов за разговор - в итог торговли
++    Npc*                           stockNpc     = nullptr;
++    bool                           stockPending = false; // «Покажи свои товары.»: окно торговли - с запасами
 +    uint64_t                       busyUntil   = 0;
 +
 +    std::vector<Line>              lines;
@@ -4028,6 +4144,874 @@ index 0000000..b287f34
 +    int32_t                        lastHp      = -1;
 +    bool                           wasDown     = false;
 +  };
+diff --git a/common/game/aiteach.cpp b/common/game/aiteach.cpp
+new file mode 100644
+index 0000000..1143a26
+--- /dev/null
++++ b/common/game/aiteach.cpp
+@@ -0,0 +1,862 @@
++#include "ainpc.h"
++
++#include <Tempest/Log>
++
++#include <algorithm>
++#include <iterator>
++#include <string>
++#include <unordered_map>
++
++#include "world/objects/npc.h"
++#include "world/objects/item.h"
++#include "world/world.h"
++#include "utils/cp1251.h"
++#include "gothic.h"
++
++using namespace Tempest;
++
++// Gothic II Mobile: Геральт - учитель всему и запасы всех вещей мира (просьба пользователя 2026-10-27,
++// docs/AI_NPC.md, «Учитель и запасы»). Как читовый «ch» (Characterhelper) из скриптов игры: в разговоре «Научи меня.» -
++// меню уроков; урок даром, но той же функцией, что у учителей игры (B_TeachAttributePoints, B_TeachFightTalentPercent,
++// B_TeachThiefTalent, B_TeachPlayerTalent…, B_TeachMagicCircle): умение, дневник и надписи на экране - как после
++// родного урока, пределы учителей - свои (сила, ловкость, мана до 300, здоровье до 1000, оружие до 100 %).
++// «Покажи свои товары.» - обмен даром, где у Геральта на время окна запасы всех вещей, как у Рокфеллера
++// (PC_Rockefeller из скриптов игры) и сверх того всё снаряжение мира. Сам он запасами не пользуется: они есть только
++// пока открыто окно, а носит он своё (keepsOwnGear).
++
++namespace {
++  // Умение из списка: константа скрипта (номер умения у функции обучения) и пункт меню
++  struct Lesson {
++    const char* sym;
++    const char* title;
++    };
++
++  const Lesson ThiefLessons[] = {
++    {"NPC_TALENT_SNEAK",      "Подкрадывание"},
++    {"NPC_TALENT_ACROBAT",    "Акробатика"},
++    {"NPC_TALENT_PICKPOCKET", "Карманная кража"},
++    {"NPC_TALENT_PICKLOCK",   "Взлом замков"},
++    };
++
++  const Lesson TrophyLessons[] = {
++    {"TROPHY_TEETH",          "Вынимать клыки"},
++    {"TROPHY_CLAWS",          "Вынимать когти"},
++    {"TROPHY_FUR",            "Снимать шкуры"},
++    {"TROPHY_REPTILESKIN",    "Снимать шкуры рептилий"},
++    {"TROPHY_HEART",          "Вынимать сердца големов и демонов"},
++    {"TROPHY_SHADOWHORN",     "Рог мракориса"},
++    {"TROPHY_FIRETONGUE",     "Язык огненного ящера"},
++    {"TROPHY_BFWING",         "Крылья кровавой мухи"},
++    {"TROPHY_BFSTING",        "Жало кровавой мухи"},
++    {"TROPHY_MANDIBLES",      "Мандибулы"},
++    {"TROPHY_CRAWLERPLATE",   "Панцирь краулера"},
++    {"TROPHY_DRGSNAPPERHORN", "Рог драконьего снеппера"},
++    {"TROPHY_DRAGONSCALE",    "Чешуя дракона"},
++    {"TROPHY_DRAGONBLOOD",    "Кровь дракона"},
++    };
++
++  const Lesson AlchemyLessons[] = {
++    {"POTION_HEALTH_01",   "Лечебная эссенция"},
++    {"POTION_HEALTH_02",   "Лечебный экстракт"},
++    {"POTION_HEALTH_03",   "Лечебный эликсир"},
++    {"POTION_MANA_01",     "Эссенция маны"},
++    {"POTION_MANA_02",     "Экстракт маны"},
++    {"POTION_MANA_03",     "Эликсир маны"},
++    {"POTION_SPEED",       "Зелье ускорения"},
++    {"POTION_PERM_STR",    "Эликсир силы"},
++    {"POTION_PERM_DEX",    "Эликсир ловкости"},
++    {"POTION_PERM_MANA",   "Эликсир духа"},
++    {"POTION_PERM_HEALTH", "Эликсир жизни"},
++    };
++
++  const Lesson SmithLessons[] = {
++    {"WEAPON_COMMON",        "Кустарный меч"},
++    {"WEAPON_1H_SPECIAL_01", "Длинный рудный меч"},
++    {"WEAPON_2H_SPECIAL_01", "Двуручный рудный меч"},
++    {"WEAPON_1H_SPECIAL_02", "Полуторный рудный меч"},
++    {"WEAPON_2H_SPECIAL_02", "Тяжелый двуручный рудный меч"},
++    {"WEAPON_1H_SPECIAL_03", "Боевой рудный меч"},
++    {"WEAPON_2H_SPECIAL_03", "Тяжелый боевой рудный меч"},
++    {"WEAPON_1H_SPECIAL_04", "Рудный убийца драконов"},
++    {"WEAPON_2H_SPECIAL_04", "Большой рудный убийца драконов"},
++    {"WEAPON_1H_HARAD_01",   "Изысканный меч"},
++    {"WEAPON_1H_HARAD_02",   "Изысканный длинный меч"},
++    {"WEAPON_1H_HARAD_03",   "Рубиновый клинок"},
++    {"WEAPON_1H_HARAD_04",   "Эль Бастардо"},
++    };
++
++  // Руны - все, что знает B_TeachPlayerTalentRunes (паладинские, телепорты, круги 1-6, аддон)
++  const Lesson RuneLessons[] = {
++    {"SPL_LIGHT",                "Свет"},
++    {"SPL_FIREBOLT",             "Огненная стрела"},
++    {"SPL_ZAP",                  "Малая молния"},
++    {"SPL_LIGHTHEAL",            "Лечение легких ранений"},
++    {"SPL_SUMMONGOBLINSKELETON", "Создание скелета гоблина"},
++    {"SPL_INSTANTFIREBALL",      "Огненный шар"},
++    {"SPL_ICEBOLT",              "Ледяная стрела"},
++    {"SPL_SUMMONWOLF",           "Вызов волка"},
++    {"SPL_WINDFIST",             "Кулак ветра"},
++    {"SPL_SLEEP",                "Сон"},
++    {"SPL_MEDIUMHEAL",           "Лечение средних ранений"},
++    {"SPL_FIRESTORM",            "Малая огненная буря"},
++    {"SPL_CHARGEZAP",            "Шаровая молния"},
++    {"SPL_SUMMONSKELETON",       "Создание скелета"},
++    {"SPL_FEAR",                 "Страх"},
++    {"SPL_ICECUBE",              "Ледяной блок"},
++    {"SPL_LIGHTNINGFLASH",       "Молния"},
++    {"SPL_SUMMONGOLEM",          "Пробуждение голема"},
++    {"SPL_DESTROYUNDEAD",        "Уничтожение нежити"},
++    {"SPL_CHARGEFIREBALL",       "Большой огненный шар"},
++    {"SPL_PYROKINESIS",          "Большая огненная буря"},
++    {"SPL_ICEWAVE",              "Ледяная волна"},
++    {"SPL_SUMMONDEMON",          "Вызов демона"},
++    {"SPL_FULLHEAL",             "Лечение тяжелых ранений"},
++    {"SPL_FIRERAIN",             "Огненный дождь"},
++    {"SPL_BREATHOFDEATH",        "Дыхание смерти"},
++    {"SPL_MASSDEATH",            "Волна смерти"},
++    {"SPL_ARMYOFDARKNESS",       "Армия тьмы"},
++    {"SPL_SHRINK",               "Сморщивание монстра"},
++    {"SPL_WHIRLWIND",            "Смерч"},
++    {"SPL_WATERFIST",            "Кулак воды"},
++    {"SPL_ICELANCE",             "Ледяное копье"},
++    {"SPL_GEYSER",               "Гейзер"},
++    {"SPL_THUNDERSTORM",         "Гроза"},
++    {"SPL_PALLIGHT",             "Свет паладина"},
++    {"SPL_PALLIGHTHEAL",         "Малое исцеление паладина"},
++    {"SPL_PALHOLYBOLT",          "Святая стрела"},
++    {"SPL_PALMEDIUMHEAL",        "Среднее исцеление паладина"},
++    {"SPL_PALREPELEVIL",         "Изгнание зла"},
++    {"SPL_PALFULLHEAL",          "Полное исцеление паладина"},
++    {"SPL_PALDESTROYEVIL",       "Уничтожение зла"},
++    {"SPL_PALTELEPORTSECRET",    "Тайный телепорт паладинов"},
++    {"SPL_TELEPORTSEAPORT",      "Телепорт в порт"},
++    {"SPL_TELEPORTMONASTERY",    "Телепорт в монастырь"},
++    {"SPL_TELEPORTFARM",         "Телепорт на ферму"},
++    {"SPL_TELEPORTXARDAS",       "Телепорт к Ксардасу"},
++    {"SPL_TELEPORTPASSNW",       "Телепорт к перевалу"},
++    {"SPL_TELEPORTPASSOW",       "Телепорт к перевалу в Долине"},
++    {"SPL_TELEPORTOC",           "Телепорт в замок Долины"},
++    };
++
++  const Lesson LanguageLessons[] = {
++    {"LANGUAGE_1", "Язык крестьян"},
++    {"LANGUAGE_2", "Язык воинов"},
++    {"LANGUAGE_3", "Язык жрецов"},
++    };
++
++  const Lesson WispLessons[] = {
++    {"WISPSKILL_FF",      "Огонек ищет дальнобойное оружие"},
++    {"WISPSKILL_NONE",    "Огонек ищет золото, ключи и утварь"},
++    {"WISPSKILL_RUNE",    "Огонек ищет руны и свитки"},
++    {"WISPSKILL_MAGIC",   "Огонек ищет кольца и амулеты"},
++    {"WISPSKILL_FOOD",    "Огонек ищет еду и растения"},
++    {"WISPSKILL_POTIONS", "Огонек ищет зелья"},
++    };
++
++  // Список уроков: пункт меню, функция обучения (учитель, ученик, номер умения), массив «знает» героя (PLAYER_TALENT_…;
++  // nullptr - умение NPC, воровские). Порядок - TeachList
++  struct LessonList {
++    const char*   title;
++    const char*   fn;
++    const char*   known;
++    const Lesson* items;
++    size_t        count;
++    };
++
++  enum TeachList : size_t {
++    L_Thief, L_Trophy, L_Alchemy, L_Smith, L_Runes, L_Language, L_Wisp, L_Count
++    };
++
++  const LessonList Lists[L_Count] = {
++    {"Воровские умения",         "B_TEACHTHIEFTALENT",                  nullptr,
++     ThiefLessons,    std::size(ThiefLessons)},
++    {"Охота: трофеи с животных", "B_TEACHPLAYERTALENTTAKEANIMALTROPHY", "PLAYER_TALENT_TAKEANIMALTROPHY",
++     TrophyLessons,   std::size(TrophyLessons)},
++    {"Алхимия",                  "B_TEACHPLAYERTALENTALCHEMY",          "PLAYER_TALENT_ALCHEMY",
++     AlchemyLessons,  std::size(AlchemyLessons)},
++    {"Кузнечное дело",           "B_TEACHPLAYERTALENTSMITH",            "PLAYER_TALENT_SMITH",
++     SmithLessons,    std::size(SmithLessons)},
++    {"Создание рун",             "B_TEACHPLAYERTALENTRUNES",            "PLAYER_TALENT_RUNES",
++     RuneLessons,     std::size(RuneLessons)},
++    {"Язык зодчих",              "B_TEACHPLAYERTALENTFOREIGNLANGUAGE",  "PLAYER_TALENT_FOREIGNLANGUAGE",
++     LanguageLessons, std::size(LanguageLessons)},
++    {"Блуждающий огонек",        "B_TEACHPLAYERTALENTWISPDETECTOR",     "PLAYER_TALENT_WISPDETECTOR",
++     WispLessons,     std::size(WispLessons)},
++    };
++
++  // Характеристики: сила, ловкость, мана - B_TeachAttributePoints (до предела учителя); здоровье - B_RaiseAttribute
++  // (учителей здоровья в игре нет, предел - как у Рокфеллера)
++  struct AttrLesson {
++    const char* name;
++    const char* to;     // «+5 к силе»
++    Attribute   atr;
++    int32_t     max;
++    int32_t     steps[4];
++    };
++
++  const AttrLesson Attrs[] = {
++    {"Сила",     "к силе",     ATR_STRENGTH,     300,  {1, 5, 10, 20}},
++    {"Ловкость", "к ловкости", ATR_DEXTERITY,    300,  {1, 5, 10, 20}},
++    {"Мана",     "к мане",     ATR_MANAMAX,      300,  {1, 5, 10, 20}},
++    {"Здоровье", "к здоровью", ATR_HITPOINTSMAX, 1000, {10, 50, 100, 0}},
++    };
++
++  struct WeaponLesson {
++    const char* name;
++    Talent      talent;
++    };
++
++  const WeaponLesson Weapons[] = {
++    {"Одноручное оружие", TALENT_1H},
++    {"Двуручное оружие",  TALENT_2H},
++    {"Лук",               TALENT_BOW},
++    {"Арбалет",           TALENT_CROSSBOW},
++    };
++
++  const int32_t WeaponMax   = 100;
++  const int32_t WeaponStep  = 10;
++  const int32_t CircleMax   = 6;
++  const int32_t HackMax     = 100;
++  const int32_t HackStep    = 10;
++  const size_t  ListPage    = 8;   // уроков на странице: окно выбора реплик не прокручивается
++
++  // Пункты меню (младшие 16 бит TeachChoice)
++  enum TeachCode : uint32_t {
++    T_Back       = 0x0001,
++    T_Attr       = 0x0002,
++    T_Weapons    = 0x0003,
++    T_Magic      = 0x0004,
++    T_Other      = 0x0005,
++    T_AllSkills  = 0x0006,
++    T_NextCircle = 0x0007,
++    T_AllCircles = 0x0008,
++    T_HackStep   = 0x0009,
++    T_HackMax    = 0x000A,
++    T_ListAll    = 0x000B,
++    T_ListMore   = 0x000C,
++    T_AllWeapons = 0x000D,
++    T_AttrOne    = 0x0010, // + характеристика
++    T_AttrStep   = 0x0020, // + шаг (0..3), T_AttrMax - до предела
++    T_AttrMax    = 0x0028,
++    T_Weapon     = 0x0030, // + оружие*2 + (0 - шаг, 1 - до 100 %)
++    T_List       = 0x0040, // + список
++    T_Lesson     = 0x0100, // + урок в списке
++    };
++
++  std::string num(int32_t v) {
++    return std::to_string(v);
++    }
++
++  bool endsWith(std::string_view s, std::string_view e) {
++    return s.size()>=e.size() && s.substr(s.size()-e.size())==e;
++    }
++
++  bool startsWith(std::string_view s, std::string_view e) {
++    return s.size()>=e.size() && s.substr(0,e.size())==e;
++    }
++
++  // Вещи, которых в запасах нет: золото (в окне обмена его не видно), квестовые (…_MIS; флаг ITEM_MISSION - отдельно),
++  // Коготь Белиара во всех ступенях (сюжетный артефакт аддона), пробные предметы разработчиков из AI/Test_Skripts
++  bool notInStock(std::string_view n) {
++    return n=="ITMI_GOLD" || endsWith(n,"_MIS") || n.find("BELIARWEAPON")!=std::string_view::npos ||
++           n=="ITPO_STORY" || n=="ITSC_SUMMONMUD" || n=="ITFO_TESTTRIGGER" || n=="MOBSIBRIEF" ||
++           n=="ITSE_ADDON_SACK" || n=="ITAT_ADDON_BCKOPF";
++    }
++  }
++
++void AiNpc::teachBegin(Npc& player) {
++  if(!teachStarted) {
++    teachStarted = true;
++    teachLearned.clear();
++    for(size_t i=0; i<std::size(Attrs); ++i)
++      teachBefore.atr[i] = player.attribute(Attrs[i].atr);
++    for(size_t i=0; i<std::size(Weapons); ++i)
++      teachBefore.hit[i] = player.hitChance(Weapons[i].talent);
++    teachBefore.circle = player.talentSkill(TALENT_MAGE);
++    teachBefore.hack   = hackChance();
++    }
++  teachPage = TeachPage::Main;
++  }
++
++int32_t AiNpc::teachCall(std::string_view fn, Npc& player, std::initializer_list<int32_t> args) {
++  if(geralt==nullptr)
++    return -1;
++  // Цена урока списывается функцией игры - на время вызова очков с запасом, потом прежние: урок даром
++  auto&         h  = player.handle();
++  const int32_t lp = h.lp;
++  h.lp = 1000000;
++  owner.quests.skipRepeats = true;
++  const int32_t ret = owner.invokeTeach(fn,*geralt,player,args);
++  owner.quests.skipRepeats = false;
++  h.lp = lp;
++  if(ret<0)
++    Log::e("[g2m] ai: teach - no ",fn," in scripts");
++  return ret;
++  }
++
++bool AiNpc::listExists(size_t list) {
++  if(list>=L_Count)
++    return false;
++  auto* fn = owner.findSymbol(Lists[list].fn);
++  if(fn==nullptr || fn->type()!=zenkit::DaedalusDataType::FUNCTION)
++    return false;
++  return Lists[list].known==nullptr || owner.findSymbol(Lists[list].known)!=nullptr;
++  }
++
++bool AiNpc::lessonKnown(Npc& player, size_t list, size_t lesson) {
++  const LessonList& l  = Lists[list];
++  const int32_t     id = owner.scriptConst(l.items[lesson].sym,-1);
++  if(id<0)
++    return true; // в этой версии скриптов такого умения нет - учить нечему
++  if(l.known==nullptr)
++    return id<TALENT_MAX_G2 && player.talentSkill(Talent(id))>0;
++  auto* arr = owner.findSymbol(l.known);
++  if(arr==nullptr || uint32_t(id)>=arr->count())
++    return true;
++  return arr->get_int(uint16_t(id))!=0;
++  }
++
++void AiNpc::unlearned(Npc& player, size_t list, std::vector<size_t>& out) {
++  out.clear();
++  if(!listExists(list))
++    return;
++  for(size_t i=0; i<Lists[list].count; ++i)
++    if(!lessonKnown(player,list,i))
++      out.push_back(i);
++  }
++
++size_t AiNpc::learnAll(Npc& player, size_t list) {
++  std::vector<size_t> todo;
++  unlearned(player,list,todo);
++  size_t n = 0;
++  for(auto i:todo) {
++    const int32_t id = owner.scriptConst(Lists[list].items[i].sym,-1);
++    if(teachCall(Lists[list].fn,player,{id})<0)
++      break;
++    if(lessonKnown(player,list,i)) {
++      teachLearned.push_back(Lists[list].items[i].title);
++      ++n;
++      }
++    }
++  return n;
++  }
++
++void AiNpc::teachAttr(Npc& player, size_t attr, int32_t points) {
++  const AttrLesson& a   = Attrs[attr];
++  const int32_t     cur = player.attribute(a.atr);
++  points = std::min(points,a.max-cur);
++  if(points<=0)
++    return;
++  if(a.atr==ATR_HITPOINTSMAX) {
++    // Учителей здоровья в игре нет: B_RaiseAttribute - как эликсир жизни (надпись «Здоровье +…»); раны не лечит
++    auto& h = player.handle();
++    if(teachCall("B_RAISEATTRIBUTE",player,{int32_t(a.atr),points})<0)
++      h.attribute[ATR_HITPOINTSMAX] += points;
++    h.attribute[ATR_HITPOINTS] = std::min(h.attribute[ATR_HITPOINTS]+points,h.attribute[ATR_HITPOINTSMAX]);
++    return;
++    }
++  teachCall("B_TEACHATTRIBUTEPOINTS",player,{int32_t(a.atr),points,a.max});
++  }
++
++void AiNpc::teachWeapon(Npc& player, int32_t talent, int32_t points) {
++  const int32_t cur = player.hitChance(Talent(talent));
++  points = std::min(points,WeaponMax-cur);
++  if(points<=0)
++    return;
++  teachCall("B_TEACHFIGHTTALENTPERCENT",player,{talent,points,WeaponMax});
++  // Скрипт тянет за одноручным и двуручное (и лук за арбалетом), если отстаёт на 30 - выше 100 % не пускать
++  auto& h = player.handle();
++  for(auto& w:Weapons)
++    h.hitchance[w.talent] = std::min(h.hitchance[w.talent],WeaponMax);
++  }
++
++void AiNpc::teachCircle(Npc& player, int32_t upTo) {
++  for(int32_t c=player.talentSkill(TALENT_MAGE)+1; c<=std::min(upTo,CircleMax); ++c)
++    if(teachCall("B_TEACHMAGICCIRCLE",player,{c})<=0)
++      break;
++  }
++
++int32_t AiNpc::hackChance() const {
++  // Добыча золота (аддон): глобальная HERO_HACKCHANCE; в классике её нет
++  auto* s = owner.findSymbol("HERO_HACKCHANCE");
++  if(s==nullptr || s->type()!=zenkit::DaedalusDataType::INT || owner.findSymbol("B_UPGRADE_HERO_HACKCHANCE")==nullptr)
++    return -1;
++  return s->get_int();
++  }
++
++void AiNpc::teachHack(Npc& player, int32_t points) {
++  const int32_t cur = hackChance();
++  if(cur<0)
++    return;
++  points = std::min(points,HackMax-cur);
++  if(points>0)
++    teachCall("B_UPGRADE_HERO_HACKCHANCE",player,{points});
++  }
++
++void AiNpc::teachAllSkills(Npc& player) {
++  for(auto& w:Weapons)
++    teachWeapon(player,w.talent,WeaponMax);
++  for(size_t l=0; l<L_Count; ++l)
++    learnAll(player,l);
++  teachCircle(player,CircleMax);
++  teachHack(player,HackMax);
++  Gothic::inst().onPrint(toCp1251("Геральт научил тебя всем умениям"));
++  }
++
++void AiNpc::teachChoices(Npc& player, std::vector<GameScript::DlgChoice>& out) {
++  int32_t sort = 0;
++  auto add = [&](uint32_t code, const std::string& title) {
++    GameScript::DlgChoice ch;
++    ch.title    = toCp1251(title);
++    ch.scriptFn = TeachChoice | (code & 0xFFFFu);
++    ch.sort     = ++sort;
++    out.push_back(std::move(ch));
++    };
++
++  switch(teachPage) {
++    case TeachPage::None:
++      break;
++    case TeachPage::Main: {
++      add(T_Attr,"Сила, ловкость, мана, здоровье");
++      add(T_Weapons,"Владение оружием");
++      for(size_t l:{L_Thief, L_Trophy, L_Alchemy, L_Smith})
++        if(listExists(l))
++          add(T_List+uint32_t(l),Lists[l].title);
++      add(T_Magic,"Магия: круги и руны");
++      if(listExists(L_Language) || listExists(L_Wisp) || hackChance()>=0)
++        add(T_Other,"Прочее: язык зодчих, огонек, добыча золота");
++      add(T_AllSkills,"Научи меня всем умениям сразу");
++      add(T_Back,"Назад");
++      break;
++      }
++    case TeachPage::Attr: {
++      for(size_t i=0; i<std::size(Attrs); ++i)
++        add(T_AttrOne+uint32_t(i),std::string(Attrs[i].name)+" (сейчас "+num(player.attribute(Attrs[i].atr))+")");
++      add(T_Back,"Назад");
++      break;
++      }
++    case TeachPage::AttrOne: {
++      const AttrLesson& a    = Attrs[teachAttrId];
++      const int32_t     cur  = player.attribute(a.atr);
++      const int32_t     left = a.max-cur;
++      if(left<=0) {
++        add(T_Back,std::string(a.name)+" уже "+num(cur)+" - больше не научу. Назад");
++        break;
++        }
++      bool first = true;
++      for(size_t i=0; i<std::size(a.steps); ++i) {
++        if(a.steps[i]<=0 || a.steps[i]>left)
++          continue;
++        std::string t = "+"+num(a.steps[i])+" "+a.to;
++        if(first)
++          t += " (сейчас "+num(cur)+")";
++        first = false;
++        add(T_AttrStep+uint32_t(i),t);
++        }
++      add(T_AttrMax,std::string(a.name)+" до "+num(a.max));
++      add(T_Back,"Назад");
++      break;
++      }
++    case TeachPage::Weapons: {
++      bool any = false;
++      for(size_t i=0; i<std::size(Weapons); ++i) {
++        const int32_t cur = player.hitChance(Weapons[i].talent);
++        if(cur>=WeaponMax)
++          continue;
++        any = true;
++        add(T_Weapon+uint32_t(i*2),  std::string(Weapons[i].name)+" +"+num(std::min(WeaponStep,WeaponMax-cur))+
++                                    "% (сейчас "+num(cur)+"%)");
++        add(T_Weapon+uint32_t(i*2+1),std::string(Weapons[i].name)+" до "+num(WeaponMax)+"%");
++        }
++      if(any)
++        add(T_AllWeapons,"Все оружие до "+num(WeaponMax)+"%");
++      add(T_Back,any ? "Назад" : "Всем оружием ты уже владеешь на 100%. Назад");
++      break;
++      }
++    case TeachPage::List: {
++      std::vector<size_t> todo;
++      unlearned(player,teachListId,todo);
++      if(todo.empty()) {
++        add(T_Back,std::string(Lists[teachListId].title)+": ты уже знаешь все. Назад");
++        break;
++        }
++      if(todo.size()>1)
++        add(T_ListAll,std::string(Lists[teachListId].title)+": все сразу");
++      if(teachFrom>=todo.size())
++        teachFrom = 0;
++      for(size_t i=teachFrom; i<todo.size() && i<teachFrom+ListPage; ++i)
++        add(T_Lesson+uint32_t(todo[i]),Lists[teachListId].items[todo[i]].title);
++      if(todo.size()>ListPage)
++        add(T_ListMore,"Дальше...");
++      add(T_Back,"Назад");
++      break;
++      }
++    case TeachPage::Magic: {
++      const int32_t circle = player.talentSkill(TALENT_MAGE);
++      if(circle<CircleMax)
++        add(T_NextCircle,"Круг магии "+num(circle+1)+" (сейчас "+num(circle)+")");
++      if(circle+1<CircleMax)
++        add(T_AllCircles,"Все круги магии, до "+num(CircleMax)+"-го");
++      if(listExists(L_Runes))
++        add(T_List+uint32_t(L_Runes),Lists[L_Runes].title);
++      add(T_Back,"Назад");
++      break;
++      }
++    case TeachPage::Other: {
++      for(size_t l:{L_Language, L_Wisp})
++        if(listExists(l))
++          add(T_List+uint32_t(l),Lists[l].title);
++      const int32_t hack = hackChance();
++      if(hack>=0 && hack<HackMax) {
++        add(T_HackStep,"Добыча золота +"+num(std::min(HackStep,HackMax-hack))+"% (сейчас "+num(hack)+"%)");
++        add(T_HackMax,"Добыча золота до "+num(HackMax)+"%");
++        }
++      add(T_Back,"Назад");
++      break;
++      }
++    }
++  }
++
++bool AiNpc::execTeach(uint32_t code, Npc& player) {
++  if(geralt==nullptr || teachPage==TeachPage::None)
++    return false;
++
++  if(code==T_Back) {
++    switch(teachPage) {
++      case TeachPage::Main:    teachPage = TeachPage::None; break;
++      case TeachPage::AttrOne: teachPage = TeachPage::Attr; break;
++      case TeachPage::List:    teachPage = teachListBack;   break;
++      default:                 teachPage = TeachPage::Main; break;
++      }
++    return true;
++    }
++
++  auto openList = [&](size_t l) {
++    if(l>=L_Count)
++      return;
++    teachListBack = teachPage;
++    teachListId   = l;
++    teachFrom     = 0;
++    teachPage     = TeachPage::List;
++    };
++
++  if(code==T_Attr)       { teachPage = TeachPage::Attr;    return true; }
++  if(code==T_Weapons)    { teachPage = TeachPage::Weapons; return true; }
++  if(code==T_Magic)      { teachPage = TeachPage::Magic;   return true; }
++  if(code==T_Other)      { teachPage = TeachPage::Other;   return true; }
++  if(code==T_AllSkills)  { teachAllSkills(player);         return true; }
++  if(code==T_NextCircle) { teachCircle(player,player.talentSkill(TALENT_MAGE)+1); return true; }
++  if(code==T_AllCircles) { teachCircle(player,CircleMax);  return true; }
++  if(code==T_HackStep)   { teachHack(player,HackStep);     return true; }
++  if(code==T_HackMax)    { teachHack(player,HackMax);      return true; }
++  if(code==T_AllWeapons) {
++    for(auto& w:Weapons)
++      teachWeapon(player,w.talent,WeaponMax);
++    return true;
++    }
++  if(code==T_ListAll) {
++    const size_t n = learnAll(player,teachListId);
++    if(n>1)
++      Gothic::inst().onPrint(toCp1251(std::string(Lists[teachListId].title)+": изучено "+num(int32_t(n))));
++    return true;
++    }
++  if(code==T_ListMore) {
++    teachFrom += ListPage;
++    return true;
++    }
++  if(code>=T_AttrOne && code<T_AttrOne+std::size(Attrs)) {
++    teachAttrId = code-T_AttrOne;
++    teachPage   = TeachPage::AttrOne;
++    return true;
++    }
++  if(code>=T_AttrStep && code<T_AttrStep+4 && teachAttrId<std::size(Attrs)) {
++    teachAttr(player,teachAttrId,Attrs[teachAttrId].steps[code-T_AttrStep]);
++    return true;
++    }
++  if(code==T_AttrMax && teachAttrId<std::size(Attrs)) {
++    teachAttr(player,teachAttrId,Attrs[teachAttrId].max);
++    return true;
++    }
++  if(code>=T_Weapon && code<T_Weapon+std::size(Weapons)*2) {
++    const auto& w = Weapons[(code-T_Weapon)/2];
++    teachWeapon(player,w.talent,((code-T_Weapon)%2)==0 ? WeaponStep : WeaponMax);
++    return true;
++    }
++  if(code>=T_List && code<T_List+uint32_t(L_Count)) {
++    openList(code-T_List);
++    return true;
++    }
++  if(code>=T_Lesson && teachPage==TeachPage::List) {
++    const size_t i = code-T_Lesson;
++    const auto&  l = Lists[teachListId];
++    if(i>=l.count || lessonKnown(player,teachListId,i))
++      return true;
++    teachCall(l.fn,player,{owner.scriptConst(l.items[i].sym,-1)});
++    if(lessonKnown(player,teachListId,i))
++      teachLearned.push_back(l.items[i].title);
++    return true;
++    }
++  return true;
++  }
++
++void AiNpc::teachReport() {
++  // Чему герой научился за этот разговор - модели событием (как итог торговли): Геральт помнит, чему учил
++  if(!teachStarted)
++    return;
++  teachStarted = false;
++  auto* w = world();
++  Npc*  pl = w!=nullptr ? w->player() : nullptr;
++  if(pl==nullptr || geralt==nullptr)
++    return;
++  std::string done;
++  auto note = [&](const std::string& s) {
++    done += (done.empty() ? "" : ", ")+s;
++    };
++  for(size_t i=0; i<std::size(Attrs); ++i) {
++    const int32_t now = pl->attribute(Attrs[i].atr);
++    if(now>teachBefore.atr[i])
++      note(std::string(Attrs[i].name)+" "+num(teachBefore.atr[i])+" -> "+num(now));
++    }
++  for(size_t i=0; i<std::size(Weapons); ++i) {
++    const int32_t now = pl->hitChance(Weapons[i].talent);
++    if(now>teachBefore.hit[i])
++      note(std::string(Weapons[i].name)+" "+num(teachBefore.hit[i])+"% -> "+num(now)+"%");
++    }
++  if(pl->talentSkill(TALENT_MAGE)>teachBefore.circle)
++    note("круг магии "+num(teachBefore.circle)+" -> "+num(pl->talentSkill(TALENT_MAGE)));
++  if(hackChance()>teachBefore.hack && teachBefore.hack>=0)
++    note("добыча золота "+num(teachBefore.hack)+"% -> "+num(hackChance())+"%");
++  if(!teachLearned.empty()) {
++    std::string skills;
++    size_t      shown = 0;
++    for(auto& s:teachLearned) {
++      if(skills.size()>300)
++        break;
++      skills += (skills.empty() ? "" : ", ")+s;
++      ++shown;
++      }
++    if(shown<teachLearned.size())
++      skills += " и еще "+num(int32_t(teachLearned.size()-shown));
++    note("умения: "+skills);
++    }
++  teachLearned.clear();
++  if(done.empty())
++    return;
++  Log::i("[g2m] ai: Geralt taught: ",done);
++  sendEvent("teach","Ты обучил героя (даром): "+done+".",nullptr);
++  }
++
++void AiNpc::buildStock() {
++  // Список запасов - один раз за сеанс (скрипты не меняются): всё, что создаёт себе PC_Rockefeller (тестовый герой
++  // разработчиков со всеми вещами), - по байт-коду его экземпляра, с его количеством; сверх того - всё оружие,
++  // доспехи, боеприпасы, руны и свитки, кольца, амулеты, пояса, зелья, еда, травы и трофеи из скриптов игры (в том
++  // числе аддона, которого у Рокфеллера нет), кроме квестовых вещей
++  if(stockBuilt)
++    return;
++  stockBuilt = true;
++  stockList.clear();
++  auto& vm = owner.vm;
++
++  auto isItem = [&](const zenkit::DaedalusSymbol* s) {
++    if(s==nullptr || s->type()!=zenkit::DaedalusDataType::INSTANCE)
++      return false;
++    for(int depth=0; s!=nullptr && depth<8; ++depth) {
++      if(s->name()=="C_ITEM")
++        return true;
++      if(s->parent()==uint32_t(-1))
++        return false;
++      s = vm.find_symbol_by_index(s->parent());
++      }
++    return false;
++    };
++
++  std::unordered_map<size_t,size_t> rock;   // экземпляр - сколько у Рокфеллера
++  std::vector<size_t>               order;
++  if(auto* pc = vm.find_symbol_by_name("PC_ROCKEFELLER");
++     pc!=nullptr && pc->type()==zenkit::DaedalusDataType::INSTANCE && pc->address()!=0) {
++    struct Arg {
++      const zenkit::DaedalusSymbol* sym   = nullptr;
++      int32_t                       imm   = 0;
++      bool                          isImm = false;
++      };
++    // Экземпляр предмета в аргументе: CreateInvItems(self, ItMw_…, n) кладёт его номером (PUSHI), иногда - PUSHVI
++    auto itemOf = [&](const Arg& a) -> size_t {
++      const zenkit::DaedalusSymbol* s = a.isImm ? vm.find_symbol_by_index(uint32_t(a.imm)) : a.sym;
++      return isItem(s) ? size_t(s->index()) : size_t(-1);
++      };
++    try {
++      std::vector<Arg> stack;
++      uint32_t       at  = pc->address();
++      const uint32_t end = vm.size();
++      for(size_t step=0; at<end && step<40000; ++step) {
++        const auto ins = vm.instruction_at(at);
++        at += ins.size;
++        if(ins.op==zenkit::DaedalusOpcode::RSR)
++          break;
++        switch(ins.op) {
++          case zenkit::DaedalusOpcode::PUSHV:
++          case zenkit::DaedalusOpcode::PUSHVI:
++          case zenkit::DaedalusOpcode::PUSHVV: {
++            Arg a;
++            a.sym = vm.find_symbol_by_index(ins.symbol);
++            stack.push_back(a);
++            break;
++            }
++          case zenkit::DaedalusOpcode::PUSHI: {
++            Arg a;
++            a.imm   = ins.immediate;
++            a.isImm = true;
++            stack.push_back(a);
++            break;
++            }
++          case zenkit::DaedalusOpcode::BE: {
++            auto*             callee = vm.find_symbol_by_index(ins.symbol);
++            const std::string name   = callee!=nullptr ? callee->name() : std::string();
++            const size_t      n      = stack.size();
++            size_t            cls    = size_t(-1), cnt = 1;
++            if((name=="CREATEINVITEM" || name=="EQUIPITEM") && n>=2) {
++              cls = itemOf(stack[n-1]);
++              }
++            else if(name=="CREATEINVITEMS" && n>=3) {
++              cls = itemOf(stack[n-2]);
++              cnt = stack[n-1].isImm && stack[n-1].imm>0 ? size_t(stack[n-1].imm) : 1;
++              }
++            if(cls!=size_t(-1)) {
++              if(rock.find(cls)==rock.end())
++                order.push_back(cls);
++              rock[cls] += cnt;
++              }
++            stack.clear();
++            break;
++            }
++          default:
++            stack.clear();
++            break;
++          }
++        }
++      }
++    catch(...) {
++      Log::e("[g2m] ai: unable to read PC_ROCKEFELLER");
++      }
++    }
++  const size_t fromRock = order.size();
++
++  // Всё снаряжение мира из скриптов: экземпляры C_Item по виду предмета (поля - из инициализации экземпляра)
++  std::vector<size_t> all;
++  vm.enumerate_instances_by_class_name("C_ITEM",[&](zenkit::DaedalusSymbol& s) {
++    all.push_back(s.index());
++    });
++  struct Info {
++    uint32_t main  = 0;
++    uint32_t flags = 0;
++    bool     ok    = false;
++    };
++  std::unordered_map<size_t,Info> info;
++  auto infoOf = [&](size_t cls) -> const Info& {
++    auto found = info.find(cls);
++    if(found!=info.end())
++      return found->second;
++    Info& in = info[cls];
++    try {
++      auto h = std::make_shared<zenkit::IItem>();
++      owner.initializeInstanceItem(h,cls);
++      in.main  = uint32_t(h->main_flag);
++      in.flags = uint32_t(h->flags);
++      in.ok    = !h->visual.empty();
++      }
++    catch(...) {
++      in.ok = false;
++      }
++    return in;
++    };
++  const uint32_t gear = ITM_CAT_NF | ITM_CAT_FF | ITM_CAT_MUN | ITM_CAT_ARMOR | ITM_CAT_RUNE | ITM_CAT_MAGIC |
++                        ITM_CAT_POTION | ITM_CAT_FOOD | ITM_CAT_LIGHT;
++  for(auto cls:all) {
++    if(rock.find(cls)!=rock.end())
++      continue;
++    auto* s = vm.find_symbol_by_index(uint32_t(cls));
++    if(s==nullptr)
++      continue;
++    const Info& in = infoOf(cls);
++    if(!in.ok)
++      continue;
++    if((in.main & gear) || startsWith(s->name(),"ITAT_")) {
++      order.push_back(cls);
++      rock[cls] = 0;
++      }
++    }
++
++  const size_t gold = owner.goldId()!=nullptr ? size_t(owner.goldId()->index()) : size_t(-1);
++  for(auto cls:order) {
++    auto* s = vm.find_symbol_by_index(uint32_t(cls));
++    if(s==nullptr || cls==gold || notInStock(s->name()))
++      continue;
++    const Info& in = infoOf(cls);
++    if(!in.ok || (in.flags & ITM_MISSION))
++      continue;
++    // Сколько: штучное - одно, стопками - на несколько походов (окно открылось снова - запасы снова полные)
++    size_t n = 1;
++    if(in.flags & ITM_MULTI) {
++      size_t def = 10;
++      if(in.main & ITM_CAT_MUN)
++        def = 500;
++      else if(in.main & ITM_CAT_POTION)
++        def = 20;
++      n = std::max(rock[cls],def);
++      }
++    stockList.push_back({cls,n});
++    }
++  Log::i("[g2m] ai: Geralt's stock - ",stockList.size()," kinds (",fromRock," from PC_ROCKEFELLER)");
++  }
++
++void AiNpc::onTradeOpen(Npc& trader) {
++  if(!isAiNpc(trader) || !stockPending)
++    return;
++  stockPending = false;
++  stockRemove();
++  buildStock();
++  stockNpc = &trader;
++  for(auto& s:stockList) {
++    StockAdded a;
++    a.cls   = s.cls;
++    a.own   = trader.itemCount(s.cls);
++    a.added = s.count;
++    if(trader.addItem(s.cls,s.count)!=nullptr)
++      stockAdded.push_back(a);
++    }
++  }
++
++void AiNpc::onTradeClose(Npc& trader) {
++  if(&trader==stockNpc)
++    stockRemove();
++  }
++
++void AiNpc::stockRemove() {
++  // Своё остаётся: взятое героем уходит из запасов первым, отданное им - Геральту
++  Npc* npc = stockNpc;
++  stockNpc = nullptr;
++  if(npc==nullptr || npc!=geralt || !npcAlive(npc)) {
++    stockAdded.clear();
++    return;
++    }
++  for(auto& a:stockAdded) {
++    const size_t now  = npc->itemCount(a.cls);
++    const size_t left = std::min(now>a.own ? now-a.own : 0, a.added);
++    if(left>0)
++      npc->delItem(a.cls,uint32_t(left));
++    if(a.added>left)
++      stockTaken.emplace_back(a.cls,a.added-left);
++    }
++  stockAdded.clear();
++  }
++
++size_t AiNpc::stockShare(const Npc& npc, size_t cls) const {
++  if(&npc!=stockNpc)
++    return 0;
++  for(auto& a:stockAdded)
++    if(a.cls==cls) {
++      const size_t now = npc.itemCount(cls);
++      return std::min(now>a.own ? now-a.own : 0, a.added);
++      }
++  return 0;
++  }
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
 index 0000000..4539fcb
@@ -5817,15 +6801,16 @@ index b1d951f..8d5f5cd 100644
  
    if(hitFlg) {
 diff --git a/common/game/gamescript.cpp b/common/game/gamescript.cpp
-index 4b32af2..2cdc1c4 100644
+index 4b32af2..48ab356 100644
 --- a/common/game/gamescript.cpp
 +++ b/common/game/gamescript.cpp
-@@ -2,10 +2,12 @@
+@@ -2,10 +2,13 @@
  
  #include <Tempest/Log>
  #include <Tempest/SoundEffect>
 +#include <Tempest/TextCodec>
  
++#include <algorithm>
  #include <cctype>
  
  #include "game/compatibility/directmemory.h"
@@ -5833,7 +6818,7 @@ index 4b32af2..2cdc1c4 100644
  #include "game/definitions/spelldefinitions.h"
  #include "game/serialize.h"
  #include "utils/string_frm.h"
-@@ -98,6 +100,7 @@ GameScript::GameScript(GameSession &owner)
+@@ -98,6 +101,7 @@ GameScript::GameScript(GameSession &owner)
    Gothic::inst().setupCommonScriptClasses(vm);
    Gothic::inst().setupVmCommonApi(vm);
    aiDefaultPipe.reset(new GlobalOutput(*this));
@@ -5841,7 +6826,7 @@ index 4b32af2..2cdc1c4 100644
    initCommon();
    initSettings();
    Gothic::inst().onSettingsChanged.bind(this,&GameScript::initSettings);
-@@ -457,8 +460,24 @@ void GameScript::loadDialogOU() {
+@@ -457,8 +461,24 @@ void GameScript::loadDialogOU() {
    const auto version = Gothic::inst().version().game==1 ? zenkit::GameVersion::GOTHIC_1
                                                          : zenkit::GameVersion::GOTHIC_2;
  
@@ -5867,7 +6852,7 @@ index 4b32af2..2cdc1c4 100644
        std::unique_ptr<zenkit::Read> read;
        auto zen = Resources::openReader(OU, read);
        dialogs = std::move(*zen->read_object<zenkit::CutsceneLibrary>(version));
-@@ -466,20 +485,14 @@ void GameScript::loadDialogOU() {
+@@ -466,20 +486,14 @@ void GameScript::loadDialogOU() {
        }
  
      const size_t segment = OU.find_last_of("\\/");
@@ -5890,7 +6875,7 @@ index 4b32af2..2cdc1c4 100644
        gcutscene = CommandLine::inst().cutscenePath(ScriptLang(vmLang));
        full      = FileUtil::caseInsensitiveSegment(gcutscene,str16,Dir::FT_File);
        }
-@@ -493,6 +506,7 @@ void GameScript::loadDialogOU() {
+@@ -493,6 +507,7 @@ void GameScript::loadDialogOU() {
          continue;
        // auto zen = Resources::openReader(full);
        dialogs = std::move(*zen->read_object<zenkit::CutsceneLibrary>(version));
@@ -5898,7 +6883,7 @@ index 4b32af2..2cdc1c4 100644
        return;
        }
      catch(...){
-@@ -872,6 +886,14 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
+@@ -872,6 +887,14 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
                                                               std::shared_ptr<zenkit::INpc> hnpc,
                                                               const std::vector<uint32_t>& except,
                                                               bool includeImp) {
@@ -5913,7 +6898,7 @@ index 4b32af2..2cdc1c4 100644
    ScopeVar self (*vm.global_self(),  hnpc);
    ScopeVar other(*vm.global_other(), player);
    std::vector<zenkit::IInfo*> hDialog;
-@@ -920,6 +942,15 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
+@@ -920,6 +943,15 @@ std::vector<GameScript::DlgChoice> GameScript::dialogChoices(std::shared_ptr<zen
        ch.sort     = info.nr;
        choice.emplace_back(std::move(ch));
        }
@@ -5929,7 +6914,7 @@ index 4b32af2..2cdc1c4 100644
      if(!choice.empty()){
        sort(choice);
        return choice;
-@@ -954,6 +985,15 @@ std::vector<GameScript::DlgChoice> GameScript::updateDialog(const GameScript::Dl
+@@ -954,6 +986,15 @@ std::vector<GameScript::DlgChoice> GameScript::updateDialog(const GameScript::Dl
    }
  
  void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
@@ -5945,7 +6930,7 @@ index 4b32af2..2cdc1c4 100644
    ScopeVar self (*vm.global_self(), npc.handlePtr());
    ScopeVar other(*vm.global_other(), player.handlePtr());
  
-@@ -975,6 +1015,93 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
+@@ -975,6 +1016,93 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
    vm.call_function(vm.find_symbol_by_index(dlg.scriptFn));
    }
  
@@ -6039,7 +7024,7 @@ index 4b32af2..2cdc1c4 100644
  void GameScript::printCannotUseError(Npc& npc, int32_t atr, int32_t nValue) {
    auto id = vm.find_symbol_by_name("G_CanNotUse");
    if(id==nullptr)
-@@ -1118,6 +1245,29 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
+@@ -1118,6 +1246,63 @@ int GameScript::invokeState(Npc* npc, Npc* oth, Npc* vic, ScriptFn fn) {
    return ret;
    }
  
@@ -6066,10 +7051,44 @@ index 4b32af2..2cdc1c4 100644
 +  vm.call_function<void>(fn, npc.handlePtr());
 +  }
 +
++int32_t GameScript::invokeTeach(std::string_view name, Npc& teacher, Npc& student, std::initializer_list<int32_t> args) {
++  // Gothic II Mobile: урок у Геральта (ainpc / aiteach.cpp) - теми же функциями, что у учителей игры: умение, дневник,
++  // надписи на экране - как в родном диалоге обучения
++  auto* fn = vm.find_symbol_by_name(name);
++  if(fn==nullptr || fn->type()!=zenkit::DaedalusDataType::FUNCTION || fn->count()<args.size())
++    return -1;
++  const size_t   npcs = fn->count()-args.size();
++  const int32_t* a    = args.begin();
++  const size_t   n    = args.size();
++  auto call = [&](auto... p) -> int32_t {
++    if(fn->has_return())
++      return vm.call_function<int>(fn, p...);
++    vm.call_function<void>(fn, p...);
++    return 1;
++    };
++  ScopeCtx ctx  (*this, teacher.processPolicy());
++  ScopeVar self (*vm.global_self(),  teacher.handlePtr());
++  ScopeVar other(*vm.global_other(), student.handlePtr());
++  try {
++    if(npcs==2 && n==1)
++      return call(teacher.handlePtr(), student.handlePtr(), a[0]);
++    if(npcs==2 && n==3)
++      return call(teacher.handlePtr(), student.handlePtr(), a[0], a[1], a[2]);
++    if(npcs==1 && n==2)
++      return call(student.handlePtr(), a[0], a[1]);
++    if(npcs==0 && n==1)
++      return call(a[0]);
++    }
++  catch(const std::exception& e) {
++    Tempest::Log::e("[g2m] teach: ",name,": ",e.what());
++    }
++  return -1;
++  }
++
  void GameScript::invokeItem(Npc *npc, ScriptFn fn) {
    if(fn==size_t(-1) || fn == 0)
      return;
-@@ -1281,6 +1431,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
+@@ -1281,6 +1466,11 @@ std::string_view GameScript::spellCastAnim(Npc&, Item &it) {
    }
  
  bool GameScript::aiOutput(Npc &npc, std::string_view outputname, bool overlay) {
@@ -6081,7 +7100,7 @@ index 4b32af2..2cdc1c4 100644
    string_frm name(outputname,".WAV");
    uint64_t   dt = 0;
  
-@@ -1323,6 +1478,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
+@@ -1323,6 +1513,10 @@ std::string_view GameScript::messageFromSvm(std::string_view id, int voice) cons
    }
  
  std::string_view GameScript::messageByName(std::string_view id) const {
@@ -6092,7 +7111,7 @@ index 4b32af2..2cdc1c4 100644
    auto blk = dialogs.block_by_name(id);
    if(blk == nullptr)
      return "";
-@@ -1333,6 +1492,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
+@@ -1333,6 +1527,10 @@ std::string_view GameScript::messageByName(std::string_view id) const {
    }
  
  uint32_t GameScript::messageTime(std::string_view id) const {
@@ -6103,7 +7122,7 @@ index 4b32af2..2cdc1c4 100644
    static std::string tmp;
    tmp.assign(id);
  
-@@ -1472,6 +1635,10 @@ uint64_t GameScript::tickCount() const {
+@@ -1472,6 +1670,10 @@ uint64_t GameScript::tickCount() const {
  void GameScript::tick(uint64_t dt) {
    if(dma!=nullptr)
      dma->tick(dt);
@@ -6114,7 +7133,7 @@ index 4b32af2..2cdc1c4 100644
    }
  
  uint32_t GameScript::rand(uint32_t max) {
-@@ -2022,6 +2189,9 @@ void GameScript::npc_settofistmode(std::shared_ptr<zenkit::INpc> npcRef) {
+@@ -2022,6 +2224,9 @@ void GameScript::npc_settofistmode(std::shared_ptr<zenkit::INpc> npcRef) {
  
  bool GameScript::npc_isinstate(std::shared_ptr<zenkit::INpc> npcRef, int stateFn) {
    auto npc = findNpc(npcRef);
@@ -6124,7 +7143,7 @@ index 4b32af2..2cdc1c4 100644
    if(npc!=nullptr)
      return npc->isInState(uint32_t(stateFn));
    return false;
-@@ -2876,6 +3046,9 @@ int GameScript::npc_getactivespelllevel(std::shared_ptr<zenkit::INpc> npcRef) {
+@@ -2876,6 +3081,9 @@ int GameScript::npc_getactivespelllevel(std::shared_ptr<zenkit::INpc> npcRef) {
  void GameScript::ai_processinfos(std::shared_ptr<zenkit::INpc> npcRef) {
    auto npc = findNpc(npcRef);
    auto pl  = owner.player();
@@ -6134,7 +7153,7 @@ index 4b32af2..2cdc1c4 100644
    if(pl!=nullptr && npc!=nullptr) {
      aiOutOrderId=0;
      npc->aiPush(AiQueue::aiProcessInfo(*pl));
-@@ -2889,6 +3062,13 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
+@@ -2889,6 +3097,13 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -6148,7 +7167,7 @@ index 4b32af2..2cdc1c4 100644
    if(self!=nullptr && target!=nullptr) {
      self->aiPush(AiQueue::aiOutput(*target,outputname,aiOutOrderId));
      ++aiOutOrderId;
-@@ -2897,6 +3077,11 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
+@@ -2897,6 +3112,11 @@ void GameScript::ai_output(std::shared_ptr<zenkit::INpc> selfRef, std::shared_pt
  
  void GameScript::ai_stopprocessinfos(std::shared_ptr<zenkit::INpc> selfRef) {
    auto self = findNpc(selfRef);
@@ -6160,7 +7179,7 @@ index 4b32af2..2cdc1c4 100644
    if(self) {
      self->aiPush(AiQueue::aiStopProcessInfo(aiOutOrderId));
      ++aiOutOrderId;
-@@ -2981,6 +3166,13 @@ void GameScript::ai_outputsvm(std::shared_ptr<zenkit::INpc> selfRef, std::shared
+@@ -2981,6 +3201,13 @@ void GameScript::ai_outputsvm(std::shared_ptr<zenkit::INpc> selfRef, std::shared
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -6174,7 +7193,7 @@ index 4b32af2..2cdc1c4 100644
    if(self!=nullptr && target!=nullptr) {
      self->aiPush(AiQueue::aiOutputSvm(*target,name,aiOutOrderId));
      ++aiOutOrderId;
-@@ -2994,6 +3186,13 @@ void GameScript::ai_outputsvm_overlay(std::shared_ptr<zenkit::INpc> selfRef, std
+@@ -2994,6 +3221,13 @@ void GameScript::ai_outputsvm_overlay(std::shared_ptr<zenkit::INpc> selfRef, std
    if(target==nullptr && owner.version().game==1)
      target = findNpc(vm.global_other());
  
@@ -6188,11 +7207,32 @@ index 4b32af2..2cdc1c4 100644
    if(self!=nullptr && target!=nullptr) {
      self->aiPush(AiQueue::aiOutputSvmOverlay(*target,name,aiOutOrderId));
      ++aiOutOrderId;
+@@ -3385,6 +3619,12 @@ void GameScript::snd_play(std::string_view fileS) {
+   std::string file {fileS};
+   for(auto& c:file)
+     c = char(std::toupper(c));
++  // Gothic II Mobile: пачка уроков у Геральта (aiteach.cpp) - каждый звук один раз
++  if(soundOnce!=nullptr) {
++    if(std::find(soundOnce->begin(),soundOnce->end(),file)!=soundOnce->end())
++      return;
++    soundOnce->push_back(file);
++    }
+   Gothic::inst().emitGlobalSound(file);
+   }
+ 
 diff --git a/common/game/gamescript.h b/common/game/gamescript.h
-index 2cccb63..1685530 100644
+index 2cccb63..dc0a14e 100644
 --- a/common/game/gamescript.h
 +++ b/common/game/gamescript.h
-@@ -25,8 +25,11 @@ class Npc;
+@@ -4,6 +4,7 @@
+ #include <zenkit/addon/daedalus.hh>
+ #include <zenkit/CutsceneLibrary.hh>
+ 
++#include <initializer_list>
+ #include <memory>
+ #include <set>
+ #include <random>
+@@ -25,8 +26,11 @@ class Npc;
  class Item;
  class VisualFx;
  class ParticleFx;
@@ -6204,7 +7244,7 @@ index 2cccb63..1685530 100644
  
  class ScriptFn final {
    public:
-@@ -43,6 +46,8 @@ class ScriptFn final {
+@@ -43,6 +47,8 @@ class ScriptFn final {
    };
  
  class GameScript final {
@@ -6213,7 +7253,7 @@ index 2cccb63..1685530 100644
    public:
      GameScript(GameSession &owner);
      ~GameScript();
-@@ -52,6 +57,8 @@ class GameScript final {
+@@ -52,6 +58,8 @@ class GameScript final {
        int32_t          sort     = 0;
        uint32_t         scriptFn = 0;
        bool             isTrade  = false;
@@ -6222,7 +7262,7 @@ index 2cccb63..1685530 100644
        zenkit::IInfo*   handle   = nullptr;
        };
  
-@@ -121,6 +128,63 @@ class GameScript final {
+@@ -121,6 +129,67 @@ class GameScript final {
      auto updateDialog (const GameScript::DlgChoice &dlg, Npc &player, Npc &npc) -> std::vector<GameScript::DlgChoice>;
      void exec(const DlgChoice &dlg, Npc &player, Npc &npc);
  
@@ -6252,6 +7292,10 @@ index 2cccb63..1685530 100644
 +    bool   isPassive   (Npc& npc);
 +    void   invokeAttack(Npc& npc, Npc& target, int32_t reason);
 +    void   invokeNpcFn (std::string_view name, Npc& npc, Npc& other);
++    // Урок у учителя - функция обучения скриптов (B_Teach…, B_RaiseAttribute): self - учитель, other - ученик; параметры
++    // C_NPC в начале (учитель и ученик, только ученик или нет) - по числу параметров функции, за ними args.
++    // Итог функции (без итога - 1); -1 - такой функции нет или параметры не те
++    int32_t invokeTeach(std::string_view name, Npc& teacher, Npc& student, std::initializer_list<int32_t> args);
 +    // Удар в бою: кого ударил герой и кто ударил своего - враги отряда на 30 с (Npc::takeDamage)
 +    void   squadNoteHit(Npc& attacker, Npc& victim);
 +    // Gothic II Mobile: живой NPC под управлением языковой модели (ainpc.cpp, docs/AI_NPC.md)
@@ -6286,7 +7330,7 @@ index 2cccb63..1685530 100644
      void  printCannotUseError         (Npc &npc, int32_t atr, int32_t nValue);
      void  printCannotCastError        (Npc &npc, int32_t plM, int32_t itM);
      void  printCannotBuyError         (Npc &npc);
-@@ -445,6 +509,62 @@ class GameScript final {
+@@ -445,6 +514,62 @@ class GameScript final {
      void exitsession         ();
  
      void sort(std::vector<DlgChoice>& dlg);
@@ -6349,7 +7393,7 @@ index 2cccb63..1685530 100644
      void setNpcInfoKnown(const zenkit::INpc& npc, const zenkit::IInfo& info);
      bool doesNpcKnowInfo(const zenkit::INpc& npc, size_t infoInstance) const;
  
-@@ -460,6 +580,7 @@ class GameScript final {
+@@ -460,6 +585,7 @@ class GameScript final {
      NpcProcessPolicy                                            aiProcessPolicy = NpcProcessPolicy::AiNormal;
  
      std::unique_ptr<DirectMemory>                               dma;
@@ -6357,13 +7401,16 @@ index 2cccb63..1685530 100644
  
      std::unique_ptr<SpellDefinitions>                           spells;
      std::unique_ptr<SvmDefinitions>                             svm;
-@@ -486,6 +607,33 @@ class GameScript final {
+@@ -486,6 +612,36 @@ class GameScript final {
      size_t                                                      gilCount=0;
      std::vector<int32_t>                                        gilAttitudes;
      int                                                         aiOutOrderId=0;
 +    // Gothic II Mobile: сюжетная тема через разговор с моделью - куда писать реплики и кто «в разговоре» (ZS_Talk
 +    // для условий тем: «Npc_IsInState(self, ZS_Talk)» у тем, которые житель говорит сам)
 +    StoryCapture*                                               storyCapture = nullptr;
++    // Gothic II Mobile: уроки Геральта «все сразу» (aiteach.cpp): функции обучения игры в каждом уроке играют звук
++    // записи в дневник - за пачку уроков каждый звук звучит один раз, а не десятки разом (snd_play)
++    std::vector<std::string>*                                   soundOnce    = nullptr;
 +    const Npc*                                                  storyTalker  = nullptr;
 +    uint64_t                                                    squadTickTime=0;
 +    size_t                                                      squadLogged=0;
@@ -8189,6 +9236,47 @@ index fb8d625..9c55e54 100644
  
      //////////////////////////////////
      // Helper functions for movement
+diff --git a/common/game/questlog.cpp b/common/game/questlog.cpp
+index 769f73d..d3ddefa 100644
+--- a/common/game/questlog.cpp
++++ b/common/game/questlog.cpp
+@@ -1,6 +1,8 @@
+ #include "questlog.h"
+ #include "serialize.h"
+ 
++#include <algorithm>
++
+ QuestLog::QuestLog() {
+   }
+ 
+@@ -23,8 +25,11 @@ void QuestLog::setStatus(std::string_view name, QuestLog::Status s) {
+   }
+ 
+ void QuestLog::addEntry(std::string_view name, std::string_view entry) {
+-  if(auto m = find(name))
++  if(auto m = find(name)) {
++    if(skipRepeats && std::find(m->entry.begin(),m->entry.end(),entry)!=m->entry.end())
++      return;
+     m->entry.emplace_back(entry);
++    }
+   }
+ 
+ QuestLog::Quest *QuestLog::find(std::string_view name) {
+diff --git a/common/game/questlog.h b/common/game/questlog.h
+index 65a578e..0821d90 100644
+--- a/common/game/questlog.h
++++ b/common/game/questlog.h
+@@ -33,6 +33,10 @@ class QuestLog final {
+     Quest& add      (std::string_view name, Section s);
+     void   setStatus(std::string_view name, Status  s);
+     void   addEntry (std::string_view name, std::string_view entry);
++    // Gothic II Mobile: запись, которая уже есть в этой теме, второй раз не пишется - пока идут уроки у Геральта:
++    // функции обучения игры в каждом уроке пишут одно и то же вступление («Чтобы создать руну, мне нужен…»), и
++    // «все руны сразу» оставляли бы в дневнике десятки одинаковых записей (aiteach.cpp)
++    bool   skipRepeats = false;
+ 
+     void   save(Serialize &fout);
+     void   load(Serialize &fin);
 diff --git a/common/game/travelcamera.cpp b/common/game/travelcamera.cpp
 new file mode 100644
 index 0000000..5c9686f
@@ -16416,10 +17504,15 @@ index 73b7c75..219a4b2 100644
      void                                  drawSlider(Tempest::Painter& p, Item& it, int x, int y, int w, int h);
      void                                  drawQuestList(Tempest::Painter& p, Item& it, int x, int y, int w, int h,
 diff --git a/common/ui/inventorymenu.cpp b/common/ui/inventorymenu.cpp
-index b532ab8..5f2f4c3 100644
+index b532ab8..9f64122 100644
 --- a/common/ui/inventorymenu.cpp
 +++ b/common/ui/inventorymenu.cpp
-@@ -7,6 +7,7 @@
+@@ -3,10 +3,12 @@
+ #include <Tempest/Painter>
+ #include <Tempest/SoundEffect>
+ 
++#include "game/ainpc.h"
+ #include "utils/string_frm.h"
  #include "world/objects/npc.h"
  #include "world/objects/interactive.h"
  #include "world/objects/item.h"
@@ -16427,10 +17520,14 @@ index b532ab8..5f2f4c3 100644
  #include "world/world.h"
  #include "utils/gthfont.h"
  #include "utils/keycodec.h"
-@@ -101,6 +102,13 @@ void InventoryMenu::close() {
+@@ -101,6 +103,17 @@ void InventoryMenu::close() {
        Gothic::inst().emitGlobalSound("TRADE_CLOSE"); else
        Gothic::inst().emitGlobalSound("INV_CLOSE");
      }
++  if(state==State::Trade && trader!=nullptr) {
++    // Gothic II Mobile: запасы Геральта уходят вместе с окном - до того, как он возьмёт в руки лучшее (aiteach.cpp)
++    trader->world().script().aiNpc().onTradeClose(*trader);
++    }
 +  if(state==State::Trade && freeTrade && trader!=nullptr && !trader->isDown()) {
 +    // Gothic II Mobile: напарник берёт в руки лучшее из того, что ему дали
 +    trader->aiPush(AiQueue::aiEquipBestArmor());
@@ -16441,7 +17538,7 @@ index b532ab8..5f2f4c3 100644
    renderer.reset(true);
    takeTimer.stop();
    state  = State::Closed;
-@@ -116,6 +124,7 @@ void InventoryMenu::open(Npc &pl) {
+@@ -116,6 +129,7 @@ void InventoryMenu::open(Npc &pl) {
      pl.closeWeapon(false);
      }
    state  = State::Equip;
@@ -16449,7 +17546,7 @@ index b532ab8..5f2f4c3 100644
    player = &pl;
    trader = nullptr;
    chest  = nullptr;
-@@ -129,9 +138,10 @@ void InventoryMenu::open(Npc &pl) {
+@@ -129,14 +143,17 @@ void InventoryMenu::open(Npc &pl) {
    //Gothic::inst().emitGlobalSound("INV_CHANGE");
    }
  
@@ -16461,7 +17558,14 @@ index b532ab8..5f2f4c3 100644
    state  = State::Trade;
    player = &pl;
    trader = &tr;
-@@ -151,6 +161,7 @@ bool InventoryMenu::ransack(Npc &pl, Npc &tr) {
+   chest  = nullptr;
+   page   = 0;
++  // Gothic II Mobile: «Покажи свои товары.» у Геральта - на время окна у него запасы всех вещей мира (aiteach.cpp)
++  tr.world().script().aiNpc().onTradeOpen(tr);
+   pagePl .reset(new InvPage  (pl.inventory()));
+   pageOth.reset(new TradePage(tr.inventory()));
+   adjustScroll();
+@@ -151,6 +168,7 @@ bool InventoryMenu::ransack(Npc &pl, Npc &tr) {
    if(!it.isValid())
      return false;
    state  = State::Ransack;
@@ -16469,7 +17573,7 @@ index b532ab8..5f2f4c3 100644
    player = &pl;
    trader = &tr;
    chest  = nullptr;
-@@ -163,6 +174,140 @@ bool InventoryMenu::ransack(Npc &pl, Npc &tr) {
+@@ -163,6 +181,140 @@ bool InventoryMenu::ransack(Npc &pl, Npc &tr) {
    return true;
    }
  
@@ -16610,7 +17714,7 @@ index b532ab8..5f2f4c3 100644
  void InventoryMenu::open(Npc &pl, Interactive &ch) {
    if(pl.isDown())
      return;
-@@ -179,6 +324,7 @@ void InventoryMenu::open(Npc &pl, Interactive &ch) {
+@@ -179,6 +331,7 @@ void InventoryMenu::open(Npc &pl, Interactive &ch) {
    player = &pl;
    trader = nullptr;
    chest  = &ch;
@@ -16618,7 +17722,7 @@ index b532ab8..5f2f4c3 100644
    page   = 0;
    pagePl .reset(new InvPage(pl.inventory()));
    pageOth.reset(new InvPage(ch.inventory()));
-@@ -516,6 +662,14 @@ void InventoryMenu::onTakeStuff() {
+@@ -516,6 +669,14 @@ void InventoryMenu::onTakeStuff() {
        player->addItem (it->clsId(),*chest,itemCount);
        }
      }
@@ -16633,7 +17737,7 @@ index b532ab8..5f2f4c3 100644
    else if(state==State::Trade) {
      if(page.is(&player->inventory())) {
        player->sellItem(it->clsId(),*trader,itemCount);
-@@ -736,7 +890,7 @@ void InventoryMenu::drawInfo(Painter &p) {
+@@ -736,7 +897,7 @@ void InventoryMenu::drawInfo(Painter &p) {
      if(txt.empty())
        continue;
  

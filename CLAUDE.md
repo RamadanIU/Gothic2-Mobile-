@@ -86,7 +86,11 @@ docs/PROGRESS.md, «Пропадающие предметы…»; ждут пр�
 `GeraltBrain.residentReact`), состояние явно (на ногах / без сознания / мёртв, занятие по `zs`), **кто что слышит** —
 коснуться человека = сказать лично, без касания — слышат все в 10 м, реплики вслух и родные диалоги игры (`AI_Output`)
 запоминают стоявшие рядом (`AiNpc::sendHeard`, `Memory.heard`), **слова героя звучат его голосом** (`Tts.Voice.hero`;
-docs/AI_NPC.md, «Кто что слышит», «Происшествия и состояние»; ждут проверки).
+docs/AI_NPC.md, «Кто что слышит», «Происшествия и состояние»; ждут проверки). Там же: **Геральт учит всему и даёт любые
+вещи** (как читовый `ch` и `PC_Rockefeller` из скриптов): «Научи меня.» — уроки даром функциями учителей игры (сила,
+ловкость, мана до 300, здоровье до 1000, оружие до 100 %, воровские умения, трофеи, алхимия, кузнечное дело, круги и руны,
+язык зодчих…), «Покажи свои товары.» — обмен даром с запасами всех вещей мира на время окна; сам носит своё
+(`common/game/aiteach.cpp`, docs/AI_NPC.md, «Учитель и запасы»; ждёт проверки).
 
 - **Приложение** (`app/`, Java, пакет `gothic2.mobile.og`): `LauncherActivity` — разрешение «Файлы», поиск
   папки игры (`GameFolder`), «Играть»; настройки — страницы разделов (`showPage`: «Графика», «Управление» — настройка
@@ -165,7 +169,8 @@ docs/AI_NPC.md, «Кто что слышит», «Происшествия и с
     «Сказать» (`TouchInput` `C_Say` → `AiNpc::addressee/heroSpeak`; живые жители — команды с `who`, `refSelf`,
     `Npc::saveRoutines`; сюжетные темы — `AiNpc::cmdStory`/`storyJson`, `GameScript::storyExec`, реплики темы — в
     `StoryCapture`, а не в очередь ИИ); приложение — пакет `gothic2.mobile.og.ai` (`GeraltBrain`, `LlmClient`, `Tts`,
-    `Memory`, характер — `Persona`, сюжетные темы — `Story`), настройки — `AiSettingsActivity`.
+    `Memory`, характер — `Persona`, сюжетные темы — `Story`), настройки — `AiSettingsActivity`. Уроки и запасы Геральта —
+    `common/game/aiteach.cpp` (`AiNpc::teachChoices/execTeach`, `GameScript::invokeTeach`, `onTradeOpen/onTradeClose`).
 - Сохранения движка — `files/save_slot_N.sav` в каталоге приложения (формат OpenGothic; с сохранениями
   оригинальной игры не совместимы). Удаление приложения их удаляет.
 - Id `gothic2.mobile.og` оставлен от пробной сборки намеренно: обновление ставится поверх неё, сохранения
@@ -222,7 +227,8 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
     common/game/travelcamera.cpp common/game/travelcamera.h common/game/ainpc.cpp common/game/ainpc.h \
     common/game/ailink.cpp common/game/ailink.h common/utils/mobileperf.cpp common/utils/mobileperf.h common/utils/perfstats.h \
     common/ui/touchicons.cpp common/ui/touchicons.h common/game/cooking.cpp \
-    common/utils/applink.cpp common/utils/applink.h common/physics/ragdoll.cpp common/physics/ragdoll.h
+    common/utils/applink.cpp common/utils/applink.h common/physics/ragdoll.cpp common/physics/ragdoll.h \
+    common/game/aiteach.cpp
     # и другие новые файлы (все: git ls-files --others --exclude-standard | grep -v ^build/); не -A: build/ не в .gitignore
   git diff --ignore-submodules=all > ../opengothic.patch && git reset -q
   git -C lib/Tempest diff > ../opengothic-tempest.patch
