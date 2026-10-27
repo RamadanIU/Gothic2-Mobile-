@@ -365,6 +365,60 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
     a.walking = true; a.speed = 110;
     ev.push_back({0.6f,[&]{ a.hit(chest(),Vec3(0,0,-1),3.5f,0.15f); }});
     }
+  // гибель и падения (тряпичная кукла): как в игре - убит стоя ударом спереди, сзади, сбоку, в голову, на бегу,
+  // после ударов (активная кукла оседает), стрелой; оглушён; удар тролля; сбит с ног; падение с высоты
+  else if(name=="die_front") {
+    len = 3.f;
+    ev.push_back({0.2f,[&]{ a.kill(chest(),Vec3(0,0,-1),3.2f); }});
+    }
+  else if(name=="die_back") {
+    len = 3.f;
+    ev.push_back({0.2f,[&]{ a.kill(chest()-Vec3(0,0,24),Vec3(0,0,1),3.2f); }});
+    }
+  else if(name=="die_side") {
+    len = 3.f;
+    ev.push_back({0.2f,[&]{ a.kill(bonePos(a,"BIP01 R UPPERARM")+Vec3(-8,-5,0),Vec3(1,0,0),3.4f); }});
+    }
+  else if(name=="die_head") {
+    len = 3.f;
+    ev.push_back({0.2f,[&]{ a.kill(bonePos(a,"BIP01 HEAD")+Vec3(0,6,10),Vec3(0.2f,0,-1),3.5f); }});
+    }
+  else if(name=="die_run") {
+    len = 3.f;
+    a.walking = true; a.speed = 400;
+    ev.push_back({0.4f,[&]{ a.kill(chest(),Vec3(0,0,-1),3.f,Ragdoll::H_Melee,Ragdoll::S_Dead,Vec3(0,0,4)); }});
+    }
+  else if(name=="die_hits") {
+    len = 3.5f;
+    ev.push_back({0.2f,[&]{ a.hit(chest(),Vec3(0,0,-1),3.2f,0.15f); }});
+    ev.push_back({0.7f,[&]{ a.kill(chest()+Vec3(8,0,0),Vec3(-0.3f,0,-1),3.6f); }});
+    }
+  else if(name=="die_arrow") {
+    len = 3.f;
+    ev.push_back({0.2f,[&]{ a.kill(chest()+Vec3(-6,4,0),Vec3(0,-0.1f,-1),3.f,Ragdoll::H_Missile); }});
+    }
+  else if(name=="ko") {
+    len = 3.5f;
+    ev.push_back({0.2f,[&]{ a.kill(bonePos(a,"BIP01 HEAD")+Vec3(0,4,10),Vec3(0,0,-1),2.8f,Ragdoll::H_Melee,Ragdoll::S_Unconscious); }});
+    }
+  else if(name=="troll") {
+    len = 3.f;
+    // как в игре: полёт задаёт MoveAlgo::accessDamFly (скорость NPC), удар - сверху
+    ev.push_back({0.2f,[&]{ a.fall(chest(),Vec3(0,0,-1),8.f,Ragdoll::H_Fly,Vec3(0,2.5f,-3)); }});
+    }
+  else if(name=="fallfwd") {
+    // живой падает вперёд с уступа 2 м: руки к земле
+    len = 2.5f;
+    a.at.y = 200;
+    a.mkAnim(); a.disp = a.anim;
+    ev.push_back({0.1f,[&]{ a.fall(chest(),Vec3(0,0,1),2.f,Ragdoll::H_Melee,Vec3(0,0,3)); }});
+    }
+  else if(name=="drop") {
+    len = 3.f;
+    a.at.y = 400;
+    a.mkAnim(); a.disp = a.anim;
+    ev.push_back({0.1f,[&]{ a.fall(Vec3(),Vec3(),0,Ragdoll::H_Melee,Vec3(0,0,1.5f)); }});
+    }
   else {
     if(f!=nullptr)
       std::fclose(f);
@@ -700,16 +754,19 @@ static int activeTests(DynamicWorld& dw, const Skeleton& hum, const Skeleton& wl
     Matrix4x4 obj = objAt(Vec3(-600,1500,600));
     auto pose = poseAt(hum,obj);
     auto r = Ragdoll::create(dw,hum,pose.data(),pose.size(),Ragdoll::S_Fall);
-    Vec3 first; bool have = false; float turn = 0;
-    for(int f=0; f<45; ++f) {
+    // первые ~0,5 с группируется, потом машет руками - смотрим 1,65 с полёта (с 15 м он длится 1,75 с); размах -
+    // наибольший угол между направлениями плеча (относительно таза) за полёт
+    std::vector<Vec3> dirs; float turn = 0;
+    for(int f=0; f<50; ++f) {
       r->setTarget(pose,33); dw.tick(33);
       for(size_t k=0;k<r->bones().size();++k) {
         const std::string nm = hum.nodes[r->bones()[k]].name;
         if(nm!="BIP01 L UPPERARM") continue;
         Matrix4x4 ip = r->world()[0]; ip.inverse();
         Vec3 d = Vec3::normalize(col(ip*r->world()[k],0));
-        if(!have) { first = d; have = true; }
-        turn = std::max(turn, std::acos(std::clamp(Vec3::dotProduct(first,d),-1.f,1.f))*180.f/float(M_PI));
+        for(auto& o:dirs)
+          turn = std::max(turn, std::acos(std::clamp(Vec3::dotProduct(o,d),-1.f,1.f))*180.f/float(M_PI));
+        dirs.push_back(d);
         }
       }
     std::printf("fall 15 m: arm swings %.0f deg in the air\n",double(turn));
@@ -835,6 +892,10 @@ static int perf() {
       }
     std::printf("%-30s %5.2f ms/frame avg, worst %5.2f ms\n", title, total/90.0, worst);
     };
+  if(std::getenv("ACTIVE_ONLY")) {
+    benchActive("4 alive on feet (active)", 4);
+    return 0;
+    }
   for(int k=0;k<2;++k) {
     benchActive("4 alive on feet (active)", 4);
     bench("1 body, near",          1,  500);

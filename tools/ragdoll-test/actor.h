@@ -170,6 +170,36 @@ struct Actor {
     return true;
     }
 
+  // убит (или оглушён) ударом - как Npc::startRagdoll: на ногах по физике - та же кукла оседает, иначе новая кукла
+  // из позы на экране; стоял - оседает; скорость NPC (бег), затем толчок удара
+  void kill(Vec3 atPt, Vec3 dir, float power, uint8_t kind = Ragdoll::H_Melee, Ragdoll::State st = Ragdoll::S_Dead,
+            Vec3 vel = Vec3()) {
+    Ragdoll::Hit h; h.at = atPt; h.dir = dir; h.power = power; h.kind = kind;
+    if(r && r->state()==Ragdoll::S_Active) {
+      r->setState(st);
+      r->startSag();
+      r->hit(h);
+      return;
+      }
+    r = Ragdoll::create(dw,sk,disp.data(),disp.size(),st,500,false);
+    if(!r) return;
+    r->setVelocity(vel);
+    if(vel.length()<0.5f)
+      r->startSag();
+    r->hit(h);
+    }
+
+  // живой сбит ударом с ног или летит (обрыв, тролль) - как Npc::startRagdollFall
+  void fall(Vec3 atPt, Vec3 dir, float power, uint8_t kind, Vec3 vel) {
+    r = Ragdoll::create(dw,sk,disp.data(),disp.size(),Ragdoll::S_Fall,500,false);
+    if(!r) return;
+    r->setVelocity(vel);
+    if(power>0.f) {
+      Ragdoll::Hit h; h.at = atPt; h.dir = dir; h.power = power; h.kind = kind;
+      r->hit(h);
+      }
+    }
+
   void hit(Vec3 atPt, Vec3 dir, float power, float damage, uint8_t kind = Ragdoll::H_Melee, bool stagger = true) {
     if(!r) startActive();
     Ragdoll::Hit h; h.at = atPt; h.dir = dir; h.power = power; h.damage = damage; h.kind = kind; h.freeArms = 1;
