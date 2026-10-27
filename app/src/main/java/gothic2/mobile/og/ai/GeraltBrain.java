@@ -118,6 +118,8 @@ final class GeraltBrain {
     private boolean whisper;
     /** Когда житель последний раз отвечал на происшествие (ключ жителя → время). */
     private final Map<String, Long> reacted = new java.util.HashMap<>();
+    /** Кто сейчас в беседе (talkKey → сколько бесед): напарник не идёт за героем, пока все его беседы не кончатся. */
+    private final Map<String, Integer> holds = new java.util.HashMap<>();
     private final Map<String, String> pendingActs = new java.util.HashMap<>();
     /** Кто такой житель (id экземпляра → событие lore движка): запрашивается один раз за сеанс. */
     private final Map<String, Map<String, Object>> lore = new java.util.HashMap<>();
@@ -818,13 +820,30 @@ final class GeraltBrain {
         boolean addSpeaker = inTalk.add(speakerKey);
         inTalk.add(listenerKey);
         talkDepth++;
+        // Оба стоят друг у друга, пока беседа не кончится: напарник прежде через 15 с поворачивался к герою и
+        // уходил к нему, продолжая говорить
+        hold(speakerKey, speaker.ref, true);
+        hold(listenerKey, ref, true);
         try {
             return converse(speaker, snap, who, ref, key, Speech.clean(text));
         } finally {
+            hold(listenerKey, ref, false);
+            hold(speakerKey, speaker.ref, false);
             talkDepth--;
             inTalk.remove(listenerKey);
             if (addSpeaker) inTalk.remove(speakerKey);
         }
+    }
+
+    /**
+     * Напарник в беседе не идёт за героем и не поворачивается к нему (движок, hold). Счёт — беседа бывает вложенной
+     * (слушающий говорит с третьим): отпускаем, когда кончилась последняя. Не в отряде — движок ничего не делает.
+     */
+    private void hold(String key, String ref, boolean on) {
+        int n = holds.getOrDefault(key, 0) + (on ? 1 : -1);
+        if (n > 0) holds.put(key, n);
+        else holds.remove(key);
+        if (on ? n == 1 : n <= 0) engine.send(Json.of("cmd", "hold", "who", ref, "on", on));
     }
 
     /**

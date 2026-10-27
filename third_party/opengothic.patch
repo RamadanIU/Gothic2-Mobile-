@@ -340,10 +340,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..2cb21a2
+index 0000000..e1876c7
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,3348 @@
+@@ -0,0 +1,3384 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -416,6 +416,9 @@ index 0000000..2cb21a2
 +  const uint64_t IncidentKeep = 15*60*1000;
 +  const uint64_t BusyMax     = 120000;  // «думает» не дольше - иначе диалог мог бы зависнуть
 +  const uint64_t LineKeep    = 120000;  // реплика, которую так и не сказали, забывается
++  // Беседа живого NPC (talk_to_npc): напарник не идёт за героем, пока приложение не скажет, что она кончилась
++  // (hold off); дольше - всё равно в строй, если приложение замолчало
++  const uint64_t TalkHoldMax = 180000;
 +
 +  std::string str(const rapidjson::Value& v, const char* key) {
 +    if(!v.IsObject())
@@ -820,6 +823,28 @@ index 0000000..2cb21a2
 +  if(n==nullptr || n->isPlayer() || n->isMonster())
 +    return nullptr;
 +  return n;
++  }
++
++void AiNpc::holdForTalk(Npc& npc, bool on) {
++  // Только напарник: остальных к герою не ведут, а их распорядок пусть идёт как идёт
++  auto& fs = npc.companionFollow;
++  if(on) {
++    if(!owner.isHired(npc))
++      return;
++    fs.holdTo  = owner.tickCount()+TalkHoldMax;
++    fs.errand  = true;
++    fs.driving = false;
++    return;
++    }
++  // Ещё идёт его дело (подходит, обыскивает) - его снимет конец дела
++  for(auto& a:acts)
++    if(a.actor==&npc && !a.closed && a.begun && isErrand(a.name))
++      return;
++  if(fs.errand) {
++    fs.holdTo = 0;
++    fs.errand = false;
++    Log::i("[g2m] ai: \"",npc.displayName(),"\" talk over - back to the squad");
++    }
 +  }
 +
 +void AiNpc::leaveRoutine(Npc& npc) {
@@ -1311,6 +1336,11 @@ index 0000000..2cb21a2
 +    }
 +  else if(cmd=="end_talk") {
 +    endDialog();
++    }
++  else if(cmd=="hold") {
++    // Беседа живого NPC (talk_to_npc): говорящий и слушающий из отряда стоят друг у друга, пока она не кончится
++    if(Npc* n = actorOf(str(d,"who")))
++      holdForTalk(*n,flag(d,"on",false));
 +    }
 +  else if(cmd=="hush") {
 +    // Обрыв: реплики, которые ещё не начались, не скажутся
@@ -2066,9 +2096,14 @@ index 0000000..2cb21a2
 +  a.closed = true;
 +  Log::i("[g2m] ai: act ",a.name,ok ? " ok: " : " fail: ",note);
 +  // Дело в отряде кончилось - отряд снова ведёт его строем (GameScript::tickSquadFollow). Подошёл поговорить
-+  // (talk_to_npc) - ещё 15 с на беседу, не уходить посреди фразы
-+  if(a.begun && a.actor!=nullptr && isErrand(a.name) && npcAlive(a.actor))
-+    a.actor->companionFollow.holdTo = (a.name=="approach" && ok) ? owner.tickCount()+15000 : 0;
++  // (talk_to_npc) - стоит у собеседника, пока беседа не кончится (приложение - hold off, не дольше TalkHoldMax).
++  // Прежде - 15 с: беседа с моделью дольше, и напарник уходил к герою посреди неё
++  if(a.begun && a.actor!=nullptr && isErrand(a.name) && npcAlive(a.actor)) {
++    auto& fs = a.actor->companionFollow;
++    const bool talk = (a.name=="approach" && ok);
++    fs.holdTo = talk ? owner.tickCount()+TalkHoldMax : 0;
++    fs.errand = talk;
++    }
 +  if(!a.report || a.id.empty())
 +    return;
 +  a.report = false;
@@ -2597,6 +2632,7 @@ index 0000000..2cb21a2
 +    npc.clearAiQueue();
 +    npc.companionIdle            = Npc::CompanionIdle();
 +    npc.companionFollow.holdTo   = now+ms;
++    npc.companionFollow.errand   = true;
 +    npc.companionFollow.driving  = false;
 +    };
 +
@@ -3694,10 +3730,10 @@ index 0000000..2cb21a2
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..698a180
+index 0000000..b287f34
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,294 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -3846,6 +3882,8 @@ index 0000000..698a180
 +    // Житель уходит от своего распорядка (идёт куда попросили, ждёт, идёт с героем) - распорядок запоминается;
 +    // домой - когда попросят (go_home) или когда герой давно далеко (tickResidents)
 +    void   leaveRoutine(Npc& npc);
++    // Беседа (talk_to_npc) напарника: не идёт за героем и не поворачивается к нему, пока не кончится (команда hold)
++    void   holdForTalk(Npc& npc, bool on);
 +    void   goHome(Npc& npc);
 +    // Постоянная вражда к герою от прежнего set_attitude hostile (бой насмерть) - в злость (сохранения до 2026-10-24)
 +    void   calmHostility(Npc& npc, Npc& pl);
@@ -3992,10 +4030,10 @@ index 0000000..698a180
 +  };
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
-index 0000000..11ab465
+index 0000000..4539fcb
 --- /dev/null
 +++ b/common/game/companions.cpp
-@@ -0,0 +1,1605 @@
+@@ -0,0 +1,1615 @@
 +#include "gamescript.h"
 +#include "ainpc.h"
 +
@@ -4051,7 +4089,7 @@ index 0000000..11ab465
 +  IdleMagic,    // упражняется в магии (послушники и маги)
 +  IdleSit,      // сидит на земле (ждущий - и у костра рядом)
 +  IdleBench,    // садится на скамью или стул рядом
-+  IdlePee,      // отходит в сторонку (только на отдыхе рядом с героем: из лагеря никуда не уходят)
++  IdlePee,      // отходит в сторонку (только в лагере «Ждать»: потом возвращается на своё место)
 +  IdleTalk,     // беседа двух напарников
 +  IdleCount
 +  };
@@ -4301,6 +4339,10 @@ index 0000000..11ab465
 +  // доме), урона от своих, входа в дом, оружия в руках, убийств, шума, тревоги стражи. Иначе по скриптам
 +  // он нападает, запоминает преступление (B_MemorizePlayerCrime: лорд Андре, Парлан, Ли) и потом в
 +  // разговоре сразу обрывает его укором (DIA_Ambient_NEWS)
++  // Занят делом живого NPC (подходит к жителю, говорит с ним): герой подошёл - не повод бросить дело и встать к нему
++  // (B_AssessFollowPlayer очищает очередь ИИ)
++  if(perc==PERC_ASSESSPLAYER && npc.isCompanionErrand())
++    return false;
 +  switch(perc) {
 +    case PERC_ASSESSTHEFT:
 +    case PERC_ASSESSUSEMOB:
@@ -5066,6 +5108,9 @@ index 0000000..11ab465
 +  waiting = squadIsWaiting(npc);
 +  if(npc.isDown() || npc.isAttack() || npc.isTalk() || npc.isSwim() || npc.isDive() || npc.isInWater())
 +    return false;
++  // Занят делом живого NPC (беседа с жителем) - не отвлекаться на еду и разговоры с товарищами
++  if(npc.isCompanionErrand())
++    return false;
 +  if(npc.processPolicy()!=NpcProcessPolicy::AiNormal)
 +    return false; // далеко от героя: его всё равно никто не видит
 +  if(!npc.isInState(findSymbolIndex(waiting ? "ZS_STAND_ARMSCROSSED" : "ZS_FOLLOW_PLAYER")))
@@ -5263,23 +5308,26 @@ index 0000000..11ab465
 +    list[cnt++] = {act,w};
 +    sum += w;
 +    };
-+  // Лагерь: больше сидят и беседуют, никуда не уходят (разве что сесть на скамью рядом). На отдыхе у героя -
-+  // разнообразнее и можно отойти пописать. Танцев и молитв нет - выглядели несуразно
++  // Лагерь («Ждать»): всё - сидят, играют на лютне, упражняются, беседуют, отходят пописать и возвращаются на своё
++  // место, садятся на скамью рядом. Короткий отдых у героя, который просто стоит (решение пользователя 2026-10-27):
++  // только стоят, беседуют, едят и пьют, курят и рассматривают оружие - не садятся, не играют на лютне, не
++  // упражняются с мечом и в магии, не отходят пописать: герой вот-вот пойдёт дальше. Танцев и молитв нет нигде -
++  // выглядели несуразно
 +  add(IdleArms,    waiting ? 5u : 7u);
 +  add(IdleGuard,   waiting ? 3u : 5u);
 +  add(IdleLook,    waiting ? 3u : 4u);
-+  add(IdleSmoke,   7);
-+  add(IdleEat,     6);
++  add(IdleSmoke,   waiting ? 7u : 9u);
++  add(IdleEat,     waiting ? 6u : 8u);
 +  add(IdleApple,   waiting ? 4u : 5u);
 +  add(IdleDrink,   waiting ? 6u : 5u);
-+  add(IdleLute,    waiting ? 4u : 3u);
-+  add(IdleSword,   room && melee!=nullptr && isOneHanded(*melee) ? (waiting ? 3u : 4u) : 0u);
-+  add(IdleInspect, room && melee!=nullptr ? (waiting ? 3u : 4u) : 0u);
-+  add(IdleMagic,   mage ? (waiting ? 4u : 5u) : 0u);
-+  add(IdleSit,     waiting ? 14u : 8u);
-+  add(IdleBench,   !bench.empty() ? (waiting ? 12u : 6u) : 0u);
-+  add(IdlePee,     waiting ? 0u : 3u);
-+  add(IdleTalk,    peer!=nullptr ? (waiting ? 18u : 14u) : 0u);
++  add(IdleLute,    waiting ? 4u : 0u);
++  add(IdleSword,   waiting && room && melee!=nullptr && isOneHanded(*melee) ? 3u : 0u);
++  add(IdleInspect, room && melee!=nullptr ? (waiting ? 3u : 6u) : 0u);
++  add(IdleMagic,   waiting && mage ? 4u : 0u);
++  add(IdleSit,     waiting ? 14u : 0u);
++  add(IdleBench,   waiting && !bench.empty() ? 12u : 0u);
++  add(IdlePee,     waiting ? 3u : 0u);
++  add(IdleTalk,    peer!=nullptr ? (waiting ? 18u : 16u) : 0u);
 +  if(sum==0)
 +    return;
 +  uint32_t r   = rand(sum);
@@ -17844,7 +17892,7 @@ index b45a9bd..35a566d 100644
      bool                isCracked() const { return isLockCracked; }
      bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..64abaa4 100644
+index e015398..a0c8936 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -4,10 +4,12 @@
@@ -18021,9 +18069,9 @@ index e015398..64abaa4 100644
  bool Npc::implAiTick(uint64_t dt) {
    // Note AI-action queue takes priority, test case: Vatras pray at night
    if(aiQueue.size()==0) {
-+    // Gothic II Mobile: занятием напарника на привале и лагерем управляет отряд - цикл распорядка ждёт
-+    // (начало состояния - выполняется: оно включает перцепции)
-+    if(aiState.started && (isCompanionIdle() || isCompanionCamp()))
++    // Gothic II Mobile: занятием напарника на привале, лагерем и делом живого NPC (беседа с жителем) управляет
++    // отряд - цикл распорядка ждёт (начало состояния - выполняется: оно включает перцепции)
++    if(aiState.started && (isCompanionIdle() || isCompanionCamp() || isCompanionErrand()))
 +      return false;
      tickRoutine();
      if(aiQueue.size()>0)
@@ -18245,7 +18293,7 @@ index e015398..64abaa4 100644
      currentTarget->hnpc->attribute[ATR_HITPOINTS] = 0;
      currentTarget->checkHealth(true,false);
      owner.sendPassivePerc(*this,*this,*currentTarget,PERC_ASSESSMURDER);
-@@ -4158,10 +4313,69 @@ bool Npc::isPrehit() const {
+@@ -4158,10 +4313,77 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -18263,6 +18311,14 @@ index e015398..64abaa4 100644
 +  // Только в том состоянии, в котором занятие начато, и не дольше его конца + 10 с - распорядок не застрянет
 +  return companionIdle.act!=0 && aiState.funcIni.ptr==companionIdle.state &&
 +         owner.tickCount()<companionIdle.until+10000;
++  }
++
++bool Npc::isCompanionErrand() const {
++  // Прежде цикл ZS_Follow_Player раз в секунду поворачивал напарника к герою (B_TurnToNpc), а дальше 8 м вёл назад:
++  // Геральт, посланный поговорить с жителем, говорил с ним, стоя к нему спиной, или уходил посреди беседы
++  // Только цикл следования: бой, лечение и разговор с героем идут своим чередом
++  return companionFollow.errand && owner.tickCount()<companionFollow.holdTo &&
++         aiState.funcIni.ptr==owner.script().findSymbolIndex("ZS_FOLLOW_PLAYER");
 +  }
 +
 +bool Npc::isCompanionCamp() const {
@@ -18315,7 +18371,7 @@ index e015398..64abaa4 100644
  void Npc::setPerceptionTime(uint64_t time) {
    perceptionTime = time;
    }
-@@ -4238,6 +4452,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4460,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -18326,7 +18382,7 @@ index e015398..64abaa4 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4292,6 +4510,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
+@@ -4292,6 +4518,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
  void Npc::quitInteraction() {
    if(currentInteract==nullptr)
      return;
@@ -18336,7 +18392,7 @@ index e015398..64abaa4 100644
    if(invTorch)
      processDefInvTorch();
    setDirectionY(0);
-@@ -4356,6 +4577,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4585,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -18374,7 +18430,7 @@ index e015398..64abaa4 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4818,7 +5070,405 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4818,7 +5078,405 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
      durtyTranform = 0;
      }
  
@@ -18781,7 +18837,7 @@ index e015398..64abaa4 100644
 +  ragFollowVer = ragdoll!=nullptr ? ragdoll->version() : 0;
 +  }
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..720e324 100644
+index 7309936..17b1fd2 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
 @@ -10,6 +10,7 @@
@@ -18821,7 +18877,7 @@ index 7309936..720e324 100644
  
      std::string_view displayName() const;
      auto       displayPosition() const -> Tempest::Vec3;
-@@ -289,7 +305,68 @@ class Npc final {
+@@ -289,7 +305,72 @@ class Npc final {
  
      bool      isAttackAnim() const;
      bool      isPrehit() const;
@@ -18865,6 +18921,9 @@ index 7309936..720e324 100644
 +    CompanionIdle companionIdle;
 +    bool      isCompanionIdle() const;
 +    bool      isCompanionCamp() const;
++    // Gothic II Mobile: напарник занят делом живого NPC (подошёл к жителю и говорит с ним) - цикл ZS_Follow_Player
++    // не поворачивает его к герою и не ведёт назад, пока дело не кончится (AiNpc снимает, иначе - по holdTo)
++    bool      isCompanionErrand() const;
 +    bool      isInAnim(std::string_view name) const;
 +    // Gothic II Mobile: напарник в пути - след героя, точки отставания (companions.cpp); не сохраняется
 +    struct CompanionFollow final {
@@ -18874,6 +18933,7 @@ index 7309936..720e324 100644
 +      uint64_t      teleAt   = 0;      // не телепортировать раньше
 +      uint64_t      wayAt    = 0;      // не искать путь по точкам раньше
 +      uint64_t      holdTo   = 0;      // не вести до (в очереди запуск состояния)
++      bool          errand   = false;  // дело живого NPC: до holdTo и цикл распорядка ждёт (isCompanionErrand)
 +      uint64_t      logAt    = 0;      // журнал «почему не ведём» - не чаще раза в 10 с
 +      bool          driving  = false;  // ведём его сами (goToPos или путь по точкам)
 +      };
@@ -18890,7 +18950,7 @@ index 7309936..720e324 100644
  
      void      setPerceptionTime   (uint64_t time);
      void      setPerceptionEnable (PercType t, size_t fn);
-@@ -456,6 +533,7 @@ class Npc final {
+@@ -456,6 +537,7 @@ class Npc final {
        Npc*             npc  = nullptr;
        const WayPoint*  wp   = nullptr;
        Tempest::Vec3    pos  = {};
@@ -18898,7 +18958,7 @@ index 7309936..720e324 100644
  
        void             save(Serialize& fout) const;
        void             load(Serialize&  fin);
-@@ -514,6 +592,21 @@ class Npc final {
+@@ -514,6 +596,21 @@ class Npc final {
      Npc*      updateNearestBody();
      bool      checkHealth(bool onChange, bool forceKill);
      void      onNoHealth(bool death, HitSound sndMask);
@@ -18920,7 +18980,7 @@ index 7309936..720e324 100644
      bool      hasAutoroll() const;
      bool      prepareTurn();
      void      stopWalkAnimation();
-@@ -555,10 +648,33 @@ class Npc final {
+@@ -555,10 +652,33 @@ class Npc final {
  
      // visual props (cache)
      uint8_t                        durtyTranform=0;
@@ -18954,7 +19014,7 @@ index 7309936..720e324 100644
      WalkBit                        wlkMode                 =WalkBit::WM_Run;
      int32_t                        trGuild                 =GIL_NONE;
      int32_t                        talentsSk[TALENT_MAX_G2]={};
-@@ -608,6 +724,8 @@ class Npc final {
+@@ -608,6 +728,8 @@ class Npc final {
      AiQueue                        aiQueue;
      AiQueue                        aiQueueOverlay;
      std::vector<Routine>           routines;
@@ -18963,7 +19023,7 @@ index 7309936..720e324 100644
  
      Interactive*                   currentInteract=nullptr;
      Npc*                           currentOther   =nullptr;
-@@ -629,6 +747,7 @@ class Npc final {
+@@ -629,6 +751,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;
