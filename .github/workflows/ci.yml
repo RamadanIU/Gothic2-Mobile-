@@ -9,6 +9,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # номер версии APK - по числу коммитов (app/build.gradle.kts)
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
