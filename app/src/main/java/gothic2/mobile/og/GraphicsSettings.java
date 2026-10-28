@@ -106,6 +106,16 @@ final class GraphicsSettings {
         new String[]{"1", "2", "0"});
     static final Option[] EXTRA = {LIGHTING, SHOW_FPS, RAGDOLL, RAGDOLL_FALL, RAGDOLL_ACTIVE, RAGDOLL_KNOCKDOWN, OCCLUSION};
 
+    /**
+     * Лук и арбалет: прицел сам наводится на грудь цели в фокусе. Без него прицел — середина экрана: куда смотрит
+     * камера, туда и стрела (можно целиться в голову). Не графика: раздел [CONTROLS], страница «Управление»; движок
+     * перечитывает его, когда игра снова на экране (Gothic::reloadControls). По умолчанию включено.
+     */
+    static final Option AIM_ASSIST = new Option("ctl_aim_assist", "aimAssist",
+        "Автонаведение прицела в грудь",
+        new String[]{"включено", "выключено"}, new String[]{"1", "0"}, true);
+    static final Option[] CONTROLS = {AIM_ASSIST};
+
     /** Готовые наборы: индексы вариантов в порядке {@link #ALL}. */
     static final String[] PRESET_NAMES = {"Экономно", "Сбалансированно", "Красиво"};
     private static final int[][] PRESETS = {
@@ -211,11 +221,13 @@ final class GraphicsSettings {
         return o.title + ": " + o.labels[get(o)];
     }
 
-    /** Содержимое g2m.ini: раздел [GRAPHICS], ключи — как читает Gothic::Gothic. */
+    /** Содержимое g2m.ini: разделы [GRAPHICS] и [CONTROLS], ключи — как читает Gothic::Gothic. */
     String iniText() {
         StringBuilder sb = new StringBuilder("[GRAPHICS]\n");
         for (Option o : ALL) sb.append(o.iniKey).append('=').append(o.values[get(o)]).append('\n');
         for (Option o : EXTRA) sb.append(o.iniKey).append('=').append(o.values[get(o)]).append('\n');
+        sb.append("[CONTROLS]\n");
+        for (Option o : CONTROLS) sb.append(o.iniKey).append('=').append(o.values[get(o)]).append('\n');
         return sb.toString();
     }
 
