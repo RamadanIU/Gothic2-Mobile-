@@ -168,7 +168,7 @@ public class GraphicsSettingsTest {
     @Test
     public void shoveAndRiseAreOnByDefaultAndDependOnRagdoll() {
         GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
-        // ключи читает Gothic::Gothic (patch движка): ragdollShove - толчок с разбега, ragdollRise - подъём телом
+        // ключи читает Gothic::Gothic (patch движка): ragdollShove - толчок с разбега, ragdollRise - подъём: тело собирается по земле
         assertTrue(g.iniText().contains("\nragdollShove=1\n"));
         assertTrue(g.iniText().contains("\nragdollRise=1\n"));
         assertTrue(g.isAvailable(GraphicsSettings.RAGDOLL_SHOVE));

@@ -199,11 +199,14 @@ struct Actor {
   float                    blendTime = 0.45f;
   bool                     recovered = false;
   int                      steps     = 0;
-  // встаёт телом (как Npc::ragdollGetUp / tickRagdollGetUp): с этого времени, на спине или на животе
+  // встаёт (как Npc::ragdollGetUp): собирается лёжа по физике (getUpGather), поза куклы переходит в позу лёжа начала
+  // подъёма (getUpBlend), потом - анимация подъёма; с этого времени, на спине или на животе
   float                    getUpAt   = -1;
   bool                     getUpBack = true;
-  float                    getUpGather = 0.45f;
-  bool                     getUpPhys = true;  // false - как раньше: поза куклы переходит в анимацию подъёма
+  float                    getUpGather = 0.42f;
+  float                    getUpBlend  = 0.26f;
+  float                    getUpHold   = 0.68f; // анимация подъёма стоит на первом кадре (лёжа) столько, с
+  bool                     getUpPhys = true;  // false - без физики: поза куклы сразу переходит в позу лёжа
   bool                     braceDemo = false; // стойка героя перед толчком: готов 0,4..0,6 с, удар в 0,8 с
 
   Actor(DynamicWorld& dw, const Skeleton& sk, Vec3 at, float rotY=0):sk(sk), dw(dw), at(at), rotY(rotY) {
@@ -219,7 +222,7 @@ struct Actor {
     auto local = walking ? walkPose(sk,time) : stancePose(sk);
     if(getUpAt>=0.f) {
       const float tu = time-getUpAt;
-      local = getUpPose(sk, tu<getUpGather ? 0.f : tu-getUpGather, getUpBack);
+      local = getUpPose(sk, tu<getUpHold ? 0.f : tu-getUpHold, getUpBack);
       }
     if(stumbleAt>=0.f)
       stumble(local,time-stumbleAt);
@@ -288,6 +291,8 @@ struct Actor {
   void shove(Vec3 atPt, Vec3 dir, float speed, uint8_t free = 3) {
     if(!r) startActive();
     Ragdoll::Shove s; s.at = atPt; s.dir = dir; s.speed = speed; s.freeArms = free;
+    // STEADY - как крепко стоит на ногах (в игре у каждого NPC своё, Npc::ragdollShove)
+    s.steady = std::getenv("STEADY") ? float(std::atof(std::getenv("STEADY"))) : 1.f;
     r->shove(s);
     }
 
@@ -306,16 +311,18 @@ struct Actor {
     at = Vec3(pR.x-rA.x, 0, pR.z-rA.z);
     getUpPhys = phys;
     getUpAt   = time;
+    getUpHold = getUpGather+getUpBlend;
     mkAnim();
     if(phys && r->startGetUp(getUpGather)) {
       r->setTarget(anim,0);
       return;
       }
-    // как раньше: поза куклы переходит в анимацию
+    // без физики: поза куклы переходит в позу лёжа начала подъёма, потом анимация
     getUpPhys = false;
+    getUpHold = getUpBlend+0.2f;
     blendFrom = disp;
     blendAt   = time;
-    blendTime = 0.65f;
+    blendTime = getUpHold;
     r.reset();
     }
 
@@ -390,14 +397,15 @@ struct Actor {
       }
     if(r && r->lostBalance())
       r->setState(Ragdoll::S_Fall);
-    // встаёт: анимация подъёма кончилась - кукла уходит из физики, поза переходит в анимацию (Npc::tickRagdollGetUp)
-    if(getUpAt>=0.f && time-getUpAt>=getUpGather+getUpTime()) {
-      if(r && r->state()==Ragdoll::S_GetUp) {
-        blendFrom = disp;
-        blendAt   = time;
-        blendTime = 0.25f;
-        r.reset();
-        }
+    // встаёт: собрался лёжа - кукла уходит из физики, поза переходит в позу лёжа начала подъёма (Npc::endRagdollGetUp),
+    // потом анимация; кончилась - стоит
+    if(getUpAt>=0.f && r && r->state()==Ragdoll::S_GetUp && time-getUpAt>=getUpGather) {
+      blendFrom = disp;
+      blendAt   = time;
+      blendTime = getUpBlend;
+      r.reset();
+      }
+    if(getUpAt>=0.f && time-getUpAt>=getUpHold+getUpTime()) {
       getUpAt = -1;
       recovered = true;
       }
