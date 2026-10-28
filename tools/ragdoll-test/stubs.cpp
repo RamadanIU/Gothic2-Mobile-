@@ -7,6 +7,7 @@
 
 #include <Tempest/Log>
 #include <BulletCollision/CollisionShapes/btStaticPlaneShape.h>
+#include <BulletCollision/CollisionShapes/btBoxShape.h>
 #include <BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btTriangleMesh.h>
 #include <algorithm>
@@ -116,9 +117,13 @@ struct DynamicWorld::RagdollList final {
   std::unique_ptr<btCollisionShape> groundShape;
   std::unique_ptr<btRigidBody>      groundBody;
   std::unique_ptr<btTriangleMesh>   groundMesh;
+  std::vector<std::unique_ptr<btCollisionShape>> boxShapes;
+  std::vector<std::unique_ptr<btRigidBody>>      boxBodies;
   };
 
 bool meshGround = false;
+// стены и ящики сцены (опора для руки): центр и половины размеров, см; задаёт тест до создания мира
+std::vector<std::pair<Tempest::Vec3,Tempest::Vec3>> benchBoxes;
 
 DynamicWorld::DynamicWorld(World*, const zenkit::Mesh&) {
   world.reset(new CollisionWorld());
@@ -148,10 +153,25 @@ DynamicWorld::DynamicWorld(World*, const zenkit::Mesh&) {
   groundBody.reset(new btRigidBody(ci));
   groundBody->setUserIndex(C_Landscape);
   world->addCollisionObject(groundBody.get());
+  for(auto& bx:benchBoxes) {
+    const Tempest::Vec3 c = bx.first*0.01f, h = bx.second*0.01f;
+    auto shape = std::make_unique<btBoxShape>(btVector3(h.x,h.y,h.z));
+    btRigidBody::btRigidBodyConstructionInfo bi(0,nullptr,shape.get());
+    bi.m_friction = 0.8f;
+    auto rb = std::make_unique<btRigidBody>(bi);
+    btTransform tr; tr.setIdentity(); tr.setOrigin(btVector3(c.x,c.y,c.z));
+    rb->setWorldTransform(tr);
+    rb->setUserIndex(C_Landscape);
+    world->addCollisionObject(rb.get());
+    ragdolls->boxShapes.push_back(std::move(shape));
+    ragdolls->boxBodies.push_back(std::move(rb));
+    }
   }
 
 DynamicWorld::~DynamicWorld() {
   world->removeCollisionObject(ragdolls->groundBody.get());
+  for(auto& rb:ragdolls->boxBodies)
+    world->removeCollisionObject(rb.get());
   }
 
 // как в dynamicworld.cpp
@@ -204,6 +224,7 @@ DynamicWorld::RayLandResult DynamicWorld::ray(const Tempest::Vec3& from, const T
   if(cb.hasHit()) {
     r.hasCol = true;
     r.v      = Tempest::Vec3(cb.m_hitPointWorld.x(),cb.m_hitPointWorld.y(),cb.m_hitPointWorld.z())*100.f;
+    r.n      = Tempest::Vec3(cb.m_hitNormalWorld.x(),cb.m_hitNormalWorld.y(),cb.m_hitNormalWorld.z());
     r.hitFraction = cb.m_closestHitFraction;
     }
   return r;
