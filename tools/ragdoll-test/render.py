@@ -3,6 +3,7 @@
 #   ./ragtest vis <сцена> out.txt && python3 render.py out.txt out.gif
 # Формат out.txt: "F <время, с> <подпись>" - начало кадра; "B x1 y1 z1 x2 y2 z2 r <вид>" - кость (см);
 # "M x y z <цвет>" - метка (рана, цель ступни).
+import os
 import sys
 from PIL import Image, ImageDraw
 
@@ -38,11 +39,14 @@ def parse(path):
 
 
 def project(view, c, p):
-    # view: 'side' - смотрим вдоль -X (вперёд модели +Z - вправо), 'front' - смотрим с +Z на модель
+    # view: 'side' - смотрим вдоль -X (вперёд модели +Z - вправо), 'front' - смотрим с +Z на модель,
+    # 'top' - сверху (лежащее тело: где руки и ноги); TOP=1 - вместо вида спереди
     x, y, z = p[0] - c[0], p[1] - c[1], p[2] - c[2]
     s = 1.05
     if view == 'side':
         return (W / 2 + z * s, H * 0.86 - y * s, -x)
+    if view == 'top':
+        return (W / 2 + z * s, H * 0.5 + x * s, y)
     return (W / 2 + x * s, H * 0.86 - y * s, -z)
 
 
@@ -50,7 +54,8 @@ def draw_view(img, ox, view, fr, center):
     d = ImageDraw.Draw(img)
     # земля и сетка 50 см
     gy = H * 0.86 + center[1] * 1.05
-    d.line([(ox, gy), (ox + W, gy)], fill=(90, 90, 90), width=2)
+    if view != 'top':
+        d.line([(ox, gy), (ox + W, gy)], fill=(90, 90, 90), width=2)
     for k in range(-6, 7):
         if view == 'side':
             gx = ox + W / 2 + (k * 50 - center[2]) * 1.05
@@ -99,11 +104,12 @@ def main():
         center = (cx or 0, 0, cz or 0)
         img = Image.new('RGB', (W * 2, H), (28, 26, 24))
         draw_view(img, 0, 'side', fr, center)
-        draw_view(img, W, 'front', fr, center)
+        second = 'top' if os.environ.get('TOP') else 'front'
+        draw_view(img, W, second, fr, center)
         d = ImageDraw.Draw(img)
         d.text((8, 6), '%.2f s  %s' % (fr['t'], fr['label']), fill=(230, 230, 230))
         d.text((8, H - 16), 'side', fill=(150, 150, 150))
-        d.text((W + 8, H - 16), 'front', fill=(150, 150, 150))
+        d.text((W + 8, H - 16), second, fill=(150, 150, 150))
         imgs.append(img)
     if sheet:
         # лист кадров: по 4 в ряд, каждый вдвое меньше

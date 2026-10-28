@@ -134,6 +134,18 @@ public class GraphicsSettingsTest {
     }
 
     @Test
+    public void throesAreOnByDefaultAndDependOnRagdoll() {
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        // ключ читает Gothic::Gothic (patch движка): ragdollThroes - агония убитых и оглушённых
+        assertTrue(g.iniText().contains("\nragdollThroes=1\n"));
+        assertTrue(g.isAvailable(GraphicsSettings.RAGDOLL_THROES));
+        g.setOn(GraphicsSettings.RAGDOLL_THROES, false);
+        assertTrue(g.iniText().contains("\nragdollThroes=0\n"));
+        g.setOn(GraphicsSettings.RAGDOLL, false);
+        assertFalse(g.isAvailable(GraphicsSettings.RAGDOLL_THROES));
+    }
+
+    @Test
     public void activeRagdollAndKnockdownAreOnByDefaultAndDependOnRagdoll() {
         GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
         // ключи читает Gothic::Gothic (patch движка): ragdollActive - отклик тела на удары, ragdollKnockdown - сбивание с ног

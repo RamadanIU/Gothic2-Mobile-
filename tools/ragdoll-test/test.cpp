@@ -454,6 +454,19 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
     len = 3.f;
     ev.push_back({0.2f,[&]{ a.kill(chest()+Vec3(-6,4,0),Vec3(0,-0.1f,-1),3.f,Ragdoll::H_Missile); }});
     }
+  // агония: убит ударом спереди (на спину) или сзади (лицом вниз), оглушён; TL - сила, TS - зерно (своя агония)
+  else if(name=="throes" || name=="throes_belly" || name=="throes_ko") {
+    len = 12.f;
+    a.throesLife = std::getenv("TL") ? float(std::atof(std::getenv("TL"))) : 0.8f;
+    a.throesRise = std::getenv("TR") ? std::atoi(std::getenv("TR"))!=0 : true;
+    a.throesSeed = std::getenv("TS") ? uint32_t(std::atoi(std::getenv("TS"))) : 1u;
+    if(name=="throes")
+      ev.push_back({0.2f,[&]{ a.kill(chest(),Vec3(0,0,-1),3.2f); }});
+    else if(name=="throes_belly")
+      ev.push_back({0.2f,[&]{ a.kill(chest()-Vec3(0,0,24),Vec3(0,0,1),3.2f); }});
+    else
+      ev.push_back({0.2f,[&]{ a.kill(bonePos(a,"BIP01 HEAD")+Vec3(0,4,10),Vec3(0,0,-1),2.8f,Ragdoll::H_Melee,Ragdoll::S_Unconscious); }});
+    }
   else if(name=="ko") {
     len = 3.5f;
     ev.push_back({0.2f,[&]{ a.kill(bonePos(a,"BIP01 HEAD")+Vec3(0,4,10),Vec3(0,0,-1),2.8f,Ragdoll::H_Melee,Ragdoll::S_Unconscious); }});
@@ -495,6 +508,10 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
       }
     if(a.inj.arm>=0 && a.inj.reach>0.f) {
       Vec3 p = a.inj.local; a.disp[a.inj.bone].project(p);
+      a.marks.push_back({p,'r'});
+      }
+    if(a.throesLife>=0.f && a.killBone<a.disp.size()) {
+      Vec3 p = a.killLocal; a.disp[a.killBone].project(p);
       a.marks.push_back({p,'r'});
       }
     if(shake!=nullptr && t>=0.25f) {
@@ -565,6 +582,201 @@ static float injuryJump(const char* boneName, Vec3 off, bool print) {
   }
 
 // ragtest shake: скорость частей тела на экране относительно таза в сценах (тряска) и сравнение с анимацией
+// Агония (Ragdoll::startThroes, как Npc::startRagdollThroes): убит или оглушён - метрики по кадрам
+struct ThroesRun {
+  float chestMax  = 0;    // наибольшая высота груди над землёй после падения, см
+  float headMax   = 0;    // и головы
+  float chestEnd  = 0;    // в конце, см
+  float kneeMax   = 0;    // наибольшая высота колен, см
+  float handWound = 1e9f; // ближе всего кисть к ране, см
+  float frozenAt  = -1;   // с после удара: тело застыло (ушло из физики)
+  float shake     = 0;    // м/с: наибольшая скорость кистей, головы, груди относительно таза после падения
+  float stillMove = 0;    // см: оглушённый «без памяти» - наибольший сдвиг груди за первые 0,9 с после падения
+  };
+
+static ThroesRun throesRun(uint32_t seed, float life, bool front, Ragdoll::State st = Ragdoll::S_Dead, bool finish = false,
+                           const char* dump = nullptr) {
+  zenkit::Mesh mesh;
+  DynamicWorld dw(nullptr,mesh);
+  auto hum = mkSkeleton(human(),"HUMANS.MDH");
+  bench::Actor a(dw,*hum,Vec3(0,0,0));
+  a.throesLife = life;
+  a.throesSeed = seed;
+  ThroesRun res;
+  Shake     sh;
+  FILE*     f = dump ? std::fopen(dump,"w") : nullptr;
+  const float killAt = 0.2f;
+  float landAt = -1, stillRef = 0;
+  for(float t=0; t<18.f; t+=0.033f) {
+    if(t>=killAt && !a.r) {
+      const Vec3 ch = bonePos(a,"BIP01 SPINE2");
+      if(st==Ragdoll::S_Unconscious)
+        a.kill(bonePos(a,"BIP01 HEAD")+Vec3(0,4,10),Vec3(0,0,-1),2.8f,Ragdoll::H_Melee,Ragdoll::S_Unconscious); else
+      if(front)
+        a.kill(ch+Vec3(0,0,12),Vec3(0,0,-1),3.2f); else
+        a.kill(ch-Vec3(0,0,12),Vec3(0,0,1),3.2f);
+      if(finish && a.r)
+        a.r->stopThroes();
+      }
+    a.tick();
+    if(f) { char l[64]; std::snprintf(l,sizeof(l),"throes seed=%u",seed); a.dump(f,l); }
+    if(!a.r)
+      continue;
+    if(res.frozenAt<0 && !a.r->isSimulated())
+      res.frozenAt = t-killAt;
+    const float chest = bonePos(a,"BIP01 SPINE2").y;
+    if(landAt<0 && t>killAt+0.5f && bonePos(a,"BIP01 PELVIS").y<22.f) {
+      landAt   = t;
+      stillRef = chest;
+      }
+    if(landAt<0)
+      continue;
+    res.chestMax = std::max(res.chestMax, chest);
+    res.headMax  = std::max(res.headMax, bonePos(a,"BIP01 HEAD").y);
+    res.chestEnd = chest;
+    res.kneeMax  = std::max({res.kneeMax, bonePos(a,"BIP01 L CALF").y, bonePos(a,"BIP01 R CALF").y});
+    if(a.killBone<a.disp.size() && t>landAt+0.5f) {
+      Vec3 w = a.killLocal; a.disp[a.killBone].project(w);
+      for(auto h:{"BIP01 L HAND","BIP01 R HAND"})
+        res.handWound = std::min(res.handWound, (bonePos(a,h)-w).length());
+      }
+    if(t<landAt+0.9f)
+      res.stillMove = std::max(res.stillMove, std::abs(chest-stillRef));
+    if(t>landAt+0.3f && a.r->isSimulated()) {
+      sh.tick(a);
+      res.shake = sh.maxV;
+      } else {
+      sh.prev.clear();
+      }
+    }
+  if(f)
+    std::fclose(f);
+  return res;
+  }
+
+static int throesTests() {
+  int  fail = 0;
+  auto ok = [&](bool v, const char* what) { if(!v) { fail++; std::printf("   ^^^ FAIL: %s\n",what); } };
+  auto show = [](const char* what, const ThroesRun& r) {
+    std::printf("throes: %-26s head max %3.0f, chest max %3.0f end %3.0f cm, knees %3.0f cm, hand to wound %5.1f cm, frozen %5.2f s, shake %.2f m/s\n",
+                what,double(r.headMax),double(r.chestMax),double(r.chestEnd),double(r.kneeMax),double(r.handWound),double(r.frozenAt),double(r.shake));
+    };
+  // зёрна подобраны под план (журнал "[g2m] ragdoll: throes ..."): 1 - пытается встать, 4 - корчится, держась за рану
+  {
+    const auto r = throesRun(1,0.8f,true);
+    show("back, tries to get up",r);
+    ok(r.headMax>40.f,"back: sits up on the hands"); ok(r.chestEnd<17.f,"back: falls back");
+    ok(r.kneeMax>25.f,"back: knees up"); ok(r.frozenAt>4.f && r.frozenAt<16.5f,"back: writhes, then freezes");
+    ok(r.shake<4.f,"back: no jerks");
+    }
+  {
+    const auto r = throesRun(1,0.8f,false);
+    show("belly, tries to get up",r);
+    ok(r.headMax>45.f,"belly: pushes up on the arms"); ok(r.chestEnd<17.f,"belly: collapses");
+    ok(r.frozenAt>4.f && r.frozenAt<16.5f,"belly: freezes"); ok(r.shake<4.f,"belly: no jerks");
+    }
+  {
+    const auto r = throesRun(4,0.8f,true);
+    show("back, clutches the wound",r);
+    ok(r.handWound<12.f,"clutch: hand on the wound"); ok(r.kneeMax>25.f,"clutch: knees drawn up");
+    ok(r.headMax<35.f,"clutch: does not sit up"); ok(r.shake<3.f,"clutch: no jerks");
+    }
+  {
+    const auto r = throesRun(3,0.05f,true);
+    show("killed outright (twitch)",r);
+    ok(r.frozenAt>0.f && r.frozenAt<5.f,"twitch: dies at once");
+    }
+  {
+    const auto r = throesRun(4,0.8f,true,Ragdoll::S_Dead,true);
+    show("finished off (no throes)",r);
+    ok(r.frozenAt>0.f && r.frozenAt<=float(Ragdoll::LiveTime)/1000.f+0.2f,"finish: no throes");
+    }
+  {
+    const auto r = throesRun(1,0.8f,true,Ragdoll::S_Unconscious);
+    std::printf("throes: knocked out              still for 0.9 s after the fall: chest moved %.1f cm\n",double(r.stillMove));
+    show("knocked out",r);
+    ok(r.stillMove<3.f,"knocked out: lies senseless first"); ok(r.headMax>35.f,"knocked out: then tries to get up");
+    }
+
+  // дыхание: умирающий - часто, пока корчится, потом 2-5 вдохов и тишина; оглушённый - ровно, пока не встанет
+  {
+    Breathing b;
+    b.start(Breathing::Dying,0,7);
+    int   cyclesStruggle = 0, cyclesAfter = 0, lastN = -1;
+    float maxIn = 0, lastGasp = 0;
+    bool  bad = false;
+    int64_t stopAt = -1;
+    for(int64_t t=0; t<60000; t+=16) {
+      const bool struggling = t<6000;
+      b.tick(t,struggling);
+      if(!b.active()) { stopAt = t; break; }
+      const float in = b.inhale(t);
+      bad |= (in<0.f || in>1.f);
+      maxIn = std::max(maxIn,in);
+      if(b.n!=lastN) { lastN = b.n; (struggling ? cyclesStruggle : cyclesAfter)++; lastGasp = b.gasp; }
+      }
+    std::printf("breath: dying - %d breaths while writhing, %d after, last gasp %.2f, stops at %.1f s\n",
+                cyclesStruggle,cyclesAfter,double(lastGasp),double(stopAt)/1000.0);
+    ok(!bad && maxIn>0.7f,"breath: inhale 0..1"); ok(cyclesStruggle>=3,"breath: fast while writhing");
+    ok(cyclesAfter>=2 && cyclesAfter<=6 && lastGasp>=0.99f,"breath: a few fading breaths, the last one a gasp");
+    ok(stopAt>6000 && stopAt<6000+15000,"breath: stops");
+    Breathing u;
+    u.start(Breathing::Steady,0,9);
+    float um = 0;
+    for(int64_t t=0; t<120000; t+=16) { u.tick(t,false); um = std::max(um,u.inhale(t)); }
+    std::printf("breath: unconscious - %d breaths in 2 min, still breathing %d\n",u.n,int(u.active()));
+    ok(u.active() && u.n>=20 && u.n<=40 && um>0.5f,"breath: unconscious breathes steadily");
+    }
+  // дыхание на выводе позы: грудь поднимается на 1-3 см, таз и кисти на месте
+  {
+    zenkit::Mesh mesh;
+    DynamicWorld dw(nullptr,mesh);
+    auto hum = mkSkeleton(human(),"HUMANS.MDH");
+    std::vector<Matrix4x4> bones(hum->tr.size());
+    Matrix4x4 obj = Matrix4x4::mkIdentity();
+    obj.translate(0,15,0);
+    obj.rotateOX(-90); // лежит на спине
+    for(size_t k=0;k<bones.size();++k) bones[k] = obj*hum->tr[k];
+    auto r = Ragdoll::create(dw,*hum,bones.data(),bones.size(),Ragdoll::S_Unconscious);
+    r->freeze();
+    auto base = r->world(), in = r->world(), gasp = r->world();
+    r->breathe(in,1.f,0.f);
+    r->breathe(gasp,1.f,1.f);
+    float chestIn = 0, chestGasp = 0, still = 0;
+    for(size_t i=0;i<base.size();++i) {
+      const float d = (org(in[i])-org(base[i])).length();
+      if(r->bones()[i]==r->chestBone()) { chestIn = d; chestGasp = (org(gasp[i])-org(base[i])).length(); }
+      const std::string& nm = hum->nodes[r->bones()[i]].name;
+      if(nm.find("HAND")!=std::string::npos || nm.find("PELVIS")!=std::string::npos || nm.find("CALF")!=std::string::npos)
+        still = std::max(still,d);
+      }
+    std::printf("breath: pose - chest rises %.1f cm (gasp %.1f cm), pelvis, hands, legs move %.2f cm\n",
+                double(chestIn),double(chestGasp),double(still));
+    ok(chestIn>0.8f && chestIn<2.5f && chestGasp>chestIn && chestGasp<4.f,"breath: chest rises"); ok(still<0.01f,"breath: limbs stay");
+    }
+  // цена: одно тело в агонии (кукла в физике, мышцы, луч к земле) - мс на кадр, пока корчится
+  {
+    zenkit::Mesh mesh;
+    DynamicWorld dw(nullptr,mesh);
+    auto hum = mkSkeleton(human(),"HUMANS.MDH");
+    bench::Actor a(dw,*hum,Vec3(0,0,0));
+    a.throesLife = 0.9f;
+    a.throesSeed = 1;
+    double total = 0, worst = 0;
+    int    frames = 0;
+    for(float t=0; t<10.f; t+=0.033f) {
+      if(t>=0.2f && !a.r) a.kill(bonePos(a,"BIP01 SPINE2")+Vec3(0,0,12),Vec3(0,0,-1),3.2f);
+      auto t0 = std::chrono::steady_clock::now();
+      a.tick();
+      const double ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
+      if(t>1.5f && a.r && a.r->isSimulated()) { total += ms; worst = std::max(worst,ms); frames++; }
+      }
+    std::printf("throes: one body writhing - %.3f ms/frame avg, worst %.3f ms (x86, 30 fps, with pose output)\n",
+                frames>0 ? total/frames : 0.0, worst);
+    }
+  return fail;
+  }
+
 static int shakeReport() {
   for(auto nm:{"chest","arm","head","shoulder","stumble","series","stagger","leg","side"}) {
     Shake sh;
@@ -1103,6 +1315,8 @@ int main(int argc, char** argv) {
     return visScene(argv[2],argv[3]);
   if(argc>1 && std::string(argv[1])=="shake")
     return shakeReport();
+  if(argc>1 && std::string(argv[1])=="throes")
+    return throesTests();
   if(argc>1 && std::string(argv[1])=="injury") {
     injuryJump("BIP01 HEAD",Vec3(0,8,10),true);
     injuryJump("BIP01 SPINE2",Vec3(0,0,12),true);
@@ -1256,6 +1470,7 @@ int main(int argc, char** argv) {
 
   fail += aimTests(*hum,*wlf);
   fail += activeTests(dw,*hum,*wlf);
+  fail += throesTests();
 
   std::printf(fail==0 ? "ALL OK\n" : "FAILED: %d\n",fail);
   return fail;
