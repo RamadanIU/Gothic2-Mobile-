@@ -497,9 +497,17 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
     }
   size_t next = 0;
   float  peakDev = 0;
-  for(float t=0; t<len; t+=0.033f) {
+  // DT - шаг времени мира за кадр, мс (как в слоумо: 3-8 мс вместо 33); кадры для render.py - по-прежнему раз в 33 мс
+  const uint64_t stepMs = std::getenv("DT") ? uint64_t(std::max(1,std::atoi(std::getenv("DT")))) : 33u;
+  a.dt = stepMs;
+  int lastFrame = -1;
+  for(float t=0; t<len; t+=float(stepMs)/1000.f) {
     while(next<ev.size() && ev[next].first<=t) { ev[next].second(); ++next; }
     a.tick();
+    const int frame = int(t/0.033f+1e-4f);
+    if(frame==lastFrame)
+      continue;
+    lastFrame = frame;
     a.marks.clear();
     if(a.r && a.r->state()==Ragdoll::S_Active && a.r->isSimulated()) {
       std::vector<Matrix4x4> rel; Stance st;
@@ -884,6 +892,35 @@ static int aimTests(const Skeleton& hum, const Skeleton& wlf) {
                   double(sh.speed*10.f),double(best));
       ok(best<3.f,"shot lands on the aim point");
       }
+  }
+  // плавная смена цели (PlayerControl::tickRangedAim): прицел идёт по дуге от старой цели к новой - без рывка в начале и
+  // в конце, всё время единичное направление, в конце - точно в новую цель; кадры по 33 мс
+  {
+    const Vec3 a = Vec3::normalize(Vec3(-0.6f,0.05f,1.f)), b = Vec3::normalize(Vec3(0.7f,-0.1f,1.f));
+    const float total = std::acos(Vec3::dotProduct(a,b));
+    float prev = 0, maxStep = 0, firstStep = -1, lastStep = 0, unit = 0;
+    bool  mono = true;
+    for(float t=0; t<=RangedAim::GlideMs+1.f; t+=33.f) {
+      const Vec3  d  = RangedAim::slerpDir(a,b,RangedAim::glide(t/RangedAim::GlideMs));
+      const float ang = std::acos(std::clamp(Vec3::dotProduct(a,d),-1.f,1.f));
+      const float step = ang-prev;
+      mono     = mono && step>=-1e-5f;
+      maxStep  = std::max(maxStep,step);
+      if(t>0 && firstStep<0)
+        firstStep = step;
+      lastStep = step;
+      unit     = std::max(unit,std::abs(d.length()-1.f));
+      prev     = ang;
+      }
+    const float endErr = std::acos(std::clamp(Vec3::dotProduct(RangedAim::slerpDir(a,b,RangedAim::glide(1.f)),b),-1.f,1.f));
+    std::printf("aim: glide %.0f deg in %.0f ms - first step %.2f deg, widest %.2f, last %.2f, end off %.3f deg\n",
+                double(total*180.f/float(M_PI)),double(RangedAim::GlideMs),double(firstStep*180.f/float(M_PI)),
+                double(maxStep*180.f/float(M_PI)),double(lastStep*180.f/float(M_PI)),double(endErr*180.f/float(M_PI)));
+    ok(mono && unit<1e-4f && endErr<1e-3f,"glide goes one way to the new target");
+    ok(firstStep<0.25f*maxStep && lastStep<0.25f*maxStep,"glide starts and stops softly");
+    // почти та же цель - без деления на ноль
+    const Vec3 c = RangedAim::slerpDir(a,a,0.5f);
+    ok(std::abs(c.length()-1.f)<1e-4f,"glide to the same direction");
   }
   return fail;
   }

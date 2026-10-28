@@ -176,6 +176,38 @@ index 3bf1ca8..d657a93 100644
    private:
      struct Data;
      struct Device;
+diff --git a/Engine/sound/soundeffect.cpp b/Engine/sound/soundeffect.cpp
+index 2bd16bc..2cd1afc 100644
+--- a/Engine/sound/soundeffect.cpp
++++ b/Engine/sound/soundeffect.cpp
+@@ -227,6 +227,14 @@ void SoundEffect::setVolume(float val) {
+   alSourcefvDirect(ctx, impl->source, AL_GAIN, &val);
+   }
+ 
++void SoundEffect::setPitch(float val) {
++  // Gothic II Mobile: тон и скорость звука (слоумо-добивание - ниже и медленнее, как в Max Payne)
++  if(impl->source==0)
++    return;
++  ALCcontext* ctx = impl->context();
++  alSourcefDirect(ctx, impl->source, AL_PITCH, val);
++  }
++
+ float SoundEffect::volume() const {
+   if(impl->source==0)
+     return 0;
+diff --git a/Engine/sound/soundeffect.h b/Engine/sound/soundeffect.h
+index f1b8aa8..8a39c54 100644
+--- a/Engine/sound/soundeffect.h
++++ b/Engine/sound/soundeffect.h
+@@ -43,6 +43,8 @@ class SoundEffect final {
+     void     setMaxDistance(float dist);
+     void     setVolume(float val);
+     float    volume() const;
++    // Gothic II Mobile: тон (1 - как записан; 0,6 - ниже и медленнее)
++    void     setPitch(float val);
+ 
+     Tempest::Vec3 position() const;
+     float    x() const;
 diff --git a/Engine/system/api/androidapi.cpp b/Engine/system/api/androidapi.cpp
 index 96b7829..673a0f8 100644
 --- a/Engine/system/api/androidapi.cpp

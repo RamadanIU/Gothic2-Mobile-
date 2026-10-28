@@ -222,4 +222,59 @@ public class GraphicsSettingsTest {
         assertTrue("не входит в наборы", g.iniText().contains("\naimAssist=0\n"));
         assertTrue(g.isAvailable(GraphicsSettings.AIM_ASSIST));
     }
+
+    @Test
+    public void aimSmoothIsOnByDefaultAndNeedsAimAssist() {
+        // [CONTROLS] aimSmooth: прицел задерживается на сражённом и плавно переходит к новой цели
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        assertTrue(g.iniText().contains("\naimAssist=1\naimSmooth=1\n"));
+        assertTrue(g.isAvailable(GraphicsSettings.AIM_SMOOTH));
+        g.setOn(GraphicsSettings.AIM_ASSIST, false);
+        assertFalse("без автонаведения цели нет - и смены цели", g.isAvailable(GraphicsSettings.AIM_SMOOTH));
+        g.setOn(GraphicsSettings.AIM_ASSIST, true);
+        g.setOn(GraphicsSettings.AIM_SMOOTH, false);
+        assertTrue(g.iniText().contains("\naimSmooth=0\n"));
+    }
+
+    @Test
+    public void killCamDefaultsLastEnemyWithCameras() {
+        // [CONTROLS] killCam* читает Gothic::Gothic и reloadControls (game/killcam.h): по умолчанию - включено,
+        // последний враг в бою, камера со стороны и за стрелой
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        String ini = g.iniText();
+        assertTrue(ini.contains("\nkillCam=1\nkillCamWhen=0\nkillCamCinema=1\nkillCamArrow=1\n"));
+        assertTrue("в разделе управления", ini.indexOf("killCam=") > ini.indexOf("[CONTROLS]"));
+        assertEquals("Когда: последний враг в бою", g.label(GraphicsSettings.KILLCAM_WHEN));
+        g.cycle(GraphicsSettings.KILLCAM_WHEN);
+        assertEquals("Когда: каждый побеждённый", g.label(GraphicsSettings.KILLCAM_WHEN));
+        assertTrue(g.iniText().contains("\nkillCamWhen=1\n"));
+        g.cycle(GraphicsSettings.KILLCAM_WHEN);
+        assertTrue(g.iniText().contains("\nkillCamWhen=0\n"));
+        assertEquals("смена «Когда» - не графика", GraphicsSettings.DEFAULT_PRESET, g.currentPreset());
+    }
+
+    @Test
+    public void killCamOptionsNeedKillCam() {
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        for (GraphicsSettings.Option o : GraphicsSettings.KILLCAM_OPTIONS) assertTrue(g.isAvailable(o));
+        g.setOn(GraphicsSettings.KILLCAM, false);
+        assertTrue(g.iniText().contains("\nkillCam=0\n"));
+        assertTrue(g.isAvailable(GraphicsSettings.KILLCAM));
+        assertFalse(g.isAvailable(GraphicsSettings.KILLCAM_WHEN));
+        assertFalse(g.isAvailable(GraphicsSettings.KILLCAM_CINEMA));
+        assertFalse(g.isAvailable(GraphicsSettings.KILLCAM_ARROW));
+        g.setOn(GraphicsSettings.KILLCAM_ARROW, false);
+        g.applyPreset(GraphicsSettings.ECONOMY_PRESET);
+        assertTrue("наборы графики слоумо не трогают", g.iniText().contains("\nkillCam=0\n"));
+        assertTrue(g.iniText().contains("\nkillCamArrow=0\n"));
+    }
+
+    @Test
+    public void controlsListsEveryBowAndKillCamOption() {
+        // всё, что на странице «Управление», пишется в [CONTROLS] (и сразу - isControl в LauncherActivity)
+        java.util.List<GraphicsSettings.Option> all = java.util.Arrays.asList(GraphicsSettings.CONTROLS);
+        for (GraphicsSettings.Option o : GraphicsSettings.BOW) assertTrue(o.iniKey, all.contains(o));
+        for (GraphicsSettings.Option o : GraphicsSettings.KILLCAM_OPTIONS) assertTrue(o.iniKey, all.contains(o));
+        assertEquals(GraphicsSettings.BOW.length + GraphicsSettings.KILLCAM_OPTIONS.length, all.size());
+    }
 }
