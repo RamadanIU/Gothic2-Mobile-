@@ -7713,6 +7713,20 @@ index 6f5c549..bb62bb4 100644
  
    for(auto& i:visitedWorlds)
      if(i.compareName(wrld->name())){
+diff --git a/common/game/inventory.h b/common/game/inventory.h
+index e760eb8..0774792 100644
+--- a/common/game/inventory.h
++++ b/common/game/inventory.h
+@@ -112,6 +112,9 @@ class Inventory final {
+ 
+     uint8_t currentSpellSlot() const;
+     bool    hasStateItem() const;
++    // Gothic II Mobile: предмет в руке (еда, питьё, метла, лютня - AI_UseItemToState) и слот модели, где он; nullptr - нет
++    const Item* stateSlotItem() const { return stateSlot.item; }
++    std::string_view stateSlotName() const { return stateSlot.slot; }
+ 
+     void   putCurrentToSlot(Npc& owner, std::string_view slot);
+     void   putToSlot       (Npc& owner, size_t cls, std::string_view slot);
 diff --git a/common/game/killcam.cpp b/common/game/killcam.cpp
 new file mode 100644
 index 0000000..56c5bb3
@@ -11007,7 +11021,7 @@ index 8c65c25..7a1a578 100644
 +    float                volumeMul = 1.f;
    };
 diff --git a/common/gothic.cpp b/common/gothic.cpp
-index 56c5d58..3c8014f 100644
+index 56c5d58..78a48ac 100644
 --- a/common/gothic.cpp
 +++ b/common/gothic.cpp
 @@ -18,6 +18,7 @@
@@ -11068,7 +11082,7 @@ index 56c5d58..3c8014f 100644
  Gothic::Gothic(GameModDescriptor desc) {
    instance = this;
  
-@@ -149,6 +177,54 @@ Gothic::Gothic(GameModDescriptor desc) {
+@@ -149,6 +177,56 @@ Gothic::Gothic(GameModDescriptor desc) {
      iniFile->set("INTERNAL", "vidResIndex", 0); // full-res
      }
    {
@@ -11093,6 +11107,8 @@ index 56c5d58..3c8014f 100644
 +    opts.ragdollActive    = opts.ragdoll && g2m.getI("GRAPHICS","ragdollActive",1)!=0;
 +    opts.ragdollKnockdown = opts.ragdollActive && opts.ragdollFall && g2m.getI("GRAPHICS","ragdollKnockdown",1)!=0;
 +    opts.ragdollThroes    = opts.ragdoll && g2m.getI("GRAPHICS","ragdollThroes",1)!=0;
++    opts.ragdollShove     = opts.ragdollActive && opts.ragdollFall && g2m.getI("GRAPHICS","ragdollShove",1)!=0;
++    opts.ragdollRise      = opts.ragdollFall && g2m.getI("GRAPHICS","ragdollRise",1)!=0;
 +    opts.occlusion        = g2m.getI("GRAPHICS","occlusion",1)!=0;
 +    // Освещение: в движке тени почти чёрные (рассеянный свет слабый, а кривая ACES ещё и давит тёмные тона),
 +    // а солнечное - очень яркое. Мягкое и светлое - подсветка теней и мягкий низ кривой (Renderer::drawTonemapping)
@@ -11112,7 +11128,7 @@ index 56c5d58..3c8014f 100644
 +      }
 +    Tempest::Log::i("[g2m] graphics: fps=",opts.fpsLimit," res=",iniFile->getI("INTERNAL","vidResIndex"),
 +                    " shadows=",int(opts.shadowResolution)," view=",int(opts.viewDistance/100.f),"m detail=",opts.detailRatio,
-+                    " upscale=",(opts.sharpUpscale ? "sharp" : "bilinear")," animLod=",int(opts.animLod)," ragdoll=",int(opts.ragdoll),"/",int(opts.ragdollFall),"/",int(opts.ragdollActive),"/",int(opts.ragdollKnockdown),"/",int(opts.ragdollThroes),
++                    " upscale=",(opts.sharpUpscale ? "sharp" : "bilinear")," animLod=",int(opts.animLod)," ragdoll=",int(opts.ragdoll),"/",int(opts.ragdollFall),"/",int(opts.ragdollActive),"/",int(opts.ragdollKnockdown),"/",int(opts.ragdollThroes),"/",int(opts.ragdollShove),"/",int(opts.ragdollRise),
 +                    " occlusion=",int(opts.occlusion)," lighting=",opts.lighting,
 +                    " wind=",int(iniFile->getI("ENGINE","zWindEnabled")!=0 ? opts.windRange/100.f : 0.f),"m");
 +    }
@@ -11123,7 +11139,7 @@ index 56c5d58..3c8014f 100644
    defaults.reset(new IniFile());
    defaults->set("GAME", "enableMouse",         1);
    defaults->set("GAME", "mouseSensitivity",    0.5f);
-@@ -523,6 +599,18 @@ void Gothic::setBenchmarkMode(Benchmark b) {
+@@ -523,6 +601,18 @@ void Gothic::setBenchmarkMode(Benchmark b) {
    isBenchmark = b;
    }
  
@@ -11142,7 +11158,7 @@ index 56c5d58..3c8014f 100644
  const Gothic::Options& Gothic::options() {
    assert(instance!=nullptr);
    return instance->opts;
-@@ -644,7 +732,12 @@ void Gothic::updateAnimation(uint64_t dt) {
+@@ -644,7 +734,12 @@ void Gothic::updateAnimation(uint64_t dt) {
    }
  
  void Gothic::quickSave() {
@@ -11155,7 +11171,7 @@ index 56c5d58..3c8014f 100644
    }
  
  void Gothic::quickLoad() {
-@@ -749,27 +842,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
+@@ -749,27 +844,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
    }
  
  zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const ScriptLang lang) {
@@ -11203,7 +11219,7 @@ index 56c5d58..3c8014f 100644
    if(!FileUtil::exists(path) && int(lang)>=0) {
      gscript = CommandLine::inst().scriptPath(lang);
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
-@@ -783,6 +887,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
+@@ -783,6 +889,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
      }
  
@@ -11212,7 +11228,7 @@ index 56c5d58..3c8014f 100644
    zenkit::DaedalusScript script;
    script.load(buf.get());
 diff --git a/common/gothic.h b/common/gothic.h
-index 2654cc4..4cbfde1 100644
+index 2654cc4..a7b1591 100644
 --- a/common/gothic.h
 +++ b/common/gothic.h
 @@ -15,6 +15,7 @@
@@ -11223,7 +11239,7 @@ index 2654cc4..4cbfde1 100644
  
  class VersionInfo;
  class CameraDefinitions;
-@@ -71,11 +72,45 @@ class Gothic final {
+@@ -71,11 +72,47 @@ class Gothic final {
        bool     showHealthBar     = true;
        uint8_t  showManaBar       = 2;
        uint8_t  showSwimBar       = 1;
@@ -11240,6 +11256,8 @@ index 2654cc4..4cbfde1 100644
 +      bool     ragdollActive     = true; // активный регдолл: живые откликаются телом на удары (мышцы к позе анимации)
 +      bool     ragdollKnockdown  = true; // сильный удар (двуручник, огненный шар) может сбить с ног
 +      bool     ragdollThroes     = true; // агония: убитые и оглушённые корчатся, держатся за рану, пытаются встать, дышат
++      bool     ragdollShove      = true; // толчок с разбега: герой сбивает плечом или руками, тот ловит равновесие (S_Balance)
++      bool     ragdollRise       = true; // упавшие встают телом: кукла ведёт тело по анимации подъёма (S_GetUp)
 +      bool     occlusion         = true; // не рисовать заслонённое (HiZ); выключить - проверить пропадающие стены
 +      // лук и арбалет: прицел сам наводится на грудь цели в фокусе (game/rangedaim.h); ключ [CONTROLS] aimAssist,
 +      // меняется и посреди игры (Gothic::reloadControls)
@@ -11269,7 +11287,7 @@ index 2654cc4..4cbfde1 100644
      bool         isInGameAndAlive() const;
  
      std::string_view defaultWorld()       const;
-@@ -127,6 +162,10 @@ class Gothic final {
+@@ -127,6 +164,10 @@ class Gothic final {
      void         setMarvinEnabled(bool m);
  
      static auto  options() -> const Options&;
@@ -11280,7 +11298,7 @@ index 2654cc4..4cbfde1 100644
      static float interfaceScale(const Tempest::Widget* w);
  
      bool         isGodMode() const { return godMode; }
-@@ -222,6 +261,7 @@ class Gothic final {
+@@ -222,6 +263,7 @@ class Gothic final {
    private:
      VersionInfo                             vinfo;
      Options                                 opts;
@@ -11288,7 +11306,7 @@ index 2654cc4..4cbfde1 100644
      std::mt19937                            randGen;
      uint16_t                                pauseSum=0;
      bool                                    isMarvin       = false;
-@@ -257,6 +297,7 @@ class Gothic final {
+@@ -257,6 +299,7 @@ class Gothic final {
  
      std::mutex                              syncSnd;
      Tempest::SoundDevice                    sndDev;
@@ -11323,7 +11341,7 @@ index 1bf7897..a6854f8 100644
      auto* pso = &Shaders::inst().visibilityPassSh;
      if(viewport==SceneGlobals::V_Main)
 diff --git a/common/graphics/mdlvisual.cpp b/common/graphics/mdlvisual.cpp
-index cc2576c..5c802de 100644
+index cc2576c..ea6a11d 100644
 --- a/common/graphics/mdlvisual.cpp
 +++ b/common/graphics/mdlvisual.cpp
 @@ -1,6 +1,7 @@
@@ -11358,7 +11376,7 @@ index cc2576c..5c802de 100644
    it->setCount(1);
  
    npc.delItem(itm->clsId(),1);
-@@ -818,6 +825,56 @@ uint16_t MdlVisual::comboLength() const {
+@@ -818,6 +825,60 @@ uint16_t MdlVisual::comboLength() const {
    return skInst->comboLength();
    }
  
@@ -11412,10 +11430,14 @@ index cc2576c..5c802de 100644
 +  return skInst->replaceLayer(sq,tickCount);
 +  }
 +
++void MdlVisual::cancelItemState() {
++  skInst->cancelItemState();
++  }
++
  Bounds MdlVisual::bounds() const {
    auto b = view.bounds();
    if(!head.view.isEmpty())
-@@ -858,6 +915,8 @@ void MdlVisual::rebindAttaches(const Skeleton& to) {
+@@ -858,6 +919,8 @@ void MdlVisual::rebindAttaches(const Skeleton& to) {
      i.view.bindAttaches(*skInst,to);
    pfx.view.bindAttaches(*skInst,to);
    hnpcVisual.view.bindAttaches(*skInst,to);
@@ -11424,7 +11446,7 @@ index cc2576c..5c802de 100644
    }
  
  template<class View>
-@@ -881,6 +940,10 @@ void MdlVisual::syncAttaches() {
+@@ -881,6 +944,10 @@ void MdlVisual::syncAttaches() {
      }
    pfx.view.setObjMatrix(pos);
    hnpcVisual.view.setObjMatrix(pos);
@@ -11436,7 +11458,7 @@ index cc2576c..5c802de 100644
      auto& pose = *skInst;
      auto  p    = pos;
 diff --git a/common/graphics/mdlvisual.h b/common/graphics/mdlvisual.h
-index dadfd6d..9fc1436 100644
+index dadfd6d..052774f 100644
 --- a/common/graphics/mdlvisual.h
 +++ b/common/graphics/mdlvisual.h
 @@ -7,6 +7,9 @@
@@ -11449,7 +11471,7 @@ index dadfd6d..9fc1436 100644
  class Serialize;
  class ObjVisual;
  class Npc;
-@@ -114,6 +117,20 @@ class MdlVisual final {
+@@ -114,6 +117,21 @@ class MdlVisual final {
  
      Bounds                         bounds() const;
  
@@ -11466,11 +11488,12 @@ index dadfd6d..9fc1436 100644
 +    void                           tickStuck(uint64_t now);
 +    const Animation::Sequence*     findSequence(std::string_view name) const;
 +    bool                           replaceLayer(const Animation::Sequence* sq, uint64_t tickCount);
++    void                           cancelItemState();
 +
    private:
      template<class View>
      struct Attach {
-@@ -136,6 +153,13 @@ class MdlVisual final {
+@@ -136,6 +154,13 @@ class MdlVisual final {
        size_t                     boneId=size_t(-1);
        };
  
@@ -11484,7 +11507,7 @@ index dadfd6d..9fc1436 100644
      void implSetBody(Npc* npc, World& world, MeshObjects::Mesh&& body, const int32_t version);
      void setSlotAttachment(MeshObjects::Mesh&& itm, std::string_view bone);
  
-@@ -163,6 +187,7 @@ class MdlVisual final {
+@@ -163,6 +188,7 @@ class MdlVisual final {
      PfxSlot                        pfx;
  
      TorchSlot                      torch;
@@ -11494,10 +11517,10 @@ index dadfd6d..9fc1436 100644
      bool                           hnpcFlagGhost = false;
 diff --git a/common/graphics/mesh/injury.cpp b/common/graphics/mesh/injury.cpp
 new file mode 100644
-index 0000000..485746d
+index 0000000..f7a727a
 --- /dev/null
 +++ b/common/graphics/mesh/injury.cpp
-@@ -0,0 +1,495 @@
+@@ -0,0 +1,580 @@
 +#include "injury.h"
 +
 +#include "limbik.h"
@@ -11757,6 +11780,8 @@ index 0000000..485746d
 +    applyLimp(inj, w, fwd);
 +  if(inj.arm>=0 && inj.reach>0.001f && inj.bone<parent.size())
 +    applyReach(inj, w, fwd);
++  if(inj.brace>0.001f)
++    applyBrace(inj, w, fwd);
 +  }
 +
 +void InjuryRig::applyStance(const Stance& st, const Matrix4x4& obj, Matrix4x4* world, size_t count) const {
@@ -11993,12 +12018,95 @@ index 0000000..485746d
 +  setWorld(w,hand[a],h);
 +  rebuild(w);
 +  }
++
++void InjuryRig::applyBrace(const Injury& inj, Work& w, const Vec3& fwd) const {
++  // Толчок с разбега (Npc::tickShove). Плечом: корпус развёрнут ведущим плечом вперёд и чуть наклонён, голова
++  // смотрит вперёд (поворот корпуса - обратно), подбородок вниз, ведущая рука прижата к груди (кулак у другой груди),
++  // другая - чуть назад и в сторону. Руками: кисти к груди того, в кого врезается (две - по сторонам груди), локти
++  // согнуты, пока не врезался; врезался - руки разгибаются, корпус подаётся вперёд. Ноги - как в анимации бега
++  const float b   = smooth(std::clamp(inj.brace,0.f,1.f));
++  const float hit = smooth(std::clamp(inj.braceHit,0.f,1.f));
++  const float k   = w.scale;
++  const int   s   = inj.braceSide==1 ? 1 : 0;
++  const Vec3  up   = Vec3(0,1,0);
++  const Vec3  left = Vec3::crossProduct(up,fwd); // поворот вокруг «влево» уводит верх вперёд
++  const float n    = float(std::max<size_t>(bendable.size(),1));
++
++  // корпус: поворот (левое плечо вперёд - по часовой, если смотреть сверху: угол вокруг «вверх» < 0), наклон вперёд
++  float twist = 0, bow = 0;
++  if(inj.braceKind==Injury::B_Shoulder) {
++    twist = deg(34.f)*b*(s==0 ? -1.f : 1.f);
++    bow   = deg(12.f)*b - deg(6.f)*hit;     // удар в плечо корпус принимает - пружинит назад
++    } else {
++    twist = inj.braceKind==Injury::B_Push1 ? deg(14.f)*b*(s==0 ? -1.f : 1.f) : 0.f;
++    bow   = deg(8.f)*b + deg(8.f)*hit;      // толкает - подаётся вперёд
++    }
++  for(auto bn:bendable) {
++    Matrix4x4 m = w.w[bn];
++    rotateBasis(m,up,twist/n);
++    rotateBasis(m,left,bow/n);
++    setWorld(w,bn,m);
++    rebuild(w);
++    }
++  if(head<parent.size()) {
++    Matrix4x4 m = w.w[head];
++    rotateBasis(m,up,-0.75f*twist);
++    rotateBasis(m,left,-0.6f*bow + (inj.braceKind==Injury::B_Shoulder ? deg(12.f)*b : 0.f));
++    setWorld(w,head,m);
++    rebuild(w);
++    }
++
++  auto arm = [&](int a, const Vec3& target, const Vec3& pole, float wgt) {
++    if(wgt<=0.001f)
++      return;
++    const Vec3 handNow = origin(w.w[hand[a]]);
++    const Vec3 to      = handNow + (target-handNow)*wgt;
++    Matrix4x4 u = w.w[upper[a]], f = w.w[fore[a]], h = w.w[hand[a]];
++    solve(u,f,h,to,pole);
++    // кисть - продолжение предплечья (кулак или ладонь вперёд)
++    {
++    const Vec3 cur  = Vec3::normalize(origin(h)-origin(f));
++    const Vec3 prev = Vec3::normalize(origin(w.w[hand[a]])-origin(w.w[fore[a]]));
++    rotateBasis(h,prev,cur);
++    }
++    setWorld(w,upper[a],u);
++    setWorld(w,fore[a],f);
++    setWorld(w,hand[a],h);
++    rebuild(w);
++    };
++  const Vec3 chest = spine.empty() ? origin(w.w[pelvis]) : origin(w.w[spine.back()]);
++  if(inj.braceKind==Injury::B_Shoulder) {
++    // ведущая рука прижата: кулак у груди со стороны другого плеча, локоть вниз и к боку
++    const int  o     = 1-s;
++    const Vec3 sideS = horizontal(origin(w.w[upper[s]]) - origin(w.w[upper[o]]));
++    arm(s, chest + fwd*(14.f*k) - sideS*(6.f*k) - up*(6.f*k), -up*0.7f + sideS*0.5f + fwd*0.2f, b);
++    // другая - чуть назад и в сторону, для равновесия
++    arm(o, origin(w.w[upper[o]]) - up*(42.f*k) - fwd*(14.f*k) - sideS*(14.f*k), fwd*0.6f - sideS*0.4f, 0.7f*b);
++    return;
++    }
++  // руками: к груди того (две руки - по сторонам груди), не дальше вытянутой руки; локти чуть согнуты до удара
++  for(int a=0; a<2; ++a) {
++    if(inj.braceKind==Injury::B_Push1 && a!=s)
++      continue;
++    const Vec3  sideA = horizontal(origin(w.w[upper[a]]) - origin(w.w[upper[1-a]]));
++    const Vec3  sh    = origin(w.w[upper[a]]);
++    Vec3        at    = inj.braceAt + sideA*((inj.braceKind==Injury::B_Push2 ? 11.f : 4.f)*k);
++    const float l1    = (origin(w.w[fore[a]]) - sh).length();
++    const float l2    = (origin(w.w[hand[a]]) - origin(w.w[fore[a]])).length();
++    Vec3        d     = at-sh;
++    // до удара - локти согнуты (руки на 75 % длины), удар - руки разгибаются
++    const float reach = (l1+l2)*(0.75f + 0.2f*hit);
++    if(d.length()>reach)
++      d = Vec3::normalize(d)*reach;
++    arm(a, sh+d, -up*0.6f + sideA*0.7f, b);
++    }
++  }
 diff --git a/common/graphics/mesh/injury.h b/common/graphics/mesh/injury.h
 new file mode 100644
-index 0000000..6568de6
+index 0000000..fe4bd6f
 --- /dev/null
 +++ b/common/graphics/mesh/injury.h
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,298 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -12030,8 +12138,22 @@ index 0000000..6568de6
 +  float         pain   = 0;   // 0..1 - согнулся от боли после удара: корпус и голова вперёд, колени подогнуты
 +  float         painSide = 0; // -1..1 - и вбок, к ране (+ - влево)
 +
++  // Герой с разбега врезается в человека (Npc::tickShove): заранее подставляет плечо (корпус развёрнут, плечо вперёд,
++  // рука прижата, подбородок вниз) или толкает рукой либо двумя (руки к груди того, локти чуть согнуты; врезался -
++  // руки разгибаются, корпус подаётся вперёд)
++  enum Brace : uint8_t {
++    B_Shoulder = 0,
++    B_Push1    = 1,
++    B_Push2    = 2,
++    };
++  float         brace     = 0;  // 0..1 - готов к удару
++  uint8_t       braceKind = B_Shoulder;
++  int8_t        braceSide = 0;  // ведущая сторона: 0 - левое плечо (левая рука), 1 - правое
++  Tempest::Vec3 braceAt   = {}; // куда руки: грудь того, в кого врезается (мир), см
++  float         braceHit  = 0;  // 0..1 - удар: руки разгибаются (толчок), корпус пружинит
++
 +  bool isActive() const {
-+    return (arm>=0 && reach>0.001f) || (leg>=0 && limp>0.001f) || hunch>0.001f || pain>0.001f;
++    return (arm>=0 && reach>0.001f) || (leg>=0 && limp>0.001f) || hunch>0.001f || pain>0.001f || brace>0.001f;
 +    }
 +  };
 +
@@ -12281,6 +12403,7 @@ index 0000000..6568de6
 +    void      applyHunch(float a, Work& w, const Tempest::Vec3& axis) const;
 +    void      applyPain (const Injury& inj, Work& w, const Tempest::Vec3& fwd) const;
 +    void      applyReach(const Injury& inj, Work& w, const Tempest::Vec3& fwd) const;
++    void      applyBrace(const Injury& inj, Work& w, const Tempest::Vec3& fwd) const;
 +  };
 diff --git a/common/graphics/mesh/limbik.h b/common/graphics/mesh/limbik.h
 new file mode 100644
@@ -12436,7 +12559,7 @@ index 0000000..69d1a10
 +
 +}
 diff --git a/common/graphics/mesh/pose.cpp b/common/graphics/mesh/pose.cpp
-index 9a4f166..26a3c26 100644
+index 9a4f166..289ecc4 100644
 --- a/common/graphics/mesh/pose.cpp
 +++ b/common/graphics/mesh/pose.cpp
 @@ -148,6 +148,9 @@ void Pose::setSkeleton(const Skeleton* sk) {
@@ -12564,7 +12687,7 @@ index 9a4f166..26a3c26 100644
    }
  
  const Matrix4x4 Pose::rootBone() const {
-@@ -899,7 +938,326 @@ const Matrix4x4* Pose::transform() const {
+@@ -899,7 +938,351 @@ const Matrix4x4* Pose::transform() const {
    return tr;
    }
  
@@ -12661,7 +12784,10 @@ index 9a4f166..26a3c26 100644
 +void Pose::setInjury(const Injury& inj) {
 +  const bool same = inj.arm==injury.arm && inj.bone==injury.bone && inj.leg==injury.leg &&
 +                    std::abs(inj.reach-injury.reach)<0.002f && std::abs(inj.limp-injury.limp)<0.002f &&
-+                    std::abs(inj.hunch-injury.hunch)<0.002f && inj.local.x==injury.local.x && inj.local.y==injury.local.y;
++                    std::abs(inj.hunch-injury.hunch)<0.002f && inj.local.x==injury.local.x && inj.local.y==injury.local.y &&
++                    std::abs(inj.pain-injury.pain)<0.002f && std::abs(inj.brace-injury.brace)<0.002f &&
++                    std::abs(inj.braceHit-injury.braceHit)<0.002f && inj.braceKind==injury.braceKind &&
++                    (inj.brace<=0.f || (inj.braceAt-injury.braceAt).length()<0.5f);
 +  if(same)
 +    return;
 +  injury   = inj;
@@ -12870,6 +12996,10 @@ index 9a4f166..26a3c26 100644
 +    return false;
 +  for(auto& i:lay)
 +    if(i.seq->layer==sq->layer) {
++      if((i.bs & BS_MAX)==(BS_ITEMINTERACT & BS_MAX)) {
++        i.bs      = BS_LIE;
++        itemUseSt = itemUseDestSt = 0;
++        }
 +      if(i.seq==sq)
 +        return true;
 +      onRemoveLayer(i);
@@ -12880,7 +13010,25 @@ index 9a4f166..26a3c26 100644
 +      onAddLayer(i);
 +      return true;
 +      }
-+  return false;
++  addLayer(sq,BS_LIE,0,tickCount);
++  return true;
++  }
++
++void Pose::cancelItemState() {
++  size_t ret = 0;
++  for(size_t i=0; i<lay.size(); ++i) {
++    if((lay[i].bs & BS_MAX)==(BS_ITEMINTERACT & BS_MAX)) {
++      onRemoveLayer(lay[i]);
++      needToUpdate = true;
++      continue;
++      }
++    if(ret!=i)
++      lay[ret] = lay[i];
++    ret++;
++    }
++  lay.resize(ret);
++  itemUseSt     = 0;
++  itemUseDestSt = 0;
 +  }
 +
  Vec3 Pose::mkBaseTranslation() {
@@ -12892,7 +13040,7 @@ index 9a4f166..26a3c26 100644
      return Vec3();
  
 diff --git a/common/graphics/mesh/pose.h b/common/graphics/mesh/pose.h
-index 216d392..6e4ce0b 100644
+index 216d392..60662c2 100644
 --- a/common/graphics/mesh/pose.h
 +++ b/common/graphics/mesh/pose.h
 @@ -6,6 +6,7 @@
@@ -12912,7 +13060,7 @@ index 216d392..6e4ce0b 100644
  
      float              translateY() const { return trY; }
      auto               rootNode() const -> const Tempest::Matrix4x4;
-@@ -90,6 +93,28 @@ class Pose final {
+@@ -90,6 +93,32 @@ class Pose final {
  
      const Tempest::Matrix4x4* transform() const;
  
@@ -12935,13 +13083,17 @@ index 216d392..6e4ce0b 100644
 +    // Поза кадра анимации в системе объекта (корень без сдвига по XZ, как в mkBaseTranslation)
 +    static void        sampleObjectPose(const Skeleton& sk, const Animation::Sequence& sq, uint64_t time,
 +                                        std::vector<Tempest::Matrix4x4>& out);
-+    // Повернуть слой на другую анимацию того же слоя, не меняя состояния тела (лежит на спине/на животе)
++    // Повернуть слой на другую анимацию того же слоя, не меняя состояния тела (лежит на спине/на животе); слоя нет -
++    // добавить. Действие с предметом (BS_ITEMINTERACT) на этом месте обрывается - тело лежит (BS_LIE)
 +    bool               replaceLayer(const Animation::Sequence* sq, uint64_t tickCount);
++    // Предмет выпал из рук (Npc::dropHandItem): действие с ним (еда, питьё - AI_UseItemToState) обрывается сразу, без
++    // анимаций «убрать предмет»: иначе слой BS_ITEMINTERACT не пускает ни одной анимации (startAnim) - упавший не встаёт
++    void               cancelItemState();
 +
    private:
      enum SampleStatus : uint8_t {
        S_None  = 0,
-@@ -114,9 +139,15 @@ class Pose final {
+@@ -114,9 +143,15 @@ class Pose final {
        };
  
      auto mkBaseTranslation() -> Tempest::Vec3;
@@ -12957,7 +13109,7 @@ index 216d392..6e4ce0b 100644
  
      bool updateFrame(const Animation::Sequence &s, BodyState bs, uint64_t sBlend, uint64_t barrier, uint64_t sTime, uint64_t now);
  
-@@ -153,4 +184,21 @@ class Pose final {
+@@ -153,4 +188,21 @@ class Pose final {
      zenkit::AnimationSample         prev      [Resources::MAX_NUM_SKELETAL_NODES] = {};
      Tempest::Matrix4x4              tr        [Resources::MAX_NUM_SKELETAL_NODES] = {};
      Tempest::Matrix4x4              pos;
@@ -14854,10 +15006,10 @@ index daa4a7d..455d40d 100644
  #include <BulletCollision/CollisionShapes/btBoxShape.h>
 diff --git a/common/physics/ragdoll.cpp b/common/physics/ragdoll.cpp
 new file mode 100644
-index 0000000..38bc3a2
+index 0000000..f196f75
 --- /dev/null
 +++ b/common/physics/ragdoll.cpp
-@@ -0,0 +1,3983 @@
+@@ -0,0 +1,5402 @@
 +#include "ragdoll.h"
 +
 +#include <Tempest/Log>
@@ -15133,8 +15285,8 @@ index 0000000..38bc3a2
 +  float s = viewDist + float(simTime)*0.5f;
 +  if(st==Ragdoll::S_Active)
 +    s += 1e6f; // реакция на удар - украшение: уступает место первой
-+  if(st==Ragdoll::S_Fall)
-+    s -= 1e6f;
++  if(st==Ragdoll::S_Fall || st==Ragdoll::S_Balance || st==Ragdoll::S_GetUp)
++    s -= 1e6f; // живой падает, ловит равновесие или встаёт - застыть посреди движения нельзя
 +  if(keep)
 +    s -= 1e7f;
 +  return s;
@@ -15238,6 +15390,70 @@ index 0000000..38bc3a2
 +  df = sh + dir*d - el;
 +  }
 +
++// Опора на земле (по горизонтали X, Z): выпуклая оболочка точек pts, расширенная на r. Возвращает ближайшую к p
++// точку опоры (центр давления) и out - насколько p вне опоры, м (0 - внутри)
++btVector3 supportPoint(const btVector3* pts, size_t n, const btVector3& p, float r, float& out) {
++  out = 0;
++  if(n==0)
++    return p;
++  // оболочка - монотонной цепью (Эндрю), точек мало
++  btVector3 s[8];
++  n = std::min<size_t>(n,8);
++  std::copy(pts,pts+n,s);
++  std::sort(s,s+n,[](const btVector3& a, const btVector3& b){
++    return a.x()<b.x() || (a.x()==b.x() && a.z()<b.z());
++    });
++  auto cross = [](const btVector3& o, const btVector3& a, const btVector3& b) {
++    return float((a.x()-o.x())*(b.z()-o.z()) - (a.z()-o.z())*(b.x()-o.x()));
++    };
++  btVector3 h[16];
++  size_t    k = 0;
++  for(size_t i=0; i<n; ++i) {
++    while(k>=2 && cross(h[k-2],h[k-1],s[i])<=0.f)
++      --k;
++    h[k++] = s[i];
++    }
++  for(size_t i=n-1, t=k+1; i>0; --i) {
++    while(k>=t && cross(h[k-2],h[k-1],s[i-1])<=0.f)
++      --k;
++    h[k++] = s[i-1];
++    }
++  if(k>1)
++    --k;
++  // внутри оболочки (обход против часовой в X-Z: cross > 0 слева)
++  bool inside = k>=3;
++  for(size_t i=0; i<k && inside; ++i)
++    if(cross(h[i],h[(i+1)%k],p)<0.f)
++      inside = false;
++  btVector3 q = p;
++  if(!inside) {
++    float best = 1e9f;
++    for(size_t i=0; i<std::max<size_t>(k,1); ++i) {
++      const btVector3 a  = h[i], b = h[k>1 ? (i+1)%k : i];
++      btVector3       ab = b-a;
++      ab.setY(0);
++      btVector3       ap = p-a;
++      ap.setY(0);
++      const float     l2 = float(ab.length2());
++      const float     t  = l2>1e-8f ? std::clamp(float(ap.dot(ab))/l2, 0.f, 1.f) : 0.f;
++      btVector3       c  = a + ab*t;
++      c.setY(p.y());
++      const float     d  = float((p-c).length());
++      if(d<best) {
++        best = d;
++        q    = c;
++        }
++      }
++    }
++  btVector3 d = p-q;
++  d.setY(0);
++  const float dl = float(d.length());
++  if(dl<=r)
++    return p;
++  out = dl-r;
++  return q + d*(r/dl);
++  }
++
 +}
 +
 +struct Ragdoll::Layout final {
@@ -15291,6 +15507,7 @@ index 0000000..38bc3a2
 +  size_t                                      thigh[2]   = {size_t(-1),size_t(-1)};
 +  size_t                                      calf [2]   = {size_t(-1),size_t(-1)};
 +  size_t                                      foot [2]   = {size_t(-1),size_t(-1)}; // кости стоп (не части)
++  size_t                                      hand [2]   = {size_t(-1),size_t(-1)}; // части-кисти (может не быть)
 +  std::vector<size_t>                         spineChain; // части корпуса от таза к груди, без таза
 +  size_t                                      neck       = size_t(-1);
 +  size_t                                      head       = size_t(-1);
@@ -15432,6 +15649,75 @@ index 0000000..38bc3a2
 +    bool      raised  = false; // приподнялось (isRaised)
 +    };
 +  Throes              throes;
++
++  // Полный регдолл на ногах после толчка (S_Balance): ступни на земле, точка захвата, шаги, руки к опоре. Время -
++  // now (с), как у рефлексов
++  struct Leg final {
++    bool      planted = true;
++    btVector3 anchor  = btVector3(0,0,0); // где стоит голеностоп, м
++    float     swing   = -1;               // <0 - стоит, иначе доля шага 0..1
++    btVector3 from    = btVector3(0,0,0);
++    btVector3 to      = btVector3(0,0,0);
++    float     dur     = 0.3f;             // с
++    float     lift    = 0.07f;            // м
++    btVector3 bulge   = btVector3(0,0,0); // шаг через другую ногу - дуга обходит её спереди, м
++    float     landAt  = -1;               // с: поставлена
++    std::unique_ptr<btTypedConstraint> pin; // держит ступню на месте (трение подошвы)
++    };
++  struct Hand final {
++    int8_t    src    = -1;                // опора: -1 - нет, 0 - мир (стена, край), 1 - человек (Ragdoll::grips)
++    uint32_t  id     = 0;                 // человек (Grip::id)
++    btVector3 at     = btVector3(0,0,0);  // точка опоры, м
++    btVector3 vel    = btVector3(0,0,0);  // её скорость, м/с
++    float     reach  = 0;                 // 0..1 - рука тянется к опоре
++    float     reachAt= -1;                // с: начала тянуться
++    float     gripAt = -1;                // с: схватилась (<0 - нет)
++    float     cool   = 0;                 // с: сорвалась или отпустила - снова не раньше
++    float     scanAt = -1;                // с: искала опору
++    std::unique_ptr<btTypedConstraint> c; // кисть - опора
++    };
++  struct Balance final {
++    bool      on        = false;
++    float     at        = 0;              // с: толчок
++    Leg       leg[2];
++    btVector3 com       = btVector3(0,0,0);
++    btVector3 vel       = btVector3(0,0,0);
++    btVector3 xi        = btVector3(0,0,0); // точка захвата (по горизонтали), м
++    btVector3 cop       = btVector3(0,0,0); // центр давления - ближайшая к точке захвата точка опоры
++    btVector3 fall      = btVector3(0,0,0); // куда валится тело (по горизонтали)
++    float     comH      = 1.f;            // высота центра масс над землёй стоя, м
++    float     pelH      = 0.95f;          // высота таза над землёй стоя, м
++    float     ankleH    = 0.08f;          // высота голеностопа над землёй, м
++    float     support   = 1;              // 0..1 - вес держат ноги
++    float     exceed    = 0;              // м: точка захвата вне опоры
++    float     calm      = 0;              // с: стоит спокойно
++    float     risk      = 0;              // м*с: сколько и как долго точка захвата вне опоры (шаги не догоняют)
++    float     landEx    = -1;             // м: точка захвата вне опоры сразу после прошлого шага (<0 - шагов не было)
++    int       diverge   = 0;              // шагов подряд, после которых точка захвата ушла дальше (не догоняет)
++    float     steady    = 1;              // как крепко стоит на ногах (Shove::steady)
++    bool      recovered = false;
++    int       steps     = 0;
++    btVector3 heading   = btVector3(0,0,1); // вперёд тела в начале толчка
++    uint8_t   freeArms  = 3;
++    btVector3 lean      = btVector3(0,0,0); // наклон корпуса против хода: ось * угол, рад (мир)
++    bool      wallOn    = false;          // упёрлось в стену (опора)
++    btVector3 wall      = btVector3(0,0,0);
++    btVector3 wallT     = btVector3(0,0,0);
++    float     wallAt    = -1;
++    float     flail     = 0;              // фаза взмахов руками
++    float     armsW     = 0;              // руки для равновесия
++    Hand      hand[2];
++    };
++  Balance             bal;
++
++  // Подъём телом (S_GetUp): время - simTime куклы, с
++  struct GetUp final {
++    bool      on      = false;
++    float     riseAt  = 0.45f;            // с: дальше опора поднимает тело к кадру анимации подъёма
++    float     contact = 0;                // 0..1 - руки, колени, ступни на земле
++    float     err     = 0;                // см: таз и грудь от кадра анимации
++    };
++  GetUp               getUp;
 +
 +  // система персонажа по последней цели
 +  btVector3           fwd  = btVector3(0,0,1);
@@ -16083,6 +16369,7 @@ index 0000000..38bc3a2
 +      switch(Kind(p.kind)) {
 +        case K_UpperArm: lay->upper[side] = i; break;
 +        case K_ForeArm:  lay->fore [side] = i; break;
++        case K_Hand:     lay->hand [side] = i; break;
 +        case K_Thigh:    lay->thigh[side] = i; break;
 +        case K_Calf: {
 +          lay->calf[side] = i;
@@ -16339,14 +16626,45 @@ index 0000000..38bc3a2
 +  if(s==st)
 +    return;
 +  const bool wasActive = (st==S_Active);
++  const bool wasUp     = (st==S_Balance || st==S_GetUp);
 +  st = s;
++  if(wasUp && isSimulated()) {
++    // ловил равновесие или вставал - и упал (или убит): ступни и руки больше ничего не держат, срок - с падения
++    removeAnchors();
++    releaseGrip(0);
++    releaseGrip(1);
++    if(beh!=nullptr) {
++      beh->bal.on   = false;
++      beh->getUp.on = false;
++      }
++    for(auto& d:drive) {
++      d.hasOverride = false;
++      d.dip0        = 0;
++      }
++    setActiveCollisions(false);
++    balanceLost = false;
++    airTime     = 0;
++    groundTime  = 0;
++    simTime     = 0;
++    calmTime    = 0;
++    fallPeak    = 0;
++    impact      = 0;
++    damping     = 0;
++    for(auto& b:body)
++      b.rb->setDamping(0.05f,0.25f);
++    setSolverIterations(solverIt);
++    return;
++    }
 +  if(!wasActive || !isSimulated())
 +    return;
 +  // упал с ног (равновесие, смерть, без сознания): суставы с пределами от позы в этот миг, столкновения как у
-+  // тряпичной куклы, срок в физике - заново, с падения
++  // тряпичной куклы, срок в физике - заново, с падения. Толчок (S_Balance) - то же: всё тело - физика
 +  removeJoints();
 +  createJoints();
 +  setActiveCollisions(false);
++  if(s==S_Balance)
++    for(auto& b:body)
++      b.rb->setActivationState(DISABLE_DEACTIVATION);
 +  for(auto& d:drive) {
 +    d.hasOverride = false;
 +    d.dip         = 0;
@@ -16444,6 +16762,15 @@ index 0000000..38bc3a2
 +    // голову): мышца не борется с суставом, а удар не вывернет сустав дальше цели и анатомии
 +    for(auto& j:joint)
 +      fitLimits(j, drive[j.parent].goal.getRotation(), drive[j.child].goal.getRotation(), deg(6));
++    }
++  else if(beh!=nullptr && st==S_Balance && beh->bal.on) {
++    tickBalance(dtS);
++    }
++  else if(beh!=nullptr && st==S_GetUp && beh->getUp.on) {
++    tickGetUp(dtS);
++    // поза анимации подъёма бывает шире пределов падения - сустав её не запрещает
++    for(auto& j:joint)
++      fitLimits(j, drive[j.parent].goal.getRotation(), drive[j.child].goal.getRotation(), deg(4));
 +    }
 +  }
 +
@@ -16735,6 +17062,16 @@ index 0000000..38bc3a2
 +    case S_Active:
 +      m = toneOf(i);
 +      break;
++    case S_Balance:
++      // на ногах после толчка: корпус и голова держат позу, руки - тонус после удара (ноги - свои цели, aimPart)
++      m = (axial ? 0.75f : 0.55f)*toneOf(i);
++      break;
++    case S_GetUp: {
++      // встаёт: мышцы набирают силу за 0,4 с (сначала тело собирается - руки и ноги под себя)
++      const float r = smooth(t/0.4f);
++      m = (axial ? 0.45f : 0.35f) + (axial ? 0.5f : 0.55f)*r;
++      break;
++      }
 +    case S_Fall: {
 +      if(groundTime>0)
 +        m = axial ? 0.12f : 0.05f; else
@@ -16865,7 +17202,8 @@ index 0000000..38bc3a2
 +  // Момент сустава поворачивает обе стороны как целое вокруг сустава: часть со всеми потомками и остальное тело,
 +  // каждую - с её моментом инерции (тензор относительно сустава). Так суставы не спорят с решателем Bullet и
 +  // скорость не скачет: момент, приложенный к одному лёгкому телу, раскрутил бы его на миг до десятков рад/с
-+  constexpr float W    = 9.f;   // рад/с: собственная частота мышцы в силе
++  // рад/с: собственная частота мышцы в силе; на ногах после толчка и вставая - мышцы собраны, быстрее
++  const float     W    = (st==S_Balance || st==S_GetUp) ? 12.f : 9.f;
 +  constexpr float WReflex = 14.f; // рефлекс (руки к земле, взмахи) - быстрее
 +  constexpr float Zeta = 1.f;
 +  const bool      sag  = beh!=nullptr && beh->sag;
@@ -17266,6 +17604,54 @@ index 0000000..38bc3a2
 +  return st==S_Active ? show : 1.f;
 +  }
 +
++bool Ragdoll::balanceRecovered() const {
++  return st==S_Balance && beh!=nullptr && beh->bal.recovered;
++  }
++
++uint64_t Ragdoll::balanceTime() const {
++  if(st!=S_Balance)
++    return 0;
++  return simTime<BalanceMaxTime ? BalanceMaxTime-simTime : 0;
++  }
++
++Vec3 Ragdoll::bodyFront() const {
++  const Matrix4x4& m = boneWorld[0];
++  const Vec3       f = lay->pelvisFrontLocal;
++  Vec3 v = Vec3::normalize(axisOf(m,0))*f.x + Vec3::normalize(axisOf(m,1))*f.y + Vec3::normalize(axisOf(m,2))*f.z;
++  v.y = 0;
++  return v.length()>1e-3f ? Vec3::normalize(v) : Vec3(0,0,1);
++  }
++
++void Ragdoll::setGrips(const std::vector<Grip>& g) {
++  grips = g;
++  }
++
++uint32_t Ragdoll::grippedId() const {
++  if(beh==nullptr)
++    return 0;
++  for(auto& h:beh->bal.hand)
++    if(h.gripAt>=0.f && h.src==1)
++      return h.id;
++  return 0;
++  }
++
++bool Ragdoll::isGripping() const {
++  if(beh==nullptr)
++    return false;
++  for(auto& h:beh->bal.hand)
++    if(h.gripAt>=0.f)
++      return true;
++  return false;
++  }
++
++int Ragdoll::balanceSteps() const {
++  return beh!=nullptr ? beh->bal.steps : 0;
++  }
++
++float Ragdoll::getUpError() const {
++  return beh!=nullptr ? beh->getUp.err : 0.f;
++  }
++
 +float Ragdoll::reaction() const {
 +  if(!isSimulated())
 +    return 0;
@@ -17308,6 +17694,1171 @@ index 0000000..38bc3a2
 +      stance.foot[k]  = cmv(b.footAt[k]);
 +      stance.footW[k] = b.footW[k];
 +      }
++  }
++
++// ---- Полный регдолл на ногах после толчка (S_Balance)
++
++void Ragdoll::massCenter(btVector3& com, btVector3& vel) const {
++  com = btVector3(0,0,0);
++  vel = btVector3(0,0,0);
++  float M = 0;
++  for(size_t i=0; i<body.size(); ++i) {
++    const float m = lay->parts[i].mass;
++    com += body[i].rb->getCenterOfMassPosition()*m;
++    vel += body[i].rb->getLinearVelocity()*m;
++    M   += m;
++    }
++  if(M>0.f) {
++    com /= M;
++    vel /= M;
++    }
++  }
++
++float Ragdoll::groundAt(const btVector3& at, float fallback) const {
++  const Vec3 p = cmv(at);
++  const auto r = owner->ray(p+Vec3(0,60,0), p-Vec3(0,250,0));
++  return r.hasCol ? r.v.y*0.01f : fallback;
++  }
++
++btVector3 Ragdoll::anklePos(int k) const {
++  // конец голени - голеностоп (капсула голени от колена к стопе, ось X)
++  const size_t ca = lay->calf[k];
++  return body[ca].rb->getWorldTransform()*btVector3(lay->parts[ca].segHalf*0.01f,0,0);
++  }
++
++btVector3 Ragdoll::handPos(int a) const {
++  // ладонь: середина кисти ближе к пальцам; без кисти - конец предплечья
++  if(lay->hand[a]<body.size()) {
++    const size_t h = lay->hand[a];
++    return body[h].rb->getWorldTransform()*btVector3(lay->parts[h].halfLen*0.004f,0,0);
++    }
++  const size_t f = lay->fore[a];
++  return body[f].rb->getWorldTransform()*btVector3(lay->parts[f].segHalf*0.01f,0,0);
++  }
++
++void Ragdoll::setAnchor(int k, const btVector3& at) {
++  // ступня стоит: голеностоп держится на месте (трение подошвы о землю, предел силы - в driveBalance)
++  freeAnchor(k);
++  auto&           lg = beh->bal.leg[k];
++  auto&           rb = *body[lay->calf[k]].rb;
++  const btVector3 local(lay->parts[lay->calf[k]].segHalf*0.01f,0,0);
++  auto c = std::make_unique<btPoint2PointConstraint>(rb, local);
++  c->setPivotB(at);
++  c->setOverrideNumSolverIterations(solverIt);
++  owner->world->addConstraint(c.get(),true);
++  lg.pin     = std::move(c);
++  lg.anchor  = at;
++  lg.planted = true;
++  lg.swing   = -1;
++  }
++
++void Ragdoll::freeAnchor(int k) {
++  if(beh==nullptr)
++    return;
++  auto& lg = beh->bal.leg[k];
++  if(lg.pin!=nullptr) {
++    owner->world->removeConstraint(lg.pin.get());
++    lg.pin.reset();
++    }
++  lg.planted = false;
++  }
++
++void Ragdoll::removeAnchors() {
++  for(int k=0; k<2; ++k)
++    freeAnchor(k);
++  }
++
++void Ragdoll::releaseGrip(int a) {
++  if(beh==nullptr)
++    return;
++  auto& hd = beh->bal.hand[a];
++  if(hd.c!=nullptr) {
++    owner->world->removeConstraint(hd.c.get());
++    hd.c.reset();
++    }
++  if(hd.gripAt>=0.f)
++    hd.cool = beh->now+0.5f;
++  hd.gripAt  = -1;
++  hd.src     = -1;
++  hd.id      = 0;
++  hd.reach   = 0;
++  hd.reachAt = -1;
++  }
++
++void Ragdoll::startBalance() {
++  // активная кукла (таз и ноги за анимацией) становится полным регдоллом: ступни стоят там, где стояли
++  if(beh==nullptr)
++    beh = std::make_unique<Behave>();
++  setState(S_Balance);
++  auto& b  = *beh;
++  auto& bl = b.bal;
++  for(int k=0; k<2; ++k)
++    bl.leg[k] = Behave::Leg();
++  for(int a=0; a<2; ++a)
++    bl.hand[a] = Behave::Hand();
++  bl.on        = true;
++  bl.at        = b.now;
++  bl.risk      = 0;
++  bl.landEx    = -1;
++  bl.diverge   = 0;
++  bl.recovered = false;
++  bl.steps     = 0;
++  bl.calm      = 0;
++  bl.support   = 1;
++  bl.exceed    = 0;
++  bl.armsW     = 0;
++  bl.flail     = 0;
++  bl.heading   = horizontal(btv(bodyFront()));
++  if(bl.heading.length()<0.5f)
++    bl.heading = b.fwd;
++
++  // ноги друг о друга не цепляются (шаг через другую ногу обходит её дугой)
++  for(size_t x:{lay->thigh[0],lay->calf[0]})
++    for(size_t y:{lay->thigh[1],lay->calf[1]}) {
++      body[x].rb->setIgnoreCollisionCheck(body[y].rb.get(),true);
++      body[y].rb->setIgnoreCollisionCheck(body[x].rb.get(),true);
++      }
++  btVector3 com, vel;
++  massCenter(com,vel);
++  float ay = 0;
++  for(int k=0; k<2; ++k) {
++    const btVector3 a = anklePos(k);
++    setAnchor(k,a);
++    ay += float(a.y())*0.5f;
++    }
++  const btVector3 pel = body[0].rb->getCenterOfMassPosition();
++  const float     gy  = groundAt(pel, ay-0.08f*lay->size/180.f);
++  bl.ankleH = std::clamp(ay-gy, 0.02f, 0.2f);
++  bl.pelH   = std::max(float(pel.y())-gy, 0.3f);
++  bl.comH   = std::max(float(com.y())-gy, 0.4f);
++  bl.com    = com;
++  bl.vel    = vel;
++  }
++
++void Ragdoll::shove(const Shove& s) {
++  // Толчок телом (плечо, руки): центр масс получает скорость s.speed; верх тела - больше (корпус уходит первым и
++  // откидывается), таз - меньше, ступни стоят на земле. Дальше тело ловит равновесие само (tickBalance)
++  if(!isSimulated() || !lay->stance || drive.size()!=body.size() || s.speed<=0.f)
++    return;
++  if(st!=S_Active && st!=S_Balance)
++    return;
++  btVector3 dir = horizontal(btv(s.dir));
++  if(dir.length()<0.5f)
++    return;
++  if(st==S_Active)
++    startBalance();
++  auto& b  = *beh;
++  auto& bl = b.bal;
++  bl.freeArms  = s.freeArms;
++  bl.steady    = std::clamp(s.steady, 0.5f, 1.5f);
++  bl.at        = b.now;
++  bl.recovered = false;
++  bl.calm      = 0;
++
++  float M = 0, MK = 0;
++  auto share = [](uint8_t k) {
++    switch(Kind(k)) {
++      case K_Pelvis:   return 0.95f;
++      case K_Thigh:    return 0.7f;
++      case K_Calf:     return 0.f;
++      default:         return 1.08f;
++      }
++    };
++  for(size_t i=0; i<body.size(); ++i) {
++    M  += lay->parts[i].mass;
++    MK += lay->parts[i].mass*share(lay->parts[i].kind);
++    }
++  if(MK<=0.f)
++    return;
++  const float scale = M*s.speed/MK;
++  for(size_t i=0; i<body.size(); ++i) {
++    auto& rb = *body[i].rb;
++    rb.setLinearVelocity(rb.getLinearVelocity() + dir*(share(lay->parts[i].kind)*scale));
++    rb.activate(true);
++    }
++  // у места касания - толчок в точке (без изменения общей скорости): удар в плечо разворачивает корпус
++  {
++  const size_t    part = hitPart(s.at);
++  auto&           rb   = *body[part].rb;
++  const float     mp   = lay->parts[part].mass;
++  const btVector3 J    = dir*(mp*std::min(0.7f*s.speed, 2.f));
++  rb.applyImpulse(J, btv(s.at)-rb.getCenterOfMassPosition());
++  auto& ch = *body[lay->chest].rb;
++  if(part!=lay->chest)
++    ch.applyCentralImpulse(-J*0.5f);
++  body[0].rb->applyCentralImpulse(-J*(part!=lay->chest ? 0.5f : 1.f));
++  // мышцы у места касания на миг слабеют - тело поддаётся удару
++  for(size_t i=0; i<body.size(); ++i) {
++    const auto& p    = lay->parts[i];
++    const bool  near = (i==part || p.parent==part || lay->parts[part].parent==i);
++    auto&       d    = drive[i];
++    d.dip0   = std::max(1.f-toneOf(i), near ? 0.45f : 0.2f);
++    d.dipAt  = b.now;
++    d.dipRec = 0.9f;
++    }
++  // рана не держится: толчок не ранит
++  }
++  Log::i("[g2m] ragdoll: shoved ",int(s.speed*100.f+0.5f)," cm/s");
++  }
++
++// Досягаемость шага, ловя равновесие (доля роста 180 см): вперёд - выпад, назад и вбок короче, но спотыкаясь
++// человек шагает шире, чем идя: назад - до ~60 см, вбок - до ~50 см
++static constexpr float ReachFwd  = 0.8f;
++static constexpr float ReachBack = 0.44f;
++static constexpr float ReachSide = 0.45f;
++
++void Ragdoll::tickBalance(float dt) {
++  // Равновесие (каждый кадр): точка захвата, центр давления в опоре, шаги, вес на ногах, устоял или падает; цели
++  // мышц - корпус в позе анимации с наклоном против хода (тазобедренная стратегия), ноги - IK к ступням, руки -
++  // для равновесия или к опоре
++  auto&           b  = *beh;
++  auto&           bl = b.bal;
++  const btVector3 up(0,1,0);
++  const float     g  = DynamicWorld::gravityMS;
++  const float     k  = lay->size/180.f;
++  b.now += dt;
++
++  // направление тела - по тазу
++  {
++  const btVector3 f = horizontal(btv(bodyFront()));
++  if(f.length()>0.5f) {
++    b.fwd  = f;
++    b.left = up.cross(f);
++    }
++  }
++  btVector3 com, vel;
++  massCenter(com,vel);
++  btVector3 vh = vel;
++  vh.setY(0);
++  const btVector3 pel = body[0].rb->getCenterOfMassPosition();
++  float ankleY = 0;
++  int   nPl    = 0;
++  for(auto& lg:bl.leg)
++    if(lg.planted) {
++      ankleY += float(lg.anchor.y());
++      nPl++;
++      }
++  const float gy = groundAt(pel, nPl>0 ? ankleY/float(nPl)-bl.ankleH : float(pel.y())-bl.pelH);
++  const float w  = std::sqrt(g/std::max(bl.comH,0.5f));
++  bl.com = com;
++  bl.vel = vel;
++  btVector3 xi = com + vh/w;
++  xi.setY(gy);
++  bl.xi  = xi;
++  const float t  = b.now-bl.at;
++
++  // ---- шагающая нога: доля шага, место уточняется по ходу, поставлена - стоит. Встала по ходу тела - тело теряет
++  // часть скорости: удар ступни о землю и сгиб колена гасят её, как у колеса со спицами («rimless wheel»: v' = v*cos 2a,
++  // a - угол ноги от вертикали, sin a = полшага / длина ноги). Длинный шаг тормозит сильнее: спотыкаясь, человек
++  // гасит толчок за несколько шагов, а не одним
++  for(int s=0; s<2; ++s) {
++    auto& lg = bl.leg[s];
++    if(lg.planted || lg.swing<0.f)
++      continue;
++    lg.swing += dt/lg.dur;
++    if(lg.swing<1.f)
++      continue;
++    setAnchor(s, anklePos(s));
++    lg.landAt = b.now;
++    bl.steps++;
++    const float sp = float(vh.length());
++    btVector3   st = lg.anchor - (bl.leg[1-s].planted ? bl.leg[1-s].anchor : lg.from);
++    st.setY(0);
++    const float sl = float(st.length());
++    if(sp>0.05f && sl>0.05f) {
++      const float L     = 2.f*(lay->parts[lay->thigh[0]].segHalf+lay->parts[lay->calf[0]].segHalf)*0.01f;
++      const float sa    = std::min(sl/(2.f*L), 0.6f);
++      const float along = std::clamp(float(st.dot(vh))/(sl*sp), 0.f, 1.f);
++      // с каждым шагом ноги гасят хуже: тело уже не собрано, шаги сбиты (без этого и сильный толчок гасится всегда)
++      const float tired = std::max(0.35f, 1.f - 0.13f*float(bl.steps-1));
++      const float f     = std::min((1.4f*sa*sa + 0.03f)*bl.steady*tired, 0.25f)*along;
++      const btVector3 dv = -vh*f;
++      for(auto& bd:body)
++        bd.rb->setLinearVelocity(bd.rb->getLinearVelocity()+dv);
++      vel += dv;
++      vh  += dv;
++      xi   = com + vh/w;
++      xi.setY(gy);
++      bl.vel = vel;
++      bl.xi  = xi;
++      }
++    }
++  const float lastLand = std::max(bl.leg[0].landAt, bl.leg[1].landAt);
++
++  // нога вытянулась до конца и далеко отстала (тело ушло дальше, чем она достаёт) - ступня не держит: волочится, а
++  // не тянет тело назад
++  {
++  const float L = 2.f*(lay->parts[lay->thigh[0]].segHalf+lay->parts[lay->calf[0]].segHalf)*0.01f;
++  for(int s=0; s<2; ++s) {
++    auto& lg = bl.leg[s];
++    if(!lg.planted)
++      continue;
++    const btVector3 hip = body[lay->thigh[s]].rb->getWorldTransform()*pivotOf(lay->thigh[s]);
++    btVector3       hd  = hip-lg.anchor;
++    hd.setY(0);
++    if((hip-lg.anchor).length()>0.95f*L && hd.length()>0.45f*L) {
++      if(bl.leg[1-s].planted) {
++        // другая стоит - эта отрывается и сразу шагает (ниже)
++        freeAnchor(s);
++        lg.swing = -1;
++        } else {
++        // единственная опора, пока другая в шаге: ступня проскальзывает следом (носок), а не держит тело
++        btVector3 a = lg.anchor + hd*(1.f - 0.55f*L/float(hd.length()));
++        lg.anchor = a;
++        if(auto c = static_cast<btPoint2PointConstraint*>(lg.pin.get()))
++          c->setPivotB(a);
++        }
++      }
++    }
++  nPl = int(bl.leg[0].planted) + int(bl.leg[1].planted);
++  }
++
++  // ---- опора: стоящие ступни (пятка - носок, по направлению тела), держащая рука
++  auto footPts = [&](int s, btVector3* out) {
++    const btVector3 a = bl.leg[s].anchor;
++    out[0] = a - b.fwd*(0.05f*k);
++    out[1] = a + b.fwd*(0.13f*k);
++    };
++  btVector3 pts[8];
++  size_t    n = 0;
++  for(int s=0; s<2; ++s)
++    if(bl.leg[s].planted) {
++      footPts(s,pts+n);
++      n += 2;
++      }
++  const size_t nFeet = n;
++  for(auto& hd:bl.hand)
++    if(hd.gripAt>=0.f && n<8)
++      pts[n++] = hd.at;
++  // спиной или плечом упёрлось в стену - стена держит: опора до неё (раз в 0,1 с - луч от груди и таза по ходу)
++  if(b.now-bl.wallAt>0.1f) {
++    bl.wallAt = b.now;
++    bl.wallOn = false;
++    const btVector3 dir = bl.fall.length()>0.5f ? bl.fall : (vh.length()>0.1f ? vh.normalized() : btVector3(0,0,0));
++    if(dir.length()>0.5f)
++      for(size_t pi:{lay->chest,size_t(0)}) {
++        const btVector3 c  = body[pi].rb->getCenterOfMassPosition();
++        const float     rr = lay->parts[pi].radius*0.01f + 0.06f*k;
++        const auto      r  = owner->ray(cmv(c), cmv(c+dir*rr));
++        if(r.hasCol && std::abs(r.n.y)<0.6f) {
++          bl.wallOn = true;
++          bl.wall   = btv(r.v);
++          bl.wallT  = up.cross(dir).normalized();
++          break;
++          }
++        }
++    }
++  if(bl.wallOn && n+2<=8) {
++    pts[n++] = bl.wall + bl.wallT*(0.2f*k);
++    pts[n++] = bl.wall - bl.wallT*(0.2f*k);
++    }
++  // наткнулось на человека (живые NPC для физики куклы - не тела): он держит, как стена, - тело упирается в него
++  {
++  const btVector3 ch = body[lay->chest].rb->getCenterOfMassPosition();
++  for(auto& gp:grips) {
++    if(n+1>8)
++      break;
++    btVector3 rel = btv(gp.at)-ch;
++    rel.setY(0);
++    const float d = float(rel.length());
++    if(d<0.36f*k && d>1e-3f && float(rel.dot(bl.fall))>0.f)
++      pts[n++] = btv(gp.at);
++    }
++  }
++  // опора - ступня (пятка - носок, 9 см в ширину) и немного сверх неё: тазом и руками человек сдвигает центр давления
++  // за край ступни (стратегия бедра), пока толчок мал
++  // Держащая рука и стена - тоже опора: тело не валится (сила маятника и решение о падении - по всей опоре), но
++  // шаги - по ступням: держась, человек подшагивает, чтобы встать на ноги, а не висит на руке
++  const float footR = 0.045f*k + 0.04f*k*bl.support;
++  float       exceed = 0, exceedAll = 0;
++  btVector3   cop    = nFeet>0 ? supportPoint(pts,nFeet,xi,footR,exceed) : btVector3(pel.x(),gy,pel.z());
++  if(nFeet==0)
++    exceed = float((xi-cop).length());
++  btVector3   copAll = cop;
++  exceedAll = exceed;
++  if(n>nFeet)
++    copAll = supportPoint(pts,n,xi,footR,exceedAll);
++  bl.cop    = copAll;
++  bl.exceed = exceedAll;
++  {
++  btVector3 f = xi-cop;
++  f.setY(0);
++  if(f.length()>0.01f)
++    bl.fall = f.normalized(); else
++  if(vh.length()>0.1f)
++    bl.fall = vh.normalized();
++  }
++
++  // ---- новый шаг: точка захвата вне опоры, ни одна нога не в воздухе. Реакция - через 0,06 с после толчка.
++  // Шаг - туда, где окажется точка захвата к концу шага (над одной ступнёй она уходит дальше), со своей стороны
++  // (ширина шага), не дальше, чем шагает человек: вперёд дальше, назад и вбок короче, через другую ногу - чуть
++  // Стороны шага - в системе направления тела до толчка (bl.heading), а не нынешнего таза: ноги, разошедшиеся вперёд
++  // и назад, разворачивают таз на десятки градусов, и шаг «назад» в его системе уходит вбок - тело кружит и
++  // заваливается боком. Таз возвращается к этому направлению (driveBalance)
++  const btVector3 hf = bl.heading;
++  const btVector3 hl = up.cross(hf);
++  const bool swinging = (bl.leg[0].swing>=0.f && !bl.leg[0].planted) || (bl.leg[1].swing>=0.f && !bl.leg[1].planted);
++  auto stepTarget = [&](int s, float dur, float& cost, bool* crossOut = nullptr) {
++    const int  o = 1-s;
++    btVector3  po[2];
++    footPts(o,po);
++    float      ex = 0;
++    const btVector3 p  = supportPoint(po,2,xi,footR,ex);
++    btVector3  xl = p + (xi-p)*std::exp(w*dur);
++    // чуть дальше точки захвата: тело остановится, не доходя до ступни, и не потянет за собой следующий шаг
++    {
++    btVector3 ov = xl-p;
++    ov.setY(0);
++    if(ov.length()>1e-3f)
++      xl += ov.normalized()*(0.05f*k);
++    }
++    const float sideS = (s==0 ? 1.f : -1.f);
++    xl += hl*(sideS*0.06f*k);
++    btVector3 rel = xl - bl.leg[o].anchor;
++    rel.setY(0);
++    float f = float(rel.dot(hf)), l = float(rel.dot(hl))*sideS;
++    f = std::clamp(f, -ReachBack*k, ReachFwd*k);
++    l = std::clamp(l, -0.26f*k, ReachSide*k);
++    // эллипс досягаемости
++    const float fm = f>0.f ? ReachFwd*k : ReachBack*k, lm = ReachSide*k;
++    const float e  = std::sqrt((f*f)/(fm*fm) + (l*l)/(lm*lm));
++    if(e>1.f) {
++      f /= e;
++      l /= e;
++      }
++    // шаг через другую ногу (толкнули вбок, другая нога далеко) - чуть впереди неё, чтобы ноги разошлись
++    const bool cross = l<0.07f*k;
++    if(cross)
++      f = std::max(f, 0.1f*k);
++    if(crossOut!=nullptr)
++      *crossOut = cross;
++    btVector3 to = bl.leg[o].anchor + hf*f + hl*(l*sideS);
++    // в другого человека не наступает (живые NPC для куклы - не тела): ступня - рядом с ним
++    for(auto& gp:grips) {
++      btVector3 d = to-btv(gp.at);
++      d.setY(0);
++      const float r = 0.24f*k, dl = float(d.length());
++      if(dl<r)
++        to += (dl>1e-3f ? d/dl : -hf)*(r-dl);
++      }
++    btVector3 miss = to-xl;
++    miss.setY(0);
++    cost = float(miss.length()) + (cross ? 0.06f*k : 0.f);
++    to.setY(groundAt(to, gy) + bl.ankleH);
++    return to;
++    };
++  auto startStep = [&](int s, const btVector3& to, bool cross) {
++    auto& lg = bl.leg[s];
++    lg.from  = anklePos(s);
++    lg.to    = to;
++    lg.bulge = cross ? hf*(0.16f*k) : btVector3(0,0,0);
++    btVector3 d = lg.to-lg.from;
++    d.setY(0);
++    const float len = float(d.length());
++    // торопится: чем дальше точка захвата, тем быстрее шаг
++    lg.dur   = std::clamp(0.14f + 0.13f*len/k - 0.06f*std::min(exceed/(0.3f*k),1.f), 0.14f, 0.25f);
++    lg.lift  = std::clamp(0.04f + 0.08f*len, 0.035f, 0.09f)*k;
++    lg.swing = 0;
++    freeAnchor(s);
++#ifdef RAGDOLL_TRACE
++    if(std::getenv("BTRACE"))
++      std::printf("     step %d t=%.2f fwd (%.2f %.2f) from (%.0f %.0f) to (%.0f %.0f) cross %d xi (%.0f %.0f) other (%.0f %.0f) dur %.2f\n",s,double(t),
++                  double(b.fwd.x()),double(b.fwd.z()),
++                  double(lg.from.x()*100),double(lg.from.z()*100),double(to.x()*100),double(to.z()*100),int(cross),
++                  double(xi.x()*100),double(xi.z()*100),double(bl.leg[1-s].anchor.x()*100),double(bl.leg[1-s].anchor.z()*100),double(lg.dur));
++#endif
++    };
++  // нога сорвалась с опоры (вытянулась) - сразу шагает ею, пока другая стоит
++  int freeLeg = -1;
++  for(int s=0; s<2; ++s)
++    if(!bl.leg[s].planted && bl.leg[s].swing<0.f && bl.leg[1-s].planted)
++      freeLeg = s;
++  if(freeLeg>=0 && !bl.recovered) {
++    float c  = 0;
++    bool  cr = false;
++    const btVector3 to = stepTarget(freeLeg,0.25f,c,&cr);
++    startStep(freeLeg, to, cr);
++    }
++  else if(!swinging && !bl.recovered && t>0.08f && b.now-lastLand>0.04f && exceed>0.03f*k && nPl==2) {
++    float     c0 = 0, c1 = 0;
++    bool      x0 = false, x1 = false;
++    const float durGuess = 0.28f;
++    const btVector3 t0 = stepTarget(0,durGuess,c0,&x0);
++    const btVector3 t1 = stepTarget(1,durGuess,c1,&x1);
++    const int s  = (c0<=c1) ? 0 : 1;
++    startStep(s, s==0 ? t0 : t1, s==0 ? x0 : x1);
++    }
++  else if(swinging) {
++    // место шага уточняется: тело ушло дальше - нога тянется дальше (не быстрее 3 м/с)
++    for(int s=0; s<2; ++s) {
++      auto& lg = bl.leg[s];
++      if(lg.planted || lg.swing<0.f)
++        continue;
++      float c = 0;
++      const btVector3 to = stepTarget(s, std::max(lg.dur*(1.f-lg.swing),0.02f), c);
++      btVector3 d = to-lg.to;
++      const float mx = 3.f*dt;
++      if(d.length()>mx)
++        d = d.normalized()*mx;
++      lg.to += d;
++      }
++    }
++
++  // ---- вес на ногах: таз над опорой, корпус не завалился, колени не подломились
++  {
++  const float L   = 2.f*(lay->parts[lay->thigh[0]].segHalf+lay->parts[lay->calf[0]].segHalf)*0.01f;
++  btVector3   dp  = pel - cop;
++  dp.setY(0);
++  const float sL  = 1.f - smooth((float(dp.length())-0.6f*L)/(0.3f*L));
++  btVector3   ub  = body[lay->chest].rb->getCenterOfMassPosition()-pel;
++  ub = ub.length()>1e-3f ? ub.normalized() : up;
++  // корпус склонился - ноги ещё держат, пока он не лёг (спотыкаясь вперёд, человек бежит, наклонившись)
++  const float sT  = smooth((float(ub.y())-0.2f)/0.35f);
++  const float hp  = float(pel.y())-gy;
++  const float sH  = smooth((hp/bl.pelH-0.4f)/0.25f);
++  const float want= std::min(std::min(sL,sT),sH)*(nPl>0 ? 1.f : 0.4f);
++  bl.support = approach(bl.support, want, dt, want<bl.support ? 0.04f : 0.15f);
++  }
++
++#ifdef RAGDOLL_TRACE
++  // BTRACE=1: равновесие по ходу - центр масс, скорость, точка захвата, опора, ступни
++  if(std::getenv("BTRACE")) {
++    static float last = -1;
++    static const float every = std::getenv("BTRACE_DT") ? float(std::atof(std::getenv("BTRACE_DT"))) : 0.099f;
++    if(b.now-last>=every || b.now<last) {
++      last = b.now;
++      std::printf("   t=%.2f yaw=%.0f com=(%.0f %.0f %.0f) v=(%.2f %.2f %.2f) xi=(%.0f %.0f) cop=(%.0f %.0f) ex=%.0f sup=%.2f calm=%.2f steps=%d"
++                  " L[%s %.2f (%.0f %.0f)>(%.0f %.0f)] R[%s %.2f (%.0f %.0f)>(%.0f %.0f)] pelY=%.0f\n",
++                  double(t),double(std::atan2(float(b.fwd.x()),float(b.fwd.z()))*180.f/float(M_PI)),double(com.x()*100),double(com.y()*100),double(com.z()*100),double(vel.x()),double(vel.y()),double(vel.z()),
++                  double(xi.x()*100),double(xi.z()*100),double(cop.x()*100),double(cop.z()*100),double(exceed*100),double(bl.support),
++                  double(bl.calm),bl.steps,
++                  bl.leg[0].planted ? "st" : "sw",double(bl.leg[0].swing),double(bl.leg[0].anchor.x()*100),double(bl.leg[0].anchor.z()*100),
++                  double(bl.leg[0].to.x()*100),double(bl.leg[0].to.z()*100),
++                  bl.leg[1].planted ? "st" : "sw",double(bl.leg[1].swing),double(bl.leg[1].anchor.x()*100),double(bl.leg[1].anchor.z()*100),
++                  double(bl.leg[1].to.x()*100),double(bl.leg[1].to.z()*100),
++                  double((pel.y()-gy)*100));
++      }
++    }
++#endif
++  // ---- устоял или падает
++  if(!bl.recovered) {
++    const bool still = !swinging && exceed<0.015f*k && vh.length()<0.3f && b.now-lastLand>0.2f && t>0.5f;
++    bl.calm = still ? bl.calm+dt : 0.f;
++    if(bl.calm>0.35f)
++      bl.recovered = true;
++    // шаги не догоняют - тело валится. Человек борется: шагает снова и снова, пока каждый шаг хоть немного
++    // приближает опору к точке захвата; падает, когда два шага подряд она уходила дальше, когда она далеко за
++    // пределом шага или долго вне опоры (пятится, а тело уходит быстрее шагов), когда ноги не держат (support).
++    // По направлению: вперёд человек шагает дальше, назад и вбок - короче
++    const float fw      = float(bl.fall.dot(hf));
++    const float stepMax = (fw>0.3f ? ReachFwd : (fw<-0.3f ? ReachBack : ReachSide))*k;
++    if(t>0.12f)
++      bl.risk = exceedAll>0.3f*k ? bl.risk + (exceedAll-0.3f*k)/stepMax*dt : std::max(0.f, bl.risk - 0.6f*dt);
++    const bool landed = lastLand>=b.now-1e-4f && bl.steps>0;
++    if(landed) {
++      if(bl.landEx>=0.f && exceedAll>bl.landEx+0.02f*k && exceedAll>0.6f*stepMax)
++        bl.diverge++; else
++        bl.diverge = std::max(0, bl.diverge-1);
++      bl.landEx = exceedAll;
++      }
++    // рука вот-вот схватится за опору (стена, человек рядом) - падение ещё не решено (не дольше 0,4 с)
++    bool reaching = false;
++    for(auto& hd:bl.hand)
++      if(hd.src>=0 && hd.gripAt<0.f && hd.reachAt>=0.f && b.now-hd.reachAt<0.4f)
++        reaching = true;
++    // нога в шаге - сначала поставит её (споткнулся шагом и упал), если только тело не ушло совсем далеко
++    const bool beyond = exceedAll>2.f*stepMax && t>0.15f && (!swinging || t>0.5f || exceedAll>2.8f*stepMax);
++    // нога встала, а точка захвата всё ещё куда дальше, чем достанет следующий шаг, - не поймать
++    const bool hopeless = landed && bl.steps>=2 && exceedAll>(0.95f+0.4f*bl.steady)*stepMax;
++    // борется долго, а тело всё не встаёт над ногами - выбился из сил
++    const bool tired    = t>1.8f && exceedAll>0.12f*k && !swinging;
++    if(bl.support<0.25f || (!reaching && (bl.diverge>=2 || hopeless || beyond || bl.risk>1.2f || tired))) {
++#ifdef RAGDOLL_TRACE
++      if(std::getenv("BTRACE") && !balanceLost)
++        std::printf("   LOST t=%.2f support %.2f landed %d exceed %.0f stepMax %.0f risk %.2f diverge %d steps %d reaching %d hands %d/%.2f/%.2f %d/%.2f/%.2f now %.2f\n",double(t),double(bl.support),
++                    int(landed),double(exceed*100),double(stepMax*100),double(bl.risk),bl.diverge,bl.steps,int(reaching),
++                    int(bl.hand[0].src),double(bl.hand[0].reachAt),double(bl.hand[0].gripAt),int(bl.hand[1].src),double(bl.hand[1].reachAt),double(bl.hand[1].gripAt),double(b.now));
++#endif
++      balanceLost = true;
++      }
++    if(float(simTime)>float(BalanceMaxTime)) {
++      if(exceed<0.05f*k && vh.length()<0.6f)
++        bl.recovered = true; else
++        balanceLost = true;
++      }
++    }
++
++  // ---- цели мышц. Корпус - поза анимации с наклоном против хода: уходит назад - сгибается вперёд (центр масс
++  // вперёд), вперёд - чуть выпрямляется, вбок - к другой стороне; голова держит горизонт
++  {
++  const float     sp   = float(vh.length());
++  const btVector3 vdir = sp>0.05f ? vh/sp : btVector3(0,0,0);
++  const float     back = std::max(0.f, -float(vdir.dot(b.fwd)));
++  const float     ang  = deg(std::clamp(10.f*sp*(1.f+0.6f*back), 0.f, 24.f))*smooth((t-0.08f)/0.25f);
++  btVector3       bendW(0,0,0);
++  if(sp>0.05f)
++    bendW = up.cross(-vdir).normalized()*ang;
++  // наклон - тазом (держит driveBalance) и немного позвоночником
++  bl.lean = bendW*0.6f;
++  bendW  *= 0.4f;
++  const float nSpine = float(std::max<size_t>(lay->spineChain.size(),1));
++  drive[0].goal = drive[0].target;
++  for(size_t i=1; i<lay->parts.size(); ++i) {
++    const auto& p = lay->parts[i];
++    if(p.kind==K_Thigh || p.kind==K_Calf)
++      continue;
++    auto&       d   = drive[i];
++    const auto& dp  = drive[p.parent];
++    btTransform cur = dp.goal*(dp.target.inverse()*d.target);
++    btQuaternion q  = btQuaternion::getIdentity();
++    if(std::find(lay->spineChain.begin(),lay->spineChain.end(),i)!=lay->spineChain.end())
++      q = rotOf(bendW*(1.f/nSpine));
++    else if(i==lay->neck || i==lay->head)
++      q = rotOf(bendW*(-0.35f));
++    rotateAbout(cur, cur*pivotOf(i), q);
++    d.goal = cur;
++    }
++  }
++  for(auto& d:drive) {
++    d.hasOverride = false;
++    d.overrideW   = 0;
++    d.hold        = 0;
++    }
++  // ноги: IK от бедра к ступне (стоит - к месту опоры, шагает - к точке дуги), колено вперёд
++  for(int s=0; s<2; ++s) {
++    const size_t th = lay->thigh[s], ca = lay->calf[s];
++    const auto&  lg = bl.leg[s];
++    const btVector3 hip = body[th].rb->getWorldTransform()*pivotOf(th);
++    btVector3 to = lg.anchor;
++    if(!lg.planted && lg.swing>=0.f) {
++      const float u  = std::clamp(lg.swing+0.08f, 0.f, 1.f);
++      const float sm = smooth(u);
++      to = lg.from + (lg.to-lg.from)*sm + lg.bulge*std::sin(float(M_PI)*u);
++      to.setY(to.y() + lg.lift*std::sin(float(M_PI)*u));
++      }
++    const float l1 = 2.f*lay->parts[th].segHalf*0.01f, l2 = 2.f*lay->parts[ca].segHalf*0.01f;
++    // колено - вперёд по направлению тела до толчка: по повёрнутому тазу колени крутили бы таз дальше
++    const btVector3 pole = hf + hl*(0.15f*(s==0 ? 1.f : -1.f));
++    btVector3 du, df;
++    armDirs(hip, to, l1, l2, pole, du, df);
++    // стоящая нога - мягко: её положение задают ступня и таз (вес и равновесие держит driveBalance), мышцы только
++    // ведут колено вперёд; шагающая - сильнее (несёт ногу)
++    const float str = (lg.planted ? 0.18f : 0.55f)*(0.5f+0.5f*bl.support);
++    aimPart(th, du, str, 14.f);
++    aimPart(ca, df, str, 14.f);
++    }
++  tickGrab(dt);
++  balanceArms(dt);
++  }
++
++void Ragdoll::balanceArms(float dt) {
++  // Руки для равновесия (не держатся за опору и не тянутся к ней): разведены в стороны («крылья») и чуть вперёд, тем
++  // выше, чем дальше тело от опоры; когда валится - машут по кругу («мельница» в плоскости падения: вверху рука идёт
++  // против падения - отдача наклоняет тело обратно), каждая в своей фазе; выровнялось - опускаются. Валится вбок -
++  // рука с той стороны выставлена туда, другая поднята противовесом
++  auto&           b    = *beh;
++  auto&           bl   = b.bal;
++  const btVector3 up(0,1,0);
++  const float     k    = lay->size/180.f;
++  btVector3       vh   = bl.vel;
++  vh.setY(0);
++  const float     urge = std::clamp(bl.exceed/(0.22f*k) + float(vh.length())/2.6f, 0.f, 1.f);
++  const float     want = urge>0.15f ? std::clamp(0.3f+urge, 0.f, 1.f) : 0.f;
++  bl.armsW = approach(bl.armsW, want, dt, want>bl.armsW ? 0.12f : 0.45f);
++  bl.flail += dt*(4.f + 3.5f*urge);
++  if(bl.armsW<=0.01f)
++    return;
++  const btVector3 fall = bl.fall.length()>0.5f ? bl.fall : btVector3(0,0,0);
++  const float     mill = std::clamp(urge-0.5f, 0.f, 0.35f)/0.35f;
++  for(int a=0; a<2; ++a) {
++    if(bl.hand[a].src>=0)
++      continue; // тянется к опоре или держится
++    const size_t u = lay->upper[a], f = lay->fore[a];
++    if(u>=body.size() || f>=body.size())
++      continue;
++    const btVector3 sideV = b.left*(a==0 ? 1.f : -1.f);
++    // вбок: >0 - валится в сторону этой руки
++    const float     side  = float(fall.dot(sideV));
++    const float     ph    = bl.flail + (a==0 ? 0.f : 2.4f);
++    btVector3 wantU = sideV*0.8f + b.fwd*0.25f - fall*(0.3f*urge) - up*(0.6f-0.55f*urge);
++    // вбок: эта рука - туда (ниже, к земле), другая - вверх противовесом
++    wantU += up*(-0.35f*std::max(side,0.f) + 0.55f*std::max(-side,0.f))*urge;
++    wantU = wantU.normalized() + (up*std::cos(ph) - fall*std::sin(ph))*(0.55f*mill);
++    btVector3 wantF = wantU.normalized()*0.6f + b.fwd*0.4f + up*0.1f;
++    aimPart(u, wantU, 0.6f*bl.armsW, 8.f);
++    aimPart(f, wantF, 0.5f*bl.armsW, 8.f);
++    }
++  }
++
++void Ragdoll::tickGrab(float dt) {
++  // Рука к опоре (как в Euphoria и у Gripper active-ragdolls): тело не держит равновесие само - свободная рука ищет
++  // ближайшую опору в пределах руки (стена, край, человек рядом), тянется к ней (IK плеча и локтя; мышцы и
++  // анатомические пределы суставов решают, куда она реально дойдёт) и хватается: сустав «кисть - опора» с пределом
++  // силы хвата. Устоял - отпускает; растянулась, сорвалась - отпускает
++  auto&           b  = *beh;
++  auto&           bl = b.bal;
++  const btVector3 up(0,1,0);
++  const float     k  = lay->size/180.f;
++  btVector3       vh = bl.vel;
++  vh.setY(0);
++  const bool trouble = bl.exceed>0.04f*k || bl.support<0.85f || (vh.length()>0.7f && b.now-bl.at<1.2f);
++  const btVector3 chest = body[lay->chest].rb->getCenterOfMassPosition();
++  for(int a=0; a<2; ++a) {
++    auto& hd = bl.hand[a];
++    const size_t u = lay->upper[a], f = lay->fore[a];
++    if(((bl.freeArms>>a)&1)==0 || u>=body.size() || f>=body.size())
++      continue;
++    const float     l1 = 2.f*lay->parts[u].segHalf*0.01f, l2 = 2.f*lay->parts[f].segHalf*0.01f;
++    const float     lh = lay->hand[a]<body.size() ? 2.f*lay->parts[lay->hand[a]].segHalf*0.01f*0.4f : 0.f;
++    const float     reach = l1+l2+lh;
++    const btVector3 sh = body[u].rb->getWorldTransform()*pivotOf(u);
++    const btVector3 sideV = b.left*(a==0 ? 1.f : -1.f);
++
++    if(hd.gripAt>=0.f) {
++      // держится: опора-человек двигается - рука с ним; устоял - отпускает
++      if(hd.src==1) {
++        const Grip* g = nullptr;
++        for(auto& gp:grips)
++          if(gp.id==hd.id)
++            g = &gp;
++        if(g==nullptr) {
++          releaseGrip(a);
++          continue;
++          }
++        btVector3 to = btv(g->at);
++        btVector3 d  = to-hd.at;
++        if(d.length()>1.5f*dt)
++          d = d.normalized()*(1.5f*dt);
++        hd.at += d;
++        if(auto c = static_cast<btPoint2PointConstraint*>(hd.c.get()))
++          c->setPivotB(hd.at);
++        }
++      const bool broke = hd.c!=nullptr && !hd.c->isEnabled();
++      if(broke || (sh-hd.at).length()>reach*1.2f || (bl.recovered && b.now-hd.gripAt>0.3f) ||
++         (bl.calm>0.2f && b.now-hd.gripAt>0.5f)) {
++        releaseGrip(a);
++        continue;
++        }
++      btVector3 du, df;
++      armDirs(sh, hd.at, l1, l2+lh, -up*0.5f + sideV*0.6f - b.fwd*0.2f, du, df);
++      aimPart(u, du, 0.6f, 12.f);
++      aimPart(f, df, 0.6f, 12.f);
++      continue;
++      }
++    if(b.now<hd.cool || (!trouble && hd.src<0) || bl.recovered) {
++      hd.src     = -1;
++      hd.reach   = 0;
++      hd.reachAt = -1;
++      continue;
++      }
++
++    // ищет опору (раз в 0,12 с): люди рядом (Npc::ragdollGrips) и стены - лучами от плеча туда, куда валится тело
++    if(hd.src<0 || b.now-hd.scanAt>0.12f) {
++      hd.scanAt = b.now;
++      float     best = 1e9f;
++      int8_t    src  = -1;
++      uint32_t  id   = 0;
++      btVector3 at   = btVector3(0,0,0), vel = btVector3(0,0,0);
++      // тело летит к опоре - рука тянется заранее (что окажется в пределах руки за 0,35 с)
++      const float ahead = std::min(float(vh.length())*0.35f, 0.6f);
++      const auto& other = bl.hand[1-a];
++      for(auto& gp:grips) {
++        const btVector3 p = btv(gp.at);
++        const float     d = float((p-sh).length());
++        // слишком близко к плечу (рука так не сложится) или за плечом (плечо назад почти не разгибается) - не достать
++        if(d>reach*1.1f+ahead || d<0.4f*reach || float(((p-sh)/d).dot(b.fwd))<-0.35f)
++          continue;
++        // другая рука уже тянется сюда - эта берётся рядом (за другое плечо, за руку)
++        if(other.src==1 && (other.at-p).length()<0.12f)
++          continue;
++        btVector3 rel = p-chest;
++        rel.setY(0);
++        // не за спиной и со своей стороны тела
++        if(float(rel.dot(b.fwd))<-0.12f || float(rel.dot(sideV))<-0.15f)
++          continue;
++        const float score = d - 0.25f*std::max(0.f, float(((p-sh)/d).dot(bl.fall)));
++        if(score<best) {
++          best = score;
++          src  = 1;
++          id   = gp.id;
++          at   = p;
++          vel  = btv(gp.vel);
++          }
++        }
++      const btVector3 fall = bl.fall.length()>0.5f ? bl.fall : b.fwd;
++      const btVector3 dirs[4] = {
++        fall,
++        (fall*0.75f + sideV*0.65f).normalized(),
++        (sideV*0.85f + fall*0.35f).normalized(),
++        (fall*0.8f - up*0.6f).normalized(),
++        };
++      for(auto& d:dirs) {
++        const Vec3 from = cmv(sh);
++        const Vec3 to   = cmv(sh + d*(reach + ahead*std::max(0.f, float(d.dot(vh.normalized())))));
++        const auto r    = owner->ray(from,to);
++        if(!r.hasCol)
++          continue;
++        btVector3 nrm(r.n.x,r.n.y,r.n.z);
++        if(nrm.length()<1e-3f)
++          nrm = -d;
++        nrm.normalize();
++        btVector3 p = btv(r.v) + nrm*0.025f;
++        // земля под ногами - не опора для хвата (падая, руки к ней выставляет tickFallPose)
++        const float groundY = float(bl.cop.y());
++        if(nrm.y()>0.7f && p.y()<groundY+0.5f*k)
++          continue;
++        // стена за спиной: до точки за плечами рука не достанет (плечо назад не разгибается) - ладонь на стену ниже
++        // и сбоку, у бедра, как у человека, прислонившегося к стене
++        if(std::abs(float(nrm.y()))<0.6f && float((p-chest).dot(b.fwd))<-0.05f) {
++          p += sideV*(0.18f*k) - up*(0.42f*k);
++          p.setY(std::max(float(p.y()), groundY+0.55f*k));
++          }
++        const float dd    = float((p-sh).length());
++        const float score = dd + (d.y()<-0.3f ? 0.08f : 0.f);
++        if(score<best) {
++          best = score;
++          src  = 0;
++          id   = 0;
++          at   = p;
++          vel  = btVector3(0,0,0);
++          }
++        }
++      hd.src = src;
++      hd.id  = id;
++      if(src>=0) {
++        hd.at  = at;
++        hd.vel = vel;
++        }
++      }
++    if(hd.src<0) {
++      hd.reach   = 0;
++      hd.reachAt = -1;
++      continue;
++      }
++    // тянется: рефлекс быстрый (~0,15 с)
++    if(hd.reachAt<0.f)
++      hd.reachAt = b.now;
++    hd.reach = approach(hd.reach, 1.f, dt, 0.08f);
++    if(hd.src==1)
++      hd.at += hd.vel*dt;
++    btVector3 du, df;
++    armDirs(sh, hd.at, l1, l2+lh, -up*0.5f + sideV*0.6f - b.fwd*0.2f, du, df);
++    aimPart(u, du, 0.9f*hd.reach, 14.f);
++    aimPart(f, df, 0.9f*hd.reach, 14.f);
++    if(lay->hand[a]<body.size())
++      aimPart(lay->hand[a], df, 0.5f*hd.reach, 12.f);
++    // схватилась: ладонь у опоры - держится там, где коснулась (без рывка к точке)
++    const btVector3 hp = handPos(a);
++#ifdef RAGDOLL_TRACE
++    if(std::getenv("BTRACE"))
++      std::printf("     hand %d src %d reach %.2f to (%.0f %.0f %.0f) dist %.0f cm, shoulder dist %.0f (reach %.0f)\n",a,int(hd.src),double(hd.reach),
++                  double(hd.at.x()*100),double(hd.at.y()*100),double(hd.at.z()*100),double((hp-hd.at).length()*100),
++                  double((sh-hd.at).length()*100),double(reach*100));
++#endif
++    if((hp-hd.at).length()<0.12f*k) {
++      const size_t hb = lay->hand[a]<body.size() ? lay->hand[a] : f;
++      auto&        rb = *body[hb].rb;
++      auto c = std::make_unique<btPoint2PointConstraint>(rb, rb.getWorldTransform().inverse()*hp);
++      c->setPivotB(hp);
++      c->setOverrideNumSolverIterations(solverIt);
++      owner->world->addConstraint(c.get(),true);
++      hd.c      = std::move(c);
++      hd.at     = hp;
++      hd.gripAt = b.now;
++      Log::i("[g2m] ragdoll: grabs ",hd.src==1 ? "a person" : "a wall");
++      }
++    }
++  }
++
++void Ragdoll::driveBalance(float dt) {
++  // Каждый шаг физики. Вес тела держат ноги (на долю опоры тяжесть уравновешена - сила земли через ступни); по
++  // горизонтали - перевёрнутый маятник: центр масс уходит от центра давления с ускорением w^2*(com - cop) - точка
++  // захвата в опоре, и тело плавно останавливается над ней, вне опоры - валится, пока шаг не поймает; ноги держат
++  // таз на высоте стойки; корпус - к вертикали (как SIMBICON держит корпус в мире); стоящие ступни держит трение,
++  // шагающая идёт по дуге к месту шага
++  auto&           b  = *beh;
++  auto&           bl = b.bal;
++  const btVector3 up(0,1,0);
++  const float     g  = DynamicWorld::gravityMS;
++  const float     s  = bl.support;
++  const float     k  = lay->size/180.f;
++  btVector3 com, vel;
++  massCenter(com,vel);
++  btVector3 vh = vel;
++  vh.setY(0);
++  const float w  = std::sqrt(g/std::max(bl.comH,0.5f));
++  const float gy = float(bl.cop.y());
++  float M = 0;
++  for(auto& p:lay->parts)
++    M += p.mass;
++
++  // центр давления: точка захвата в опоре - она сама (по нынешней скорости), иначе край опоры
++  btVector3 cop = bl.cop;
++  if(bl.exceed<=0.f) {
++    cop = com + vh/w;
++    cop.setY(gy);
++    }
++  btVector3 aH = (com-cop)*(w*w);
++  aH.setY(0);
++  // точка захвата в опоре: голеностопы и бёдра гасят остаток скорости (стратегии голеностопа и бедра) - тело
++  // останавливается быстрее, чем точечная опора маятника
++  if(bl.exceed<=0.f)
++    aH -= vh*2.5f;
++  if(aH.length()>0.9f*g)
++    aH = aH.normalized()*(0.9f*g);
++  // высота таза: колени чуть согнуты, на шаге и при сильном толчке - ниже
++  const btVector3 pel   = body[0].rb->getCenterOfMassPosition();
++  const float     crouch= (0.03f + 0.04f*std::min(float(vh.length())/1.5f,1.f))*k;
++  const float     hT    = bl.pelH - crouch;
++  const float     hp    = float(pel.y())-gy;
++  const float     vy    = float(body[0].rb->getLinearVelocity().y());
++  const float     aY    = std::clamp(40.f*(hT-hp) - 9.f*vy, -7.f, 7.f);
++  const btVector3 dv    = (aH + btVector3(0, g+aY, 0))*(dt*s);
++  for(auto& bd:body) {
++    auto& rb = *bd.rb;
++    rb.setLinearVelocity(rb.getLinearVelocity()+dv);
++    }
++
++  // корпус к вертикали (как SIMBICON держит корпус в мире, а не относительно ног): таз - так, чтобы «вверх» его кадра
++  // анимации смотрел вверх, с наклоном против хода (tickBalance: bl.lean); поворот вокруг вертикали гасится. Мышцы
++  // бёдер в опоре таз не крутят: иначе тело с закреплёнными ступнями падает целиком, как столб
++  {
++  auto&              rb  = *body[0].rb;
++  const btQuaternion qT  = drive[0].target.getRotation();
++  const btVector3    uL  = quatRotate(qT.inverse(), up);
++  const btVector3    uC  = quatRotate(rb.getWorldTransform().getRotation(), uL);
++  const btVector3    uW  = quatRotate(rotOf(bl.lean), up);
++  btVector3          ax  = uC.cross(uW);
++  const float        sn  = float(ax.length());
++  const float        ang = std::atan2(sn, float(uC.dot(uW)));
++  const btVector3    wv  = rb.getAngularVelocity();
++  const btVector3    wy  = up*wv.dot(up);
++  const btVector3    wt  = wv-wy;
++  constexpr float    Wn  = 16.f;
++  btVector3 acc = -wt*(2.f*Wn);
++  if(sn>1e-5f)
++    acc += ax*(ang/sn)*(Wn*Wn);
++  const float mx = 120.f;
++  if(acc.length()>mx)
++    acc = acc.normalized()*mx;
++  // направление тела: к тому, куда смотрело до толчка (удар в плечо разворачивает - потом тело возвращается).
++  // Отдельно от наклона и сильнее: ноги, разошедшиеся вперёд и назад, крутят таз, и без этого тело на шагах
++  // поворачивается на полоборота
++  {
++  const btVector3 f  = horizontal(btv(bodyFront()));
++  const float     yw = std::atan2(float(f.cross(bl.heading).dot(up)), float(f.dot(bl.heading)));
++  btVector3       ay = up*(150.f*yw) - wy*24.f;
++  if(ay.length()>80.f)
++    ay = ay.normalized()*80.f;
++  acc += ay;
++  }
++  // момент - тазу и корпусу вместе, поворотом вокруг их общего центра масс (импульс тела не меняется): иначе
++  // позвоночник гнётся, а корпус не выпрямляется
++  // в первые мгновения после толчка корпус держится в полную силу (человек напрягается всем телом), потом - по опоре
++  const float     sw = (b.now-bl.at<0.8f) ? std::max(s,0.7f) : std::max(s,0.3f);
++  const btVector3 dw = acc*(dt*sw);
++  btVector3 c0 = rb.getCenterOfMassPosition()*lay->parts[0].mass;
++  float     m0 = lay->parts[0].mass;
++  for(auto i:lay->spineChain) {
++    c0 += body[i].rb->getCenterOfMassPosition()*lay->parts[i].mass;
++    m0 += lay->parts[i].mass;
++    }
++  c0 /= m0;
++  auto turn = [&](btRigidBody& r2, float w) {
++    r2.setAngularVelocity(r2.getAngularVelocity()+dw*w);
++    r2.setLinearVelocity (r2.getLinearVelocity() +(dw*w).cross(r2.getCenterOfMassPosition()-c0));
++    };
++  turn(rb,1.f);
++  for(auto i:lay->spineChain)
++    turn(*body[i].rb,0.7f);
++  }
++
++  // ступни
++  const float hold = 1.3f*M*g*dt; // трение подошвы: больше точка опоры не удержит - ступня скользит
++  for(int sd=0; sd<2; ++sd) {
++    auto& lg = bl.leg[sd];
++    if(lg.planted) {
++      if(auto c = static_cast<btPoint2PointConstraint*>(lg.pin.get()))
++        c->m_setting.m_impulseClamp = hold;
++      // подошва и вокруг вертикали держится трением: стоящая нога не крутится на месте, иначе взмах шагающей ноги
++      // разворачивает таз, и шаги «назад» уходят вбок
++      auto&           cr = *body[lay->calf[sd]].rb;
++      const btVector3 cw = cr.getAngularVelocity();
++      cr.setAngularVelocity(cw - up*(float(cw.dot(up))*std::min(1.f, dt/0.03f)));
++      continue;
++      }
++    if(lg.swing<0.f)
++      continue;
++    auto arc = [&](float u) {
++      u = std::clamp(u,0.f,1.f);
++      const float sm = smooth(u);
++      btVector3 p = lg.from + (lg.to-lg.from)*sm + lg.bulge*std::sin(float(M_PI)*u);
++      p.setY(p.y() + lg.lift*std::sin(float(M_PI)*u));
++      return p;
++      };
++    const float     u    = lg.swing;
++    const btVector3 P    = arc(u);
++    const btVector3 P2   = arc(u + dt/lg.dur);
++    const btVector3 vArc = (P2-P)/std::max(dt,1e-4f);
++    auto&           rb   = *body[lay->calf[sd]].rb;
++    const btVector3 ank  = anklePos(sd);
++    const btVector3 r    = ank-rb.getCenterOfMassPosition();
++    const btVector3 vA   = rb.getVelocityInLocalPoint(r);
++    btVector3       dvA  = vArc + (P-ank)/0.05f - vA;
++    if(dvA.length()>8.f)
++      dvA = dvA.normalized()*8.f;
++    const btVector3 J = dvA*(0.6f*lay->parts[lay->calf[sd]].mass);
++    rb.applyImpulse(J, r);
++    rb.activate(true);
++    // ногу несут мышцы бедра: отдача - тазу в тазобедренном суставе (сила внутри тела). Иначе толчок ноги снаружи
++    // упирается в точку опоры другой ступни сбоку от центра масс и крутит всё тело вокруг вертикали
++    {
++    auto&           pr  = *body[0].rb;
++    const btVector3 hip = body[lay->thigh[sd]].rb->getWorldTransform()*pivotOf(lay->thigh[sd]);
++    btVector3       Jh  = -J;
++    Jh.setY(0);
++    pr.applyImpulse(Jh, hip-pr.getCenterOfMassPosition());
++    }
++    }
++  // хват: предел силы - как держит кисть (сорвётся - отпустит, tickGrab)
++  for(auto& hd:bl.hand)
++    if(auto c = static_cast<btPoint2PointConstraint*>(hd.c.get()))
++      c->m_setting.m_impulseClamp = 450.f*k*k*dt;
++  }
++
++// ---- Подъём телом (S_GetUp)
++
++bool Ragdoll::startGetUp(float riseAt) {
++  if(!lay->humanoid || !lay->stance)
++    return false;
++  if(st!=S_Fall && st!=S_Unconscious)
++    return false;
++  if(!isSimulated()) {
++    // застывшее тело оживает, если в физике есть место
++    const State was = st;
++    st = S_Fall;
++    const bool ok = wake();
++    if(!ok) {
++      st = was;
++      return false;
++      }
++    }
++  if(beh==nullptr)
++    beh = std::make_unique<Behave>();
++  auto& b = *beh;
++  b.throes = Behave::Throes();
++  b.sag    = false;
++  b.reflex.clear();
++  for(auto& d:drive) {
++    d.hasOverride = false;
++    d.overrideW   = 0;
++    d.hold        = 0;
++    d.dip         = 0;
++    d.dip0        = 0;
++    }
++  for(int s=0; s<2; ++s) {
++    body[lay->thigh[s]].rb->setFriction(0.8f);
++    body[lay->calf [s]].rb->setFriction(0.8f);
++    }
++  st = S_GetUp;
++  removeJoints();
++  createJoints();
++  setActiveCollisions(false);
++  for(auto& bd:body) {
++    bd.rb->setDamping(0.05f,0.25f);
++    bd.rb->setActivationState(DISABLE_DEACTIVATION);
++    }
++  setSolverIterations(solverIt);
++  b.getUp         = Behave::GetUp();
++  b.getUp.on      = true;
++  b.getUp.riseAt  = riseAt;
++  simTime    = 0;
++  calmTime   = 0;
++  damping    = 0;
++  fallPeak   = 0;
++  impact     = 0;
++  groundTime = 0;
++  airTime    = 0;
++  hasTarget  = false;
++  Log::i("[g2m] ragdoll: gets up by itself");
++  return true;
++  }
++
++void Ragdoll::tickGetUp(float dt) {
++  // опора: руки, колени, ступни (и таз) касаются земли - на них тело поднимается; ошибка - таз и грудь от кадра
++  auto& gu = beh->getUp;
++  const btVector3 pel = body[0].rb->getCenterOfMassPosition();
++  const float     gy  = groundAt(pel, float(pel.y())-0.15f);
++  float n = 0;
++  bool  hand[2] = {}, knee[2] = {};
++  for(size_t i=0; i<body.size(); ++i) {
++    const auto&        p  = lay->parts[i];
++    const btTransform& tr = body[i].rb->getWorldTransform();
++    const btVector3    ax = tr.getBasis().getColumn(0);
++    const float        lo = float(tr.getOrigin().y()) - std::abs(float(ax.y()))*p.halfLen*0.01f - p.radius*0.01f;
++    if(lo>gy+0.06f)
++      continue;
++    for(int s=0; s<2; ++s) {
++      if(i==lay->fore[s] || i==lay->hand[s] || i==lay->upper[s])
++        hand[s] = true;
++      if(i==lay->calf[s] || i==lay->thigh[s])
++        knee[s] = true;
++      }
++    }
++  for(int s=0; s<2; ++s)
++    n += (hand[s] ? 1.f : 0.f) + (knee[s] ? 1.f : 0.f);
++  // таз у земли - опирается и им (сидя, лёжа)
++  if(float(pel.y())-gy<0.35f*lay->size/180.f)
++    n += 1.f;
++  gu.contact = approach(gu.contact, std::clamp(n/2.f, 0.f, 1.f), dt, 0.08f);
++  if(drive.size()==body.size()) {
++    const float e0 = float((pel - drive[0].goal.getOrigin()).length());
++    const float e1 = float((body[lay->chest].rb->getCenterOfMassPosition() - drive[lay->chest].goal.getOrigin()).length());
++    gu.err = 50.f*(e0+e1);
++    }
++  }
++
++void Ragdoll::driveGetUp(float dt) {
++  // Опора о землю поднимает тело (как pin weight PuppetMaster): каждая часть тянется к своему месту в кадре анимации
++  // подъёма (таз и корпус - сильнее, руки и ноги - слабее, их ведут и мышцы), вес держится - с силой, которая
++  // нарастает к riseAt..riseAt+0,6 с и только пока тело на земле или опирается на неё (подбросили, сбили - опоры
++  // нет, тело падает). Ускорение части - с пределом: тело не прыгает к кадру, а поднимается
++  auto&       gu  = beh->getUp;
++  const float t   = float(simTime)/1000.f;
++  // собирается (поза лёжа, из которой начинается подъём) - опора слабая, поднимается - нарастает
++  const float pin = (0.3f + 0.7f*smooth((t-gu.riseAt+0.1f)/0.6f))*smooth(t/0.25f)*gu.contact;
++  if(pin<=0.f || !hasTarget)
++    return;
++  const float g = DynamicWorld::gravityMS;
++  for(size_t i=0; i<body.size(); ++i) {
++    auto&              rb = *body[i].rb;
++    const auto&        d  = drive[i];
++    const auto&        p  = lay->parts[i];
++    float              w  = 0.4f;
++    switch(Kind(p.kind)) {
++      case K_Pelvis:
++      case K_Spine:    w = 1.f;  break;
++      case K_Neck:
++      case K_Head:     w = 0.6f; break;
++      case K_Thigh:    w = 0.7f; break;
++      case K_Calf:     w = 0.6f; break;
++      default:         w = 0.4f; break;
++      }
++    w *= pin;
++    const btVector3    tp = d.goal.getOrigin() + d.tLin*targetAge;
++    const btQuaternion tq = rotOf(d.tAng*targetAge)*d.goal.getRotation();
++    btVector3 a = (tp-rb.getCenterOfMassPosition())*80.f + (d.tLin-rb.getLinearVelocity())*16.f;
++    if(a.length()>18.f)
++      a = a.normalized()*18.f;
++    rb.setLinearVelocity(rb.getLinearVelocity() + (a + btVector3(0,0.9f*g,0))*(dt*w));
++    if(p.kind==K_Pelvis || p.kind==K_Spine || p.kind==K_Head) {
++      btVector3 aw = rotErr(rb.getWorldTransform().getRotation(),tq)*60.f + (d.tAng-rb.getAngularVelocity())*14.f;
++      if(aw.length()>40.f)
++        aw = aw.normalized()*40.f;
++      rb.setAngularVelocity(rb.getAngularVelocity() + aw*(dt*w));
++      }
++    rb.activate(true);
++    }
 +  }
 +
 +void Ragdoll::createBodies() {
@@ -17586,6 +19137,13 @@ index 0000000..38bc3a2
 +  if(body.empty())
 +    return;
 +  auto& cw = *owner->world;
++  removeAnchors();
++  releaseGrip(0);
++  releaseGrip(1);
++  if(beh!=nullptr) {
++    beh->bal.on   = false;
++    beh->getUp.on = false;
++    }
 +  removeJoints();
 +  for(auto& b:body)
 +    cw.removeRagdollBody(b.rb.get());
@@ -17807,6 +19365,10 @@ index 0000000..38bc3a2
 +    targetAge += dt;
 +    return;
 +    }
++  if(st==S_Balance && beh!=nullptr && beh->bal.on)
++    driveBalance(dt);
++  if(st==S_GetUp && beh!=nullptr && beh->getUp.on)
++    driveGetUp(dt);
 +  // упавшее тело: мышцы с пределом силы и вязкость тканей (и без цели - тогда только ткани)
 +  driveMuscles(dt);
 +  limitVelocity();
@@ -17829,6 +19391,11 @@ index 0000000..38bc3a2
 +    const float want = (reaction()>0.05f) ? 1.f : 0.f;
 +    const float step = float(dt)/(want>show ? 120.f : 500.f);
 +    show = (want>show) ? std::min(want,show+step) : std::max(want,show-step);
++    return;
++    }
++  if(st==S_Balance || st==S_GetUp) {
++    // на ногах или встаёт: своё (tickBalance, tickGetUp); не застывает и не гасится
++    calmTime = 0;
 +    return;
 +    }
 +  if(beh!=nullptr && beh->sag && float(simTime)/1000.f-beh->sagAt>beh->sagTime+0.2f) {
@@ -18729,6 +20296,10 @@ index 0000000..38bc3a2
 +    return true; // провалилось под мир
 +  if(st==S_Active)
 +    return simTime>ActiveMaxTime; // живой на ногах: конец реакции решает NPC (Npc::tickRagdollActive)
++  if(st==S_Balance)
++    return simTime>BalanceMaxTime+1500; // устоял или упал - решает NPC (Npc::tickRagdollBalance)
++  if(st==S_GetUp)
++    return simTime>GetUpMaxTime; // встал - решает NPC (Npc::tickRagdollGetUp)
 +  if(st==S_Fall)
 +    return simTime>FallMaxTime; // живой встаёт сам (Npc::tickRagdollFall)
 +  if(beh!=nullptr && beh->sag)
@@ -18793,7 +20364,7 @@ index 0000000..38bc3a2
 +  Ragdoll*    worst = nullptr;
 +  float       score = 0;
 +  for(auto r:active) {
-+    if(r->keep || r->st==S_Fall || r->simTime<SettleMinTime || r->isRaised())
++    if(r->keep || r->st==S_Fall || r->st==S_Balance || r->st==S_GetUp || r->simTime<SettleMinTime || r->isRaised())
 +      continue; // живой падающий встал бы посреди полёта, приподнявшийся в агонии - замер бы в воздухе
 +    const float s = evictScore(r->viewDist,r->simTime,r->st,r->keep);
 +    if(s>mine && (worst==nullptr || s>score)) {
@@ -18843,10 +20414,10 @@ index 0000000..38bc3a2
 +  }
 diff --git a/common/physics/ragdoll.h b/common/physics/ragdoll.h
 new file mode 100644
-index 0000000..767c812
+index 0000000..cf97762
 --- /dev/null
 +++ b/common/physics/ragdoll.h
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,376 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -18896,6 +20467,18 @@ index 0000000..767c812
 +// голова и руки - физика, на экране - только пока тело откликается (activePose). Держаться за рану и хромать -
 +// без физики, слоем позы (graphics/mesh/injury.h). Приёмы - по Overgrowth (Wolfire, Apache 2.0: сила мышц к
 +// позе анимации, руки к опасности) и kickback (MIT: пошатывание, шаги к центру масс, боль от ударов).
++//
++// Полный регдолл на ногах (S_Balance - толчок с разбега, плечом или руками): всё тело - физика, и ноги тоже.
++// Равновесие - модель перевёрнутого маятника, как у шагающих роботов и в Cartwheel 3D (Coros, Beaudoin, van de
++// Panne, «Generalized Biped Walking Control», SIGGRAPH 2010): ступни стоят на земле (точка опоры держит ступню,
++// пока сила не больше трения), центр давления - в пределах опоры, ближе всего к «точке захвата» (capture point
++// Pratt и Koolen: центр масс + скорость / w, w = sqrt(g/h)); точка захвата вне опоры - шаг туда, где тело
++// остановится (длина шага по направлению: вперёд дальше, назад и вбок короче). Шаги не догоняют - тело падает
++// (S_Fall). Свободная рука тянется к ближайшей опоре - стене, человеку - насколько пускают суставы, и хватается
++// (сустав «кисть - опора» с пределом силы хвата, как Gripper в active-ragdolls Серхио Абреу, Apache 2.0).
++// Встаёт упавший тоже телом (S_GetUp): мышцы ведут тело к кадрам анимации подъёма игры, опора рук, колен и
++// ступней о землю поднимает тело с силой, которая нарастает (как «pin weight» PuppetMaster); встал - кукла
++// уходит из физики, дальше анимация.
 +class Ragdoll final {
 +  public:
 +    enum State : uint8_t {
@@ -18903,6 +20486,8 @@ index 0000000..767c812
 +      S_Unconscious = 1,
 +      S_Fall        = 2, // живой и в сознании: долго падает или сбит с ног - встанет сам (Npc::tickRagdollFall)
 +      S_Active      = 3, // живой на ногах: тело следует анимации мышцами, удары его толкают (Npc::tickRagdollActive)
++      S_Balance     = 4, // живой на ногах после толчка: всё тело - физика, ловит равновесие шагами и руками
++      S_GetUp       = 5, // встаёт телом: мышцы к анимации подъёма, опора о землю (Npc::tickRagdollGetUp)
 +      };
 +
 +    // Как Pose выводит кость в активном режиме (activeModes)
@@ -18932,6 +20517,8 @@ index 0000000..767c812
 +    static constexpr uint64_t ActiveMaxTime= 30000; // мс: активная кукла дольше не живёт (NPC заканчивает раньше)
 +    static constexpr float    ThroesDist   = 2500;  // см: дальше агонии нет - тело лежит, как упало
 +    static constexpr uint64_t ThroesMaxTime= 16000; // мс в физике с агонией - дольше не бывает
++    static constexpr uint64_t BalanceMaxTime= 4500; // мс: ловит равновесие после толчка - дольше не бывает
++    static constexpr uint64_t GetUpMaxTime = 7000;  // мс: встаёт телом - дольше не бывает (Npc доводит анимацией)
 +
 +    struct Hit final {
 +      Tempest::Vec3 at       = {};       // точка удара, см
@@ -18940,6 +20527,23 @@ index 0000000..767c812
 +      float         damage   = 0;        // доля здоровья, снятая ударом (0..1): сила отклика
 +      uint8_t       kind     = H_Melee;
 +      uint8_t       freeArms = 3;        // свободные руки (бит 0 - левая, бит 1 - правая): прикрыться ими
++      };
++
++    // Толчок телом (герой с разбега плечом или руками): центр масс получает скорость speed, у места касания - больше
++    // (верх уходит первым), ступни стоят - тело ловит равновесие (S_Balance)
++    struct Shove final {
++      Tempest::Vec3 at       = {};       // точка касания, см
++      Tempest::Vec3 dir      = {};       // куда толкает (горизонтально)
++      float         speed    = 0;        // м/с - скорость центра масс после толчка
++      uint8_t       freeArms = 3;        // свободные руки (бит 0 - левая): ими хватается за опору
++      float         steady   = 1;        // как крепко стоит на ногах (0,7..1,2): гасит толчок шагами сильнее или слабее
++      };
++
++    // Опора для руки - человек рядом (Npc::ragdollGrips): точка на его теле, см, и её скорость, см/с; id - чей
++    struct Grip final {
++      Tempest::Vec3 at  = {};
++      Tempest::Vec3 vel = {};
++      uint32_t      id  = 0;
 +      };
 +
 +    struct Layout;
@@ -19002,6 +20606,32 @@ index 0000000..767c812
 +    bool                  isResting() const;
 +    // Скорость последнего удара о землю после падения, м/с (0 - не было); вызов сбрасывает
 +    float                 takeImpact();
++
++    // Толчок телом: активная кукла (S_Active) становится полным регдоллом на ногах (S_Balance) - ловит равновесие
++    // шагами, руками и опорой; не устоял - lostBalance (Npc переводит в S_Fall), устоял - balanceRecovered
++    void                  shove(const Shove& s);
++    // Устоял после толчка: тело стоит, ступни на земле, почти не движется - кукле пора в анимацию
++    bool                  balanceRecovered() const;
++    // Сколько длится толчок, мс (ИИ ждёт)
++    uint64_t              balanceTime() const;
++    // Куда смотрит тело (таз) по горизонтали - NPC поворачивается так, встав или устояв
++    Tempest::Vec3         bodyFront() const;
++    // Люди рядом, за которых можно схватиться (обновлять каждый кадр, пока тело ловит равновесие или падает)
++    void                  setGrips(const std::vector<Grip>& g);
++    // За кого держится рука: id опоры (Grip::id) или 0 - ни за кого из людей
++    uint32_t              grippedId() const;
++    // Держится рукой за опору (стену, край, человека); сколько шагов сделал после толчка (журнал, стенд)
++    bool                  isGripping() const;
++    int                   balanceSteps() const;
++
++    // Встаёт телом (как PuppetMaster): лежащая кукла (S_Fall, S_Unconscious; застывшая оживает, если есть место)
++    // переходит в S_GetUp. Цель мышц - кадр анимации (setTarget каждый кадр): сначала поза лёжа, из которой
++    // начинается подъём (тело собирается: руки и ноги под себя), затем анимация подъёма. Опора о землю (руки,
++    // колени, ступни касаются земли) поднимает таз и грудь к кадру анимации с силой, которая нарастает за riseAt..
++    // riseAt+0,7 с. false - нельзя (нет схемы людей, нет места в физике): подъём анимацией, как раньше
++    bool                  startGetUp(float riseAt);
++    // Встаёт: насколько тело отстало от кадра анимации (таз, грудь), см
++    float                 getUpError() const;
 +
 +    // Агония убитого и оглушение (как «корчи» Euphoria): легло - тело корчится от боли: руки к ране, ноги к животу,
 +    // корпус сгибается к ране; или пытается встать (на спине - на локоть, на животе - на руки), держится из последних
@@ -19103,6 +20733,21 @@ index 0000000..767c812
 +    void                  planThroes();
 +    void                  jointGoal(size_t part, float twist, float abd, float flex, float str, float w, float hold = 0);
 +    void                  aimPart(size_t part, const btVector3& want, float str, float w, float hold = 0);
++    void                  startBalance();
++    void                  tickBalance(float dt);
++    void                  balanceArms(float dt);
++    void                  driveBalance(float dt);
++    void                  driveGetUp(float dt);
++    void                  tickGetUp(float dt);
++    void                  tickGrab(float dt);
++    void                  releaseGrip(int arm);
++    void                  setAnchor(int leg, const btVector3& at);
++    void                  freeAnchor(int leg);
++    void                  removeAnchors();
++    btVector3             anklePos(int leg) const;
++    btVector3             handPos(int arm) const;
++    void                  massCenter(btVector3& com, btVector3& vel) const;
++    float                 groundAt(const btVector3& at, float fallback) const;
 +    float                 muscleOf(size_t part) const;
 +    float                 toneOf(size_t part) const;
 +    btVector3             pivotOf(size_t part) const;
@@ -19145,6 +20790,7 @@ index 0000000..767c812
 +    uint64_t                        groundTime  = 0; // мс живой лежит на земле после падения (корчится)
 +    float                           show        = 0; // доля физики на экране в активном режиме
 +    bool                            inWater  = false;
++    std::vector<Grip>               grips;           // люди рядом - опора для руки (setGrips)
 +
 +  friend class DynamicWorld;
 +  };
@@ -24822,7 +26468,7 @@ index b45a9bd..35a566d 100644
      bool                isCracked() const { return isLockCracked; }
      bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..8e48250 100644
+index e015398..1e0247c 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -3,11 +3,16 @@
@@ -24914,7 +26560,7 @@ index e015398..8e48250 100644
    auto at = currentTaPoint();
    if(at==nullptr)
      return false;
-@@ -593,9 +624,29 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
+@@ -593,10 +624,32 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
    }
  
  void Npc::onNoHealth(bool death, HitSound sndMask) {
@@ -24944,9 +26590,12 @@ index e015398..8e48250 100644
 +    visual.dropShield(*this);
 +    }
    dropTorch();
++  // Gothic II Mobile: еда, питьё в руке - на землю
++  dropHandItem(false);
    visual.setToFightMode(WeaponState::NoWeapon);
    updateWeaponSkeleton();
-@@ -628,6 +679,9 @@ void Npc::onNoHealth(bool death, HitSound sndMask) {
+ 
+@@ -628,6 +681,9 @@ void Npc::onNoHealth(bool death, HitSound sndMask) {
    if(death)
      setAnim(lastHitType=='A' ? Anim::DeadA        : Anim::DeadB); else
      setAnim(lastHitType=='A' ? Anim::UnconsciousA : Anim::UnconsciousB);
@@ -24956,7 +26605,50 @@ index e015398..8e48250 100644
    }
  
  bool Npc::hasAutoroll() const {
-@@ -889,6 +943,10 @@ Tempest::Vec3 Npc::animMoveSpeed(uint64_t dt) const {
+@@ -882,6 +938,42 @@ void Npc::dropTorch(bool burnout) {
+     }
+   }
+ 
++bool Npc::dropHandItem(bool restart) {
++  // Gothic II Mobile: сбит с ног, толкнули, оглушён, убит - что было в руке (еда, питьё, метла, лютня: AI_UseItemToState)
++  // падает на землю предметом мира, ничьим (ITEM_DROPPED: подобрать - не кража), как оружие из рук (MdlVisual::dropWeapon).
++  // Действие с предметом обрывается сразу (Pose::cancelItemState): иначе слой BS_ITEMINTERACT не пускает анимацию
++  // подъёма, и упавший так и лежит. Дело распорядка (ZS_Stand_Eating и т. п.) - заново: встав, возьмёт новое
++  if(!invent.hasStateItem())
++    return false;
++  if(const Item* itm = invent.stateSlotItem()) {
++    const size_t      cls  = itm->clsId();
++    const std::string slot = std::string(invent.stateSlotName());
++    Matrix4x4 mat = visual.transform();
++    if(auto sk = visual.visualSkeleton()) {
++      const size_t id = sk->findNode(slot);
++      if(id<visual.pose().boneCount())
++        mat = visual.pose().bone(id);
++      }
++    invent.clearSlot(*this,slot,false);
++    if(invent.itemCount(cls)>0) {
++      if(auto it = owner.addItemDyn(cls,mat,size_t(-1))) {
++        it->handle().flags = zenkit::ItemFlag(uint32_t(it->handle().flags) | ITM_DROPPED);
++        it->setCount(1);
++        }
++      invent.delItem(cls,1,*this);
++      }
++    Log::i("[g2m] \"",displayName(),"\" drops what was in hand");
++    }
++  invent.setStateItem(0);
++  setStateItem(MeshObjects::Mesh(),"");
++  visual.cancelItemState();
++  if(restart && !isPlayer() && aiState.funcIni.isValid()) {
++    clearAiQueue();
++    aiState.started = false;
++    }
++  return true;
++  }
++
+ Tempest::Vec3 Npc::animMoveSpeed(uint64_t dt) const {
+   return visual.pose().animMoveSpeed(owner.tickCount(),dt);
+   }
+@@ -889,6 +981,10 @@ Tempest::Vec3 Npc::animMoveSpeed(uint64_t dt) const {
  void Npc::setVisual(const Skeleton* v) {
    if(visual.visualSkeleton()==v)
      return;
@@ -24967,7 +26659,7 @@ index e015398..8e48250 100644
    visual.setVisual(v);
    visual.clearOverlays();
    invalidateTalentOverlays();
-@@ -1247,7 +1305,8 @@ void Npc::changeAttribute(Attribute a, int32_t val, bool allowUnconscious) {
+@@ -1247,7 +1343,8 @@ void Npc::changeAttribute(Attribute a, int32_t val, bool allowUnconscious) {
        return;
      if(isPlayer() && owner.currentCs()!=nullptr)
        return;
@@ -24977,7 +26669,7 @@ index e015398..8e48250 100644
        return;
      }
  
-@@ -1555,7 +1614,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
+@@ -1555,7 +1652,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
    }
  
  bool Npc::implAttack(uint64_t dt) {
@@ -24986,7 +26678,7 @@ index e015398..8e48250 100644
      return false;
  
    if(currentTarget->isDown()){
-@@ -1580,8 +1639,11 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1580,8 +1677,11 @@ bool Npc::implAttack(uint64_t dt) {
      return true;
      }
  
@@ -25000,7 +26692,7 @@ index e015398..8e48250 100644
  
    if(bs==BS_LIE) {
      setAnim(Npc::Anim::Idle);
-@@ -1882,6 +1944,10 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1882,6 +1982,10 @@ bool Npc::implAttack(uint64_t dt) {
  bool Npc::implAiTick(uint64_t dt) {
    // Note AI-action queue takes priority, test case: Vatras pray at night
    if(aiQueue.size()==0) {
@@ -25011,7 +26703,7 @@ index e015398..8e48250 100644
      tickRoutine();
      if(aiQueue.size()>0)
        nextAiAction(aiQueue,dt);
-@@ -2077,6 +2143,9 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2077,6 +2181,9 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
  
    if(!isSpell || splCat==SpellCategory::SPELL_BAD) {
      perceptionProcess(other,this,0,PERC_ASSESSDAMAGE);
@@ -25021,7 +26713,7 @@ index e015398..8e48250 100644
      fghAlgo.onTakeHit();
      implFaiWait(0);
      }
-@@ -2085,6 +2154,39 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2085,6 +2192,39 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
    if(!isSpell && !isDown() && hitResult.hasHit)
      owner.addWeaponHitEffect(other,b,*this).play();
  
@@ -25061,7 +26753,7 @@ index e015398..8e48250 100644
    if(isDown()) {
      onNoHealth(dontKill,HS_NoSound);
      return;
-@@ -2107,9 +2209,13 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2107,9 +2247,13 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
      }
  
    // throw enemy
@@ -25076,7 +26768,7 @@ index e015398..8e48250 100644
  
    if(hitResult.value>0) {
      currentOther = &other;
-@@ -2130,6 +2236,22 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2130,6 +2274,22 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
          }
        }
      }
@@ -25099,7 +26791,7 @@ index e015398..8e48250 100644
    }
  
  void Npc::takeFallDamage(const Vec3& fallSpeed) {
-@@ -2247,6 +2369,9 @@ void Npc::tickTimedEvt(Animation::EvCount& ev) {
+@@ -2247,6 +2407,9 @@ void Npc::tickTimedEvt(Animation::EvCount& ev) {
          if(auto it = invent.addItem(i.item,1,world())) {
            invent.putToSlot(*this,it->clsId(),i.slot[0]);
            }
@@ -25109,7 +26801,7 @@ index e015398..8e48250 100644
          break;
          }
        case zenkit::MdsEventType::SET_FIGHT_MODE:
-@@ -2344,6 +2469,29 @@ void Npc::tick(uint64_t dt) {
+@@ -2344,6 +2507,31 @@ void Npc::tick(uint64_t dt) {
  
    tickAnimationTags();
  
@@ -25130,6 +26822,8 @@ index e015398..8e48250 100644
 +    ragAirTime = 0;
 +    }
 +  tickRagdoll();
++  if(isPlayer())
++    tickShove();
 +  tickInjury();
 +  visual.tickStuck(owner.tickCount());
 +  // живой лежит по физике: ни ИИ, ни перемещения, пока не встанет
@@ -25139,7 +26833,7 @@ index e015398..8e48250 100644
    if(!visual.pose().hasAnim())
      setAnim(AnimationSolver::Idle);
  
-@@ -2380,7 +2528,8 @@ void Npc::tick(uint64_t dt) {
+@@ -2380,7 +2568,8 @@ void Npc::tick(uint64_t dt) {
      if(!isPlayer() && go2.flag!=GT_Flee && faiWaitTime<owner.tickCount() && currentTarget!=nullptr) {
        implTurnToFai(*currentTarget,dt);
        }
@@ -25149,7 +26843,7 @@ index e015398..8e48250 100644
      return;
      }
  
-@@ -2398,7 +2547,9 @@ void Npc::tick(uint64_t dt) {
+@@ -2398,7 +2587,9 @@ void Npc::tick(uint64_t dt) {
        }
      }
  
@@ -25160,7 +26854,7 @@ index e015398..8e48250 100644
    implAiTick(dt);
    }
  
-@@ -2529,6 +2680,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2529,6 +2720,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -25172,17 +26866,22 @@ index e015398..8e48250 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -2579,6 +2735,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2579,7 +2775,13 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          break;
          }
        else if(bs==BS_UNCONSCIOUS || bs==BS_LIE) {
-+        // Gothic II Mobile: встаёт там и так, как лежит тело (на спине или на животе)
+-        if(!setAnim(Anim::Idle))
++        // Gothic II Mobile: встаёт там и так, как лежит тело (на спине или на животе): сначала собирается лёжа, потом -
++        // анимация подъёма игры (ragdollRise); пока не начал вставать, AI_StandUp ждёт
 +        if(ragdollHoldsBody())
 +          ragdollGetUp();
-         if(!setAnim(Anim::Idle))
++        if(ragRiseAt!=0)
++          queue.pushFront(std::move(act));
++        else if(!setAnim(Anim::Idle))
            queue.pushFront(std::move(act)); else
            implAniWait(visual.pose().animationTotalTime());
-@@ -2593,14 +2752,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+         }
+@@ -2593,14 +2795,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_EquipArmor:
        invent.equipArmor(act.i0,*this);
        break;
@@ -25205,7 +26904,7 @@ index e015398..8e48250 100644
        break;
      case AI_UseMob: {
        if(act.i0<0) {
-@@ -2740,6 +2904,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2740,6 +2947,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_OutputSvm:
      case AI_OutputSvmOverlay:{
        if(performOutput(act)) {
@@ -25215,7 +26914,7 @@ index e015398..8e48250 100644
          if(aiPolicy!=NpcProcessPolicy::AiFar2) {
            uint64_t msgTime = 0;
            if(act.act==AI_Output) {
-@@ -3504,6 +3671,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -3504,6 +3714,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -25224,7 +26923,7 @@ index e015398..8e48250 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +3962,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +4005,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
@@ -25235,7 +26934,7 @@ index e015398..8e48250 100644
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -3836,6 +4009,14 @@ bool Npc::finishingMove() {
+@@ -3836,6 +4052,14 @@ bool Npc::finishingMove() {
      return false;
  
    if(doAttack(Anim::AttackFinish,BS_HIT)) {
@@ -25250,7 +26949,7 @@ index e015398..8e48250 100644
      currentTarget->hnpc->attribute[ATR_HITPOINTS] = 0;
      currentTarget->checkHealth(true,false);
      owner.sendPassivePerc(*this,*this,*currentTarget,PERC_ASSESSMURDER);
-@@ -4091,13 +4272,22 @@ bool Npc::shootBow(Interactive* focOverride) {
+@@ -4091,13 +4315,22 @@ bool Npc::shootBow(Interactive* focOverride) {
    if(itm==nullptr)
      return false;
  
@@ -25275,7 +26974,7 @@ index e015398..8e48250 100644
    if(Gothic::inst().version().game==1) {
      b.setHitChance(float(hnpc->attribute[ATR_DEXTERITY])/100.f);
      if(rgn!=nullptr && rgn->isCrossbow())
-@@ -4158,10 +4348,77 @@ bool Npc::isPrehit() const {
+@@ -4158,10 +4391,77 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -25353,7 +27052,7 @@ index e015398..8e48250 100644
  void Npc::setPerceptionTime(uint64_t time) {
    perceptionTime = time;
    }
-@@ -4238,6 +4495,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4538,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -25364,7 +27063,7 @@ index e015398..8e48250 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4292,6 +4553,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
+@@ -4292,6 +4596,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
  void Npc::quitInteraction() {
    if(currentInteract==nullptr)
      return;
@@ -25374,7 +27073,7 @@ index e015398..8e48250 100644
    if(invTorch)
      processDefInvTorch();
    setDirectionY(0);
-@@ -4356,6 +4620,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4663,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -25412,7 +27111,7 @@ index e015398..8e48250 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4818,7 +5113,948 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4818,7 +5156,1305 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
      durtyTranform = 0;
      }
  
@@ -25507,15 +27206,20 @@ index e015398..8e48250 100644
 +  }
 +
 +bool Npc::isRagdollFall() const {
-+  return ragdoll!=nullptr && ragdoll->state()==Ragdoll::S_Fall;
++  // падает, лежит после падения, ловит равновесие после толчка или встаёт телом: ИИ и управление ждут
++  if(ragdoll==nullptr)
++    return false;
++  const auto st = ragdoll->state();
++  return st==Ragdoll::S_Fall || st==Ragdoll::S_Balance || st==Ragdoll::S_GetUp;
 +  }
 +
 +bool Npc::ragdollFallAllowed() const {
 +  // Живой падает по физике только человеком: встаёт он анимацией подъёма раненого (на спине и на животе)
 +  if(!Gothic::options().ragdollFall || isDown())
 +    return false;
-+  if(ragdoll!=nullptr && !(ragdoll->state()==Ragdoll::S_Active && ragdoll->isSimulated() && ragFadeStart==0))
-+    return false; // на ногах по физике (активный регдолл) - падает та же кукла
++  if(ragdoll!=nullptr && !((ragdoll->state()==Ragdoll::S_Active || ragdoll->state()==Ragdoll::S_Balance) &&
++                            ragdoll->isSimulated() && ragFadeStart==0 && ragBlendStart==0))
++    return false; // на ногах по физике (активный регдолл, ловит равновесие) - падает та же кукла
 +  if(interactive()!=nullptr || isSwim() || isDive() || mvAlgo.isClimb())
 +    return false;
 +  if(!ragdollAllowed())
@@ -25533,6 +27237,10 @@ index e015398..8e48250 100644
 +void Npc::startRagdollFall() {
 +  if(!ragdollFallAllowed())
 +    return;
++  // что было в руке (еда, питьё) - на землю; встав, NPC начнёт своё дело заново
++  dropHandItem(true);
++  ragRiseAt     = 0;
++  ragGetUpUntil = 0;
 +  if(ragdoll!=nullptr) {
 +    // был на ногах по физике: та же кукла падает - без рывка из позы, в которой его застали
 +    ragdoll->setState(Ragdoll::S_Fall);
@@ -25589,10 +27297,8 @@ index e015398..8e48250 100644
 +  if(ragdoll->isSimulated() && (t<hold || !settled))
 +    return;
 +  ragKnock = false;
++  // встаёт: собирается лёжа, потом - анимация подъёма (ragdollRise)
 +  ragdollGetUp();
-+  setAnim(Anim::Idle);
-+  if(!isPlayer())
-+    implAniWait(visual.pose().animationTotalTime());
 +  }
 +
 +bool Npc::ragdollActiveAllowed() const {
@@ -25608,6 +27314,37 @@ index e015398..8e48250 100644
 +  return ragdollViewDistance(dist,keep) && dist<=Ragdoll::ActiveDist;
 +  }
 +
++bool Npc::startRagdollActive() {
++  // активная кукла (живой на ногах): из позы кадра, цель - поза анимации; в физике нет места - нет
++  if(!ragdollActiveAllowed())
++    return false;
++  auto sk = visual.visualSkeleton();
++  if(sk==nullptr)
++    return false;
++  auto& pose = visual.pose();
++  const auto root = pose.rootBone();
++  if((Vec3(root.at(3,0),root.at(3,1),root.at(3,2))-position()).length()>500.f)
++    return false;
++  float dist = 0;
++  bool  keep = false;
++  ragdollViewDistance(dist,keep);
++  ragdoll = Ragdoll::create(*owner.physic(), *sk, pose.transform(), pose.boneCount(), Ragdoll::S_Active, dist, keep);
++  if(ragdoll==nullptr)
++    return false;
++  Vec3 v = ragVelocity*10.f;
++  if(v.length()>20.f)
++    v = Vec3();
++  ragdoll->setVelocity(v);
++  pose.animPose(ragTarget);
++  ragdoll->setTarget(ragTarget,0);
++  ragTargetAt   = owner.tickCount();
++  ragBlendStart = 0;
++  ragPushedVer  = 0;
++  ragShown      = -1;
++  ragKnock      = false;
++  return true;
++  }
++
 +void Npc::ragdollReact(int32_t damage) {
 +  // Удар по живому, устоявшему на ногах (активный регдолл, как в Euphoria): импульс в точке удара, рефлексы всем
 +  // телом, тонус мышц проседает и возвращается за ~1 с; сильный удар (или серия) - пошатывание с шагами, ИИ ждёт,
@@ -25615,37 +27352,22 @@ index e015398..8e48250 100644
 +  const uint64_t now = owner.tickCount();
 +  if(ragHit.time!=now || ragHit.power<=0.f)
 +    return;
-+  if(ragdoll!=nullptr && (ragdoll->state()!=Ragdoll::S_Active || ragBlendStart!=0))
-+    return; // лежит или встаёт - своё
-+  if(ragdoll==nullptr) {
-+    if(!ragdollActiveAllowed())
-+      return;
-+    auto sk = visual.visualSkeleton();
-+    if(sk==nullptr)
-+      return;
-+    auto& pose = visual.pose();
-+    const auto root = pose.rootBone();
-+    if((Vec3(root.at(3,0),root.at(3,1),root.at(3,2))-position()).length()>500.f)
-+      return;
-+    float dist = 0;
-+    bool  keep = false;
-+    ragdollViewDistance(dist,keep);
-+    // в физике нет места - удар обычной анимацией игры
-+    ragdoll = Ragdoll::create(*owner.physic(), *sk, pose.transform(), pose.boneCount(), Ragdoll::S_Active, dist, keep);
-+    if(ragdoll==nullptr)
-+      return;
-+    Vec3 v = ragVelocity*10.f;
-+    if(v.length()>20.f)
-+      v = Vec3();
-+    ragdoll->setVelocity(v);
-+    pose.animPose(ragTarget);
-+    ragdoll->setTarget(ragTarget,0);
-+    ragTargetAt   = now;
-+    ragBlendStart = 0;
++  if(ragdoll!=nullptr && ragBlendStart==0 && ragdoll->state()==Ragdoll::S_GetUp && ragdoll->isSimulated()) {
++    // встаёт телом - удар валит снова: лежит и встаёт заново (tickRagdollFall)
++    ragKnock = true;
++    ragdoll->setState(Ragdoll::S_Fall);
++    applyRagdollHit();
++    ragGetUpUntil = 0;
++    ragRiseAt     = 0;
 +    ragPushedVer  = 0;
-+    ragShown      = -1;
-+    ragKnock      = false;
++    ragFollowVer  = 0;
++    Log::i("[g2m] ragdoll: \"",displayName(),"\" knocked down while getting up");
++    return;
 +    }
++  if(ragdoll!=nullptr && (ragdoll->state()!=Ragdoll::S_Active || ragBlendStart!=0))
++    return; // лежит, ловит равновесие (удар уже толкнул тело - takeDamage) или встаёт - своё
++  if(ragdoll==nullptr && !startRagdollActive())
++    return;
 +  ragFadeStart  = 0;
 +  ragReactUntil = now+RagdollReactTime;
 +
@@ -25925,6 +27647,14 @@ index e015398..8e48250 100644
 +    inj.pain     = painNow(now);
 +    inj.painSide = painSide;
 +    }
++  // герой с разбега: плечо вперёд или руки - толкнуть (tickShove)
++  if(isPlayer() && shoveBrace>0.f) {
++    inj.brace     = shoveBrace;
++    inj.braceKind = shoveKind;
++    inj.braceSide = shoveSide;
++    inj.braceAt   = shoveAt;
++    inj.braceHit  = shoveHitAt!=0 ? LimbIk::envelope(float(now-shoveHitAt)/1000.f, 0.06f, 0.12f, 0.3f) : 0.f;
++    }
 +  // дальние - без слоя: его не разглядеть, а кости считать надо
 +  float dist = 0;
 +  bool  keep = false;
@@ -26022,6 +27752,9 @@ index e015398..8e48250 100644
 +
 +void Npc::startRagdoll(bool death) {
 +  const auto st = death ? Ragdoll::S_Dead : Ragdoll::S_Unconscious;
++  // собирался встать - уже нет
++  ragRiseAt     = 0;
++  ragGetUpUntil = 0;
 +  if(ragdoll!=nullptr && ragBlendStart!=0) {
 +    // сбили, пока вставал: новая кукла - из той позы, в которой он сейчас
 +    ragdoll.reset();
@@ -26035,7 +27768,7 @@ index e015398..8e48250 100644
 +  if(ragdoll!=nullptr) {
 +    // уже лежит: оглушённого добили, лежащего ударили - тело снова двигается; на ногах по физике
 +    // (активный регдолл) - та же кукла падает, из позы, в которой его застал удар: сначала оседает
-+    const bool wasActive = ragdoll->state()==Ragdoll::S_Active;
++    const bool wasActive = ragdoll->state()==Ragdoll::S_Active || ragdoll->state()==Ragdoll::S_Balance;
 +    ragdoll->setState(st);
 +    if(wasActive)
 +      ragdoll->startSag();
@@ -26113,6 +27846,9 @@ index e015398..8e48250 100644
 +  }
 +
 +void Npc::tickRagdoll() {
++  // собрался лёжа и поза куклы перешла в позу начала подъёма - встаёт анимацией
++  if(ragRiseAt!=0 && owner.tickCount()>=ragRiseAt && (ragdoll==nullptr || ragBlendStart!=0))
++    ragdollRise();
 +  if(ragdoll==nullptr)
 +    return;
 +  if(ragBlendStart==0) {
@@ -26129,6 +27865,14 @@ index e015398..8e48250 100644
 +      }
 +    if(ragdoll->state()==Ragdoll::S_Active) {
 +      tickRagdollActive();
++      return;
++      }
++    if(ragdoll->state()==Ragdoll::S_Balance) {
++      tickRagdollBalance();
++      return;
++      }
++    if(ragdoll->state()==Ragdoll::S_GetUp) {
++      tickRagdollGetUp();
 +      return;
 +      }
 +    // мышцы упавшего тянут к анимации под куклой: убитый оседает по анимации смерти, падающий живой напряжён
@@ -26156,9 +27900,10 @@ index e015398..8e48250 100644
 +    followRagdoll();
 +    return;
 +    }
-+  if(owner.tickCount()>=ragBlendStart+RagdollBlendTime) {
++  if(owner.tickCount()>=ragBlendStart+ragBlendTime) {
 +    ragdoll.reset();
 +    ragBlendStart = 0;
++    ragBlendTime  = RagdollBlendTime;
 +    visual.clearRagdollPose();
 +    }
 +  }
@@ -26176,17 +27921,27 @@ index e015398..8e48250 100644
 +  }
 +
 +void Npc::ragdollGetUp() {
-+  ragdoll->freeze();
-+  ragBlendStart = owner.tickCount();
-+  ragPushedVer  = 0;
++  // Встаёт, как человек, - анимацией подъёма игры, с той стороны, как лежит (на спине - T_WOUNDED_2_STAND, на животе -
++  // T_WOUNDEDB_2_STAND). Перед ней тело собирается лёжа в позу её первого кадра: по физике (S_GetUp - руки и ноги
++  // подтягиваются по земле, RagdollGatherTime), затем поза куклы за RagdollRiseBlend переходит в эту позу, и только
++  // потом анимация поднимает тело (ragdollRise). Поза куклы не смешивается с уже поднимающейся анимацией: иначе тело
++  // «всплывает» целиком, будто его тянут вверх за голову. Нет места в физике или выключено - сразу переход позы
++  const uint64_t now = owner.tickCount();
 +  ragBreath.stop();
-+  // встаёт после падения - снова держится за свежую рану
-+  if(wound.active() && int64_t(owner.tickCount())<wound.at+15000)
-+    wound.rearm(int64_t(owner.tickCount()), 1800, int64_t(RagdollBlendTime));
++  ragGetUpUntil = 0;
++  ragRiseAt     = 0;
++  auto blend = [this,now](uint64_t ms) {
++    ragdoll->freeze();
++    ragBlendStart = now;
++    ragBlendTime  = ms;
++    ragPushedVer  = 0;
++    };
 +
 +  auto sk = visual.visualSkeleton();
-+  if(sk==nullptr)
++  if(sk==nullptr) {
++    blend(RagdollBlendTime);
 +    return;
++    }
 +
 +  // Лежит на спине или на животе - подъём из той же позы. Какая анимация какая, видно по её первому кадру
 +  const bool onBack = ragdoll->chestFront().y>0.f;
@@ -26207,9 +27962,12 @@ index e015398..8e48250 100644
 +      break;
 +      }
 +    }
-+  if(chosen<0)
++  if(chosen<0) {
++    blend(RagdollBlendTime);
 +    return;
-+  visual.replaceLayer(visual.findSequence(lie[chosen]),owner.tickCount());
++    }
++  // лежит в позе начала подъёма, пока не начнёт вставать (ragdollRise)
++  visual.replaceLayer(visual.findSequence(lie[chosen]),now);
 +
 +  // Повернуть и поставить NPC так, чтобы таз и грудь первого кадра подъёма легли на тело
 +  auto objToWorld = [this](float ang, Vec3 v) {
@@ -26239,8 +27997,305 @@ index e015398..8e48250 100644
 +  auto        g   = owner.physic()->landRay(at+Vec3(0,50,0), 600);
 +  setDirection(ang);
 +  setPosition(at.x, g.hasCol ? g.v.y : y, at.z);
++
++  // собирается лёжа по физике: мышцы и опора о землю ведут тело к позе лёжа (tickRagdollGetUp); нет места в физике
++  // или выключено - поза куклы переходит в эту позу дольше
++  if(Gothic::options().ragdollRise && ragdoll->startGetUp(float(RagdollGatherTime)/1000.f)) {
++    ragGetUpUntil = now + RagdollGatherTime;
++    ragRiseAt     = ragGetUpUntil + RagdollRiseBlend;
++    ragBlendStart = 0;
++    } else {
++    blend(RagdollRiseBlend+200);
++    ragRiseAt = now + RagdollRiseBlend + 200;
++    }
++  ragTargetAt  = 0;
++  ragPushedVer = 0;
 +  // мировая поза куклы не меняется - пересчитать её относительно нового места NPC
 +  ragdoll->touch();
++  // встав, снова держится за свежую рану
++  if(wound.active() && int64_t(now)<wound.at+15000)
++    wound.rearm(int64_t(now), 1800, int64_t(ragRiseAt-now));
++  // ИИ ждёт, пока не начнёт вставать (дальше ждёт анимацию подъёма - ragdollRise)
++  if(!isPlayer())
++    implAniWait(ragRiseAt-now);
++  }
++
++void Npc::tickRagdollGetUp() {
++  // Собирается лёжа (S_GetUp): цель мышц и опоры - поза лёжа, с которой начинается анимация подъёма (её держит слой
++  // S_WOUNDED / S_WOUNDEDB). Время вышло - кукла уходит из физики, поза переходит в эту позу (endRagdollGetUp)
++  const uint64_t now = owner.tickCount();
++  if(!ragdoll->isSimulated() || isSwim() || isDive() || ragGetUpUntil==0 || now>=ragGetUpUntil) {
++    endRagdollGetUp();
++    return;
++    }
++  float dist = 0;
++  bool  keep = false;
++  if(ragdollViewDistance(dist,keep))
++    ragdoll->setViewDistance(dist,keep);
++  visual.pose().animPose(ragTarget);
++  ragdoll->setTarget(ragTarget, ragTargetAt!=0 ? now-ragTargetAt : 0);
++  ragTargetAt = now;
++  }
++
++void Npc::endRagdollGetUp() {
++  // собрался: поза куклы переходит в позу лёжа начала подъёма, потом - анимация подъёма (ragdollRise)
++  const uint64_t now = owner.tickCount();
++  ragdoll->freeze();
++  ragBlendStart = now;
++  ragBlendTime  = RagdollRiseBlend;
++  ragPushedVer  = 0;
++  ragGetUpUntil = 0;
++  ragRiseAt     = now + RagdollRiseBlend;
++  if(!isPlayer())
++    implAniWait(RagdollRiseBlend);
++  }
++
++void Npc::ragdollRise() {
++  // поза куклы уже в позе лёжа начала подъёма - встаёт анимацией игры; ИИ ждёт её конца
++  ragRiseAt = 0;
++  if(isDead())
++    return;
++  if(setAnim(Anim::Idle) && !isPlayer())
++    implAniWait(visual.pose().animationTotalTime());
++  }
++
++void Npc::tickShove() {
++  // Герой бежит на человека (как в жизни): за ~0,35 с до столкновения готовится - подставляет плечо или выставляет руки
++  // (слой позы, tickInjury); врезался - толчок по импульсу: массы почти равны, удар не упругий - тот получает около
++  // половины скорости сближения (плечом и руками - чуть больше) и ловит равновесие всем телом (ragdollShove). Бегом -
++  // устоит или упадёт, смотря откуда толкнули; шагом - просто упрётся, как в игре
++  const uint64_t now = owner.tickCount();
++  const float    dt  = shoveTick!=0 ? float(now-shoveTick)/1000.f : 0.f;
++  shoveTick = now;
++  Vec3 v = ragVelocity*1000.f; // см/с
++  v.y = 0;
++  // скорость бега - с памятью 0,15 с: упёрся в человека - перемещение встало, а толчок - от скорости бега
++  if(v.length()>=shoveVel.length() || dt<=0.f)
++    shoveVel = v; else
++    shoveVel = v + (shoveVel-v)*std::exp(-dt/0.15f);
++  v = shoveVel;
++  const float speed = v.length()/100.f;
++  const bool  can   = Gothic::options().ragdollShove && ragdoll==nullptr && !isDown() && interactive()==nullptr &&
++                      !isSwim() && !isDive() && !mvAlgo.isInAir() && !mvAlgo.isFalling() && !mvAlgo.isClimb() &&
++                      speed>=2.2f && !isAttackAnim();
++  Npc*  target = nullptr;
++  float tau    = 1e9f, along = 0, vc = 0;
++  Vec3  u, dTo;
++  if(can) {
++    u = v/(speed*100.f);
++    owner.detectNpc(position(), 280.f, [&](Npc& n) {
++      if(&n==this || n.isDown() || (now<shoveCool && n.gripId()==shoveId))
++        return;
++      Vec3 d = n.position()-position();
++      d.y = 0;
++      const float al = Vec3::dotProduct(d,u);
++      if(al<=0.f || al>260.f || (d-u*al).length()>48.f)
++        return;
++      Vec3 vn = n.ragVelocity*1000.f;
++      vn.y = 0;
++      const float c = Vec3::dotProduct(v-vn,u)/100.f; // м/с
++      if(c<1.8f || !n.ragdollShoveAllowed())
++        return;
++      // касание - когда сойдутся капсулы (дальше перемещение игры не пустит)
++      const float touch = std::max(physic.radiusXZ()+n.physic.radiusXZ()+12.f, 55.f);
++      const float t = (al-touch)/(c*100.f);
++      if(t<tau) {
++        tau    = t;
++        target = &n;
++        along  = al-touch;
++        vc     = c;
++        dTo    = d;
++        }
++      });
++    }
++  const bool hold = shoveHitAt!=0 && now<shoveHitAt+260;
++  if(target!=nullptr && tau<0.38f) {
++    if(target->gripId()!=shoveId) {
++      // чем: без оружия - чаще руками (двумя или одной), с одноручным - плечом или свободной левой, с двуручным,
++      // луком, магией - плечом. Плечо - со стороны, куда смещён тот (или левое, если в правой оружие)
++      shoveId = target->gripId();
++      const int  r     = int(owner.script().rand(100));
++      const Vec3 left  = Vec3(-u.z, 0, u.x);
++      const int  near  = Vec3::dotProduct(dTo,left)>=0.f ? 0 : 1;
++      switch(weaponState()) {
++        case WeaponState::NoWeapon:
++          shoveKind = r<45 ? Injury::B_Push2 : (r<70 ? Injury::B_Push1 : Injury::B_Shoulder);
++          shoveSide = int8_t(shoveKind==Injury::B_Push1 ? (r%2) : near);
++          break;
++        case WeaponState::Fist:
++          shoveKind = r<50 ? Injury::B_Push2 : Injury::B_Shoulder;
++          shoveSide = int8_t(near);
++          break;
++        case WeaponState::W1H:
++          shoveKind = r<55 ? Injury::B_Shoulder : Injury::B_Push1;
++          shoveSide = 0;
++          break;
++        default:
++          shoveKind = Injury::B_Shoulder;
++          shoveSide = 0;
++          break;
++        }
++      }
++    shoveAt    = target->aimChest();
++    shoveBrace = std::min(1.f, shoveBrace + dt/0.2f);
++    if(along<=0.f) {
++      // врезался: толчок в точку касания - плечом на высоте плеча, руками - в грудь
++      static const float bonus[] = {0.15f, 0.25f, 0.35f}; // плечо, рука, две руки: м/с сверх импульса бега
++      // удар не всегда одинаков: как пришёлся, насколько тот был готов (0,92..1,22)
++      const float luck = 0.92f + 0.3f*float(owner.script().rand(1000))/1000.f;
++      const float dv   = std::clamp((0.45f*vc + bonus[std::min<uint8_t>(shoveKind,2)])*luck, 0.f, 3.2f);
++      Vec3        at  = shoveAt - u*12.f;
++      if(shoveKind==Injury::B_Shoulder) {
++        if(auto sk = visual.visualSkeleton()) {
++          const size_t id = sk->findNode(shoveSide==0 ? "BIP01 L UPPERARM" : "BIP01 R UPPERARM");
++          if(id!=size_t(-1))
++            at.y = std::clamp(visual.mapBone(id).y, target->position().y+60.f, shoveAt.y+25.f);
++          }
++        }
++      Vec3 dir = u*0.8f + Vec3::normalize(dTo)*0.2f;
++      dir.y = 0;
++      if(target->ragdollShove(*this, at, Vec3::normalize(dir), dv)) {
++        shoveHitAt = now;
++        shoveCool  = now+1200;
++        }
++      }
++    }
++  else if(!hold) {
++    shoveBrace = std::max(0.f, shoveBrace - dt/0.35f);
++    if(shoveBrace<=0.f)
++      shoveHitAt = 0;
++    }
++  }
++
++bool Npc::ragdollShoveAllowed() const {
++  // Толкнуть с разбега можно человека на ногах рядом с героем или камерой (он ловит равновесие всем телом и, если не
++  // устоит, падает и встаёт - как сбитый с ног)
++  if(!Gothic::options().ragdollShove || isPlayer() || isDown())
++    return false;
++  if(ragdoll!=nullptr && !(ragdoll->state()==Ragdoll::S_Active && ragdoll->isSimulated() && ragFadeStart==0 && ragBlendStart==0))
++    return false; // лежит, встаёт, уже ловит равновесие
++  return ragdollActiveAllowed() && ragdollFallAllowed();
++  }
++
++bool Npc::ragdollShove(Npc& by, const Vec3& at, const Vec3& dir, float speed) {
++  if(!ragdollShoveAllowed())
++    return false;
++  if(ragdoll==nullptr && !startRagdollActive())
++    return false;
++  ragFadeStart = 0;
++  Ragdoll::Shove s;
++  s.at       = at;
++  s.dir      = dir;
++  s.speed    = speed;
++  s.freeArms = ragdollFreeArms();
++  // как крепко стоит на ногах: сильный (стражник, наёмник) гасит толчок шагами лучше, слабый (горожанин, крестьянин)
++  // скорее упадёт; и у каждого - немного по-своему
++  {
++  const float str = float(attribute(ATR_STRENGTH));
++  const float r   = float(owner.script().rand(1000))/1000.f;
++  s.steady = 0.78f + 0.32f*std::clamp((str-10.f)/80.f, 0.f, 1.f) + 0.12f*(r-0.5f);
++  }
++  ragdoll->shove(s);
++  if(ragdoll->state()!=Ragdoll::S_Balance)
++    return false;
++  // от толчка выронил, что было в руке (еда, питьё): руки нужны для равновесия; дело распорядка - заново
++  dropHandItem(true);
++  // стоит (цель мышц корпуса - стойка); ИИ и перемещение ждут, пока тело ловит равновесие (Npc::tick)
++  setAnim(Anim::Idle);
++  ragTargetAt = owner.tickCount();
++  ragGripped  = 0;
++  Log::i("[g2m] ragdoll: \"",displayName(),"\" shoved by \"",by.displayName(),"\" ",int(speed*100.f+0.5f)," cm/s, steady ",
++         int(s.steady*100.f+0.5f),"%");
++  return true;
++  }
++
++uint32_t Npc::gripId() const {
++  return uint32_t(reinterpret_cast<uintptr_t>(this)>>3) | 1u;
++  }
++
++void Npc::ragdollGrips(std::vector<Ragdoll::Grip>& out) const {
++  // За кого рядом можно схватиться: плечи, грудь, предплечья людей на ногах в 2,2 м (и героя)
++  out.clear();
++  owner.detectNpc(position(), 220.f, [&](Npc& n) {
++    if(&n==this || n.isDown() || out.size()>=15)
++      return;
++    auto sk = n.visual.visualSkeleton();
++    if(sk==nullptr || InjuryRig::of(*sk)==nullptr)
++      return;
++    const Vec3 vel = n.ragVelocity*1000.f; // см/мс -> см/с
++    for(auto nm:{"BIP01 L UPPERARM","BIP01 R UPPERARM","BIP01 SPINE2","BIP01 L FOREARM","BIP01 R FOREARM"}) {
++      const size_t id = sk->findNode(nm);
++      if(id==size_t(-1))
++        continue;
++      Ragdoll::Grip g;
++      g.at  = n.visual.mapBone(id);
++      g.vel = vel;
++      g.id  = n.gripId();
++      out.push_back(g);
++      }
++    });
++  }
++
++void Npc::tickRagdollBalance() {
++  // Ловит равновесие после толчка (Ragdoll::S_Balance): NPC стоит там, где таз; люди рядом - опора для руки; схватился
++  // за человека - того дёргает к себе; не устоял - падает (сбит с ног: лежит, встаёт), устоял - поза в анимацию
++  const uint64_t now = owner.tickCount();
++  if(!ragdoll->isSimulated() || isSwim() || isDive()) {
++    finishRagdollBalance();
++    return;
++    }
++  float dist = 0;
++  bool  keep = false;
++  if(ragdollViewDistance(dist,keep))
++    ragdoll->setViewDistance(dist,keep);
++  followRagdoll();
++  ragdollGrips(ragGrips);
++  ragdoll->setGrips(ragGrips);
++  if(const uint32_t g = ragdoll->grippedId(); g!=ragGripped) {
++    ragGripped = g;
++    if(g!=0) {
++      // схватился за человека: того дёргает - он тоже ловит равновесие (герой - нет: его тело ведёт игрок)
++      owner.detectNpc(position(), 250.f, [&](Npc& n) {
++        if(n.gripId()!=g || n.isPlayer() || &n==this)
++          return;
++        Vec3 d = position()-n.position();
++        d.y = 0;
++        if(d.length()<1.f)
++          return;
++        n.ragdollShove(*this, n.aimChest(), Vec3::normalize(d), 0.55f);
++        });
++      }
++    }
++  visual.pose().animPose(ragTarget);
++  ragdoll->setTarget(ragTarget, ragTargetAt!=0 ? now-ragTargetAt : 0);
++  ragTargetAt = now;
++  if(ragdoll->lostBalance() && !isDown()) {
++    ragKnock = true;
++    startRagdollFall();
++    if(isRagdollFall() && ragdoll!=nullptr && ragdoll->state()==Ragdoll::S_Fall)
++      return;
++    ragKnock = false;
++    finishRagdollBalance();
++    return;
++    }
++  if(ragdoll->balanceRecovered())
++    finishRagdollBalance();
++  }
++
++void Npc::finishRagdollBalance() {
++  // устоял: NPC - там, где стоит тело, и смотрит, куда оно; кукла уходит из физики, поза переходит в анимацию
++  const Vec3 f = ragdoll->bodyFront();
++  setDirection(angleDir(f.x,f.z));
++  followRagdoll();
++  ragdoll->freeze();
++  ragdoll->touch();
++  ragBlendStart = owner.tickCount();
++  ragBlendTime  = 450;
++  ragPushedVer  = 0;
++  ragGripped    = 0;
++  // ИИ - дальше, когда поза вернётся в анимацию
++  implAniWait(ragBlendTime);
++  Log::i("[g2m] ragdoll: \"",displayName(),"\" kept balance");
 +  }
 +
 +void Npc::pushRagdollPose() {
@@ -26299,7 +28354,7 @@ index e015398..8e48250 100644
 +  float w = 1.f;
 +  if(ragBlendStart!=0) {
 +    const uint64_t t = owner.tickCount()-ragBlendStart;
-+    w = 1.f - std::min(float(t)/float(RagdollBlendTime), 1.f);
++    w = 1.f - std::min(float(t)/float(ragBlendTime), 1.f);
 +    // плавно: медленнее в начале и в конце
 +    w = w*w*(3.f-2.f*w);
 +    }
@@ -26319,7 +28374,8 @@ index e015398..8e48250 100644
 +
 +void Npc::saveRagdoll(Serialize& fout, size_t id, std::string_view directory) const {
 +  // живой падающий в сохранение не пишется: после загрузки стоит там, где лежал
-+  if(ragdoll==nullptr || ragBlendStart!=0 || ragdoll->state()==Ragdoll::S_Fall || ragdoll->state()==Ragdoll::S_Active)
++  if(ragdoll==nullptr || ragBlendStart!=0 || ragdoll->state()==Ragdoll::S_Fall || ragdoll->state()==Ragdoll::S_Active ||
++     ragdoll->state()==Ragdoll::S_Balance || ragdoll->state()==Ragdoll::S_GetUp)
 +    return;
 +  // поза тела - относительно NPC; при загрузке тело лежит так же, без физики, пока его не толкнут
 +  fout.setEntry("worlds/",fout.worldName(),directory,id,"/ragdoll");
@@ -26362,7 +28418,7 @@ index e015398..8e48250 100644
 +    ragBreath.start(Breathing::Steady, int64_t(owner.tickCount()), uint32_t(id)*2654435761u);
 +  }
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..3a9ac32 100644
+index 7309936..0dcafe0 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
 @@ -10,6 +10,7 @@
@@ -26499,7 +28555,7 @@ index 7309936..3a9ac32 100644
  
        void             save(Serialize& fout) const;
        void             load(Serialize&  fin);
-@@ -514,6 +605,35 @@ class Npc final {
+@@ -514,6 +605,51 @@ class Npc final {
      Npc*      updateNearestBody();
      bool      checkHealth(bool onChange, bool forceKill);
      void      onNoHealth(bool death, HitSound sndMask);
@@ -26516,12 +28572,28 @@ index 7309936..3a9ac32 100644
 +    void      startRagdollFall();
 +    void      tickRagdollFall();
 +    void      pushRagdollPose();
-+    bool      ragdollHoldsBody() const { return ragdoll!=nullptr && ragBlendStart==0 && ragdoll->state()!=Ragdoll::S_Active; }
++    // тело ведёт кукла (лежит, падает, ловит равновесие): NPC стоит там, где таз, перемещения анимацией нет. Встаёт
++    // телом (S_GetUp) - перемещение по анимации подъёма, кукла идёт за ней
++    bool      ragdollHoldsBody() const { return ragdoll!=nullptr && ragBlendStart==0 && ragdoll->state()!=Ragdoll::S_Active &&
++                                                ragdoll->state()!=Ragdoll::S_GetUp; }
 +    bool      ragdollActiveAllowed() const;
 +    void      ragdollReact(int32_t damage);
 +    void      tickRagdollActive();
 +    void      endRagdollActive(bool now);
++    bool      startRagdollActive();
 +    uint8_t   ragdollFreeArms() const;
++    // толчок с разбега (Ragdoll::S_Balance): ловит равновесие всем телом, хватается за людей рядом; подъём телом (S_GetUp)
++    bool      ragdollShoveAllowed() const;
++    bool      ragdollShove(Npc& by, const Tempest::Vec3& at, const Tempest::Vec3& dir, float speed);
++    void      tickRagdollBalance();
++    void      finishRagdollBalance();
++    void      tickRagdollGetUp();
++    void      endRagdollGetUp();
++    void      ragdollRise();
++    void      ragdollGrips(std::vector<Ragdoll::Grip>& out) const;
++    uint32_t  gripId() const;
++    // герой бежит на человека: плечо вперёд или руки - толкнуть (слой позы), врезался - толчок (ragdollShove)
++    void      tickShove();
 +    bool      isStandingPose() const;
 +    // Gothic II Mobile: раненое тело - держится за рану, хромает, горбится (graphics/mesh/injury.h)
 +    void      noteWound(const Tempest::Vec3& at, float damage);
@@ -26535,7 +28607,17 @@ index 7309936..3a9ac32 100644
      bool      hasAutoroll() const;
      bool      prepareTurn();
      void      stopWalkAnimation();
-@@ -555,10 +675,67 @@ class Npc final {
+@@ -522,6 +658,9 @@ class Npc final {
+     void      takeDrownDamage();
+ 
+     void      dropTorch(bool burnout = false);
++    // Gothic II Mobile: что было в руке (еда, питьё, метла - AI_UseItemToState) падает предметом мира; restart - дело
++    // распорядка начинается заново (встав, возьмёт новое и продолжит)
++    bool      dropHandItem(bool restart);
+ 
+     void      saveAiState(Serialize& fout) const;
+     void      loadAiState(Serialize& fin);
+@@ -555,10 +694,85 @@ class Npc final {
  
      // visual props (cache)
      uint8_t                        durtyTranform=0;
@@ -26565,6 +28647,13 @@ index 7309936..3a9ac32 100644
 +    std::unique_ptr<Ragdoll>       ragdoll;
 +    RagdollHit                     ragHit;
 +    uint64_t                       ragBlendStart = 0;
++    uint64_t                       ragBlendTime  = RagdollBlendTime; // мс: поза куклы переходит в анимацию
++    static constexpr uint64_t      RagdollGatherTime= 420;  // мс: встаёт - сначала собирается лёжа по физике (S_GetUp)
++    static constexpr uint64_t      RagdollRiseBlend = 260;  // мс: потом поза куклы переходит в позу лёжа начала подъёма
++    uint64_t                       ragGetUpUntil = 0; // собирается лёжа (S_GetUp) до этого времени
++    uint64_t                       ragRiseAt     = 0; // с этого времени - анимация подъёма игры (0 - не ждёт)
++    uint32_t                       ragGripped    = 0; // за кого держится рука (gripId) - его тянет
++    std::vector<Ragdoll::Grip>     ragGrips;
 +    uint32_t                       ragPushedVer  = 0;
 +    uint32_t                       ragFollowVer  = 0;
 +    Tempest::Matrix4x4             ragPushedPos;
@@ -26596,6 +28685,17 @@ index 7309936..3a9ac32 100644
 +    uint64_t                       painAt    = 0;
 +    float                          painSide  = 0;
 +    bool                           injuryShown = false;
++    // толчок с разбега (герой): в кого врежется (gripId), чем (Injury::Brace), какой стороной, насколько готов, когда
++    // врезался, куда руки
++    uint32_t                       shoveId    = 0;
++    uint8_t                        shoveKind  = 0;
++    int8_t                         shoveSide  = 0;
++    float                          shoveBrace = 0;
++    uint64_t                       shoveHitAt = 0;
++    uint64_t                       shoveTick  = 0;
++    uint64_t                       shoveCool  = 0;
++    Tempest::Vec3                  shoveAt    = {};
++    Tempest::Vec3                  shoveVel   = {}; // скорость бега с памятью (упёрся - скорость пропала, толчок - от неё), см/с
 +    // лук и арбалет: точка прицела героя (PlayerControl::tickRangedAim) и кадр, когда задана
 +    Tempest::Vec3                  rangedAimAt   = {};
 +    uint64_t                       rangedAimTick = uint64_t(-1);
@@ -26603,7 +28703,7 @@ index 7309936..3a9ac32 100644
      WalkBit                        wlkMode                 =WalkBit::WM_Run;
      int32_t                        trGuild                 =GIL_NONE;
      int32_t                        talentsSk[TALENT_MAX_G2]={};
-@@ -608,6 +785,8 @@ class Npc final {
+@@ -608,6 +822,8 @@ class Npc final {
      AiQueue                        aiQueue;
      AiQueue                        aiQueueOverlay;
      std::vector<Routine>           routines;
@@ -26612,7 +28712,7 @@ index 7309936..3a9ac32 100644
  
      Interactive*                   currentInteract=nullptr;
      Npc*                           currentOther   =nullptr;
-@@ -629,6 +808,7 @@ class Npc final {
+@@ -629,6 +845,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;

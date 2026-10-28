@@ -110,6 +110,61 @@ inline std::vector<Matrix4x4> walkPose(const Skeleton& sk, float t) {
   return w;
   }
 
+// Подъём с земли (вместо анимаций T_WOUNDEDB_2_STAND / T_WOUNDED_2_STAND игры): ключевые позы - на спине: лежит, сел с
+// опорой на руки сзади, перекатился вперёд в присед (руки на коленях), встал; на животе: лежит, отжался на руках,
+// колено под себя, встал. Между позами - плавно (направления костей). Конец - стоит, ступни у начала координат
+struct GetUpKey {
+  float t, pitch;   // с; наклон тела вокруг X, град (- назад: голова к -Z)
+  Vec3  P;          // таз, см
+  Vec3  th, ca, up, fo; // левые бедро, голень, плечо, предплечье (правые - зеркально по X)
+  };
+
+inline float getUpTime() { return 1.65f; }
+
+inline std::vector<Matrix4x4> getUpPose(const Skeleton& sk, float t, bool back) {
+  static const GetUpKey kb[] = {
+    {0.00f,-88, {0,12,-45}, {0,-0.03f,1},     {0,-0.03f,1},     {0.3f,-0.1f,0.95f},   {0.3f,-0.1f,0.95f}},
+    {0.55f,-25, {0,12,-40}, {0,0.55f,0.83f},  {0,-0.75f,0.66f}, {0.35f,-0.7f,-0.6f},  {0.05f,-0.97f,-0.2f}},
+    {1.05f, 35, {0,42,-12}, {0.1f,-0.1f,0.99f},{0,-0.9f,-0.43f},{0.2f,-0.55f,0.8f},   {0,-0.6f,0.8f}},
+    {1.65f,  0, {0,93,0},   {0.03f,-1,0.05f}, {0,-1,-0.05f},    {0.25f,-0.95f,0.12f}, {0.05f,-0.6f,0.8f}},
+    };
+  static const GetUpKey kf[] = {
+    {0.00f, 88, {0,12,-40}, {0,-0.03f,-1},    {0,-0.03f,-1},    {0.3f,-0.1f,-0.95f},  {0.3f,-0.1f,-0.95f}},
+    {0.50f, 70, {0,25,-40}, {0,-0.35f,-0.94f},{0,-0.05f,-1},    {0.15f,-0.98f,0.1f},  {0,-1,0.05f}},
+    {1.00f, 40, {0,45,-30}, {0.1f,-0.75f,0.66f},{0,-0.15f,-0.99f},{0.15f,-0.9f,0.4f}, {0,-1,0.1f}},
+    {1.65f,  0, {0,93,0},   {0.03f,-1,0.05f}, {0,-1,-0.05f},    {0.25f,-0.95f,0.12f}, {0.05f,-0.6f,0.8f}},
+    };
+  const GetUpKey* k = back ? kb : kf;
+  t = std::clamp(t, 0.f, getUpTime());
+  size_t i = 0;
+  while(i+2<4 && t>k[i+1].t) ++i;
+  const GetUpKey& a = k[i];
+  const GetUpKey& b = k[i+1];
+  float u = std::clamp((t-a.t)/(b.t-a.t), 0.f, 1.f);
+  u = u*u*(3.f-2.f*u);
+  auto lv = [u](Vec3 x, Vec3 y) { return Vec3::normalize(x*(1.f-u) + y*u); };
+  const float pitch = (a.pitch*(1.f-u) + b.pitch*u)*float(M_PI)/180.f;
+  const Vec3  P     = a.P*(1.f-u) + b.P*u;
+  std::vector<Matrix4x4> w(sk.tr.begin(), sk.tr.end());
+  const size_t pel = bone(sk,"BIP01 PELVIS");
+  const Vec3   at  = org(w[pel]);
+  for(auto& m:w)
+    LimbIk::rotateAround(m, at, Vec3(1,0,0), pitch);
+  auto mir = [](Vec3 v) { return Vec3(-v.x,v.y,v.z); };
+  aim(sk,w,"BIP01 L THIGH","BIP01 L CALF", lv(a.th,b.th));
+  aim(sk,w,"BIP01 L CALF", "BIP01 L FOOT", lv(a.ca,b.ca));
+  aim(sk,w,"BIP01 R THIGH","BIP01 R CALF", mir(lv(a.th,b.th)));
+  aim(sk,w,"BIP01 R CALF", "BIP01 R FOOT", mir(lv(a.ca,b.ca)));
+  aim(sk,w,"BIP01 L UPPERARM","BIP01 L FOREARM", lv(a.up,b.up));
+  aim(sk,w,"BIP01 L FOREARM", "BIP01 L HAND",    lv(a.fo,b.fo));
+  aim(sk,w,"BIP01 R UPPERARM","BIP01 R FOREARM", mir(lv(a.up,b.up)));
+  aim(sk,w,"BIP01 R FOREARM", "BIP01 R HAND",    mir(lv(a.fo,b.fo)));
+  const Vec3 d = P - org(w[pel]);
+  for(auto& m:w)
+    LimbIk::setOrigin(m, org(m)+d);
+  return w;
+  }
+
 struct Actor {
   const Skeleton&          sk;
   DynamicWorld&            dw;
@@ -137,6 +192,22 @@ struct Actor {
   uint32_t                 throesSeed = 1;
   size_t                   killBone   = size_t(-1); // рана от последнего удара (метка на кадрах): кость и точка в ней
   Vec3                     killLocal  = {};
+  // толчок (S_Balance): люди рядом - опора для руки (как Npc::ragdollGrips); устоял - поза куклы переходит в анимацию
+  std::vector<Ragdoll::Grip> grips;
+  std::vector<Matrix4x4>   blendFrom;
+  float                    blendAt   = -1;
+  float                    blendTime = 0.45f;
+  bool                     recovered = false;
+  int                      steps     = 0;
+  // встаёт (как Npc::ragdollGetUp): собирается лёжа по физике (getUpGather), поза куклы переходит в позу лёжа начала
+  // подъёма (getUpBlend), потом - анимация подъёма; с этого времени, на спине или на животе
+  float                    getUpAt   = -1;
+  bool                     getUpBack = true;
+  float                    getUpGather = 0.42f;
+  float                    getUpBlend  = 0.26f;
+  float                    getUpHold   = 0.68f; // анимация подъёма стоит на первом кадре (лёжа) столько, с
+  bool                     getUpPhys = true;  // false - без физики: поза куклы сразу переходит в позу лёжа
+  bool                     braceDemo = false; // стойка героя перед толчком: готов 0,4..0,6 с, удар в 0,8 с
 
   Actor(DynamicWorld& dw, const Skeleton& sk, Vec3 at, float rotY=0):sk(sk), dw(dw), at(at), rotY(rotY) {
     rig = InjuryRig::of(sk);
@@ -149,6 +220,10 @@ struct Actor {
 
   void mkAnim() {
     auto local = walking ? walkPose(sk,time) : stancePose(sk);
+    if(getUpAt>=0.f) {
+      const float tu = time-getUpAt;
+      local = getUpPose(sk, tu<getUpHold ? 0.f : tu-getUpHold, getUpBack);
+      }
     if(stumbleAt>=0.f)
       stumble(local,time-stumbleAt);
     const Matrix4x4 o = obj();
@@ -212,6 +287,45 @@ struct Actor {
     r->hit(h);
     }
 
+  // толчок телом (герой с разбега, плечом или руками) - как Npc::ragdollShove
+  void shove(Vec3 atPt, Vec3 dir, float speed, uint8_t free = 3) {
+    if(!r) startActive();
+    Ragdoll::Shove s; s.at = atPt; s.dir = dir; s.speed = speed; s.freeArms = free;
+    // STEADY - как крепко стоит на ногах (в игре у каждого NPC своё, Npc::ragdollShove)
+    s.steady = std::getenv("STEADY") ? float(std::atof(std::getenv("STEADY"))) : 1.f;
+    r->shove(s);
+    }
+
+  // встаёт (как Npc::ragdollGetUp): на спине или на животе - по груди; NPC ставится так, чтобы таз и грудь первого
+  // кадра подъёма легли на тело; кукла встаёт телом (S_GetUp) или, как раньше, поза переходит в анимацию
+  void getUp(bool phys) {
+    if(!r) return;
+    getUpBack = r->chestFront().y>0.f;
+    const auto f0  = getUpPose(sk,0,getUpBack);
+    const Vec3 pA  = org(f0[bone(sk,"BIP01 PELVIS")]), cA = org(f0[bone(sk,"BIP01 SPINE2")]);
+    const Vec3 pR  = r->rootPosition(), cR = r->chestPosition();
+    const float aA = std::atan2(cA.x-pA.x, cA.z-pA.z), aR = std::atan2(cR.x-pR.x, cR.z-pR.z);
+    rotY = (aR-aA)*180.f/float(M_PI);
+    const float a = rotY*float(M_PI)/180.f;
+    const Vec3  rA = Vec3(pA.x*std::cos(a)+pA.z*std::sin(a), 0, -pA.x*std::sin(a)+pA.z*std::cos(a));
+    at = Vec3(pR.x-rA.x, 0, pR.z-rA.z);
+    getUpPhys = phys;
+    getUpAt   = time;
+    getUpHold = getUpGather+getUpBlend;
+    mkAnim();
+    if(phys && r->startGetUp(getUpGather)) {
+      r->setTarget(anim,0);
+      return;
+      }
+    // без физики: поза куклы переходит в позу лёжа начала подъёма, потом анимация
+    getUpPhys = false;
+    getUpHold = getUpBlend+0.2f;
+    blendFrom = disp;
+    blendAt   = time;
+    blendTime = getUpHold;
+    r.reset();
+    }
+
   // живой сбит ударом с ног или летит (обрыв, тролль) - как Npc::startRagdollFall
   void fall(Vec3 atPt, Vec3 dir, float power, uint8_t kind, Vec3 vel) {
     r = Ragdoll::create(dw,sk,disp.data(),disp.size(),Ragdoll::S_Fall,500,false);
@@ -264,6 +378,13 @@ struct Actor {
       const float a = rotY*float(M_PI)/180.f;
       at += Vec3(std::sin(a),0,std::cos(a))*(speed*dts);
       }
+    if(braceDemo) {
+      // человек в 60 см перед грудью; готовится за 0,2 с, удар - в 0,8 с, потом отпускает за 0,35 с
+      inj.brace    = std::clamp((time-0.4f)/0.2f, 0.f, 1.f)*(time<1.06f ? 1.f : std::max(0.f, 1.f-(time-1.06f)/0.35f));
+      inj.braceHit = time>=0.8f ? LimbIk::envelope(time-0.8f, 0.06f, 0.12f, 0.3f) : 0.f;
+      const float ar = rotY*float(M_PI)/180.f;
+      inj.braceAt  = at + Vec3(std::sin(ar),0,std::cos(ar))*60.f + Vec3(0,128,0);
+      }
     if(wound.active()) {
       inj.reach  = wound.weight(int64_t(time*1000.f));
       inj.arm    = wound.cur.arm;  inj.bone   = wound.cur.bone;
@@ -276,6 +397,33 @@ struct Actor {
       }
     if(r && r->lostBalance())
       r->setState(Ragdoll::S_Fall);
+    // встаёт: собрался лёжа - кукла уходит из физики, поза переходит в позу лёжа начала подъёма (Npc::endRagdollGetUp),
+    // потом анимация; кончилась - стоит
+    if(getUpAt>=0.f && r && r->state()==Ragdoll::S_GetUp && time-getUpAt>=getUpGather) {
+      blendFrom = disp;
+      blendAt   = time;
+      blendTime = getUpBlend;
+      r.reset();
+      }
+    if(getUpAt>=0.f && time-getUpAt>=getUpHold+getUpTime()) {
+      getUpAt = -1;
+      recovered = true;
+      }
+    // ловит равновесие: NPC стоит там, где таз (как Npc::followRagdoll); устоял - поворачивается, как стоит тело, и
+    // поза куклы переходит в анимацию (как Npc::tickRagdollBalance)
+    if(r && r->state()==Ragdoll::S_Balance) {
+      r->setGrips(grips);
+      const Vec3 p = org(r->world()[0]);
+      at.x = p.x; at.z = p.z;
+      if(r->balanceRecovered()) {
+        const Vec3 f = r->bodyFront();
+        rotY = std::atan2(f.x,f.z)*180.f/float(M_PI);
+        blendFrom = disp;
+        blendAt   = time;
+        recovered = true;
+        r.reset();
+        }
+      }
     // цель - поза прошлого кадра со сдвигом NPC (как Npc::tickRagdollActive), затем физика, затем новый кадр
     if(r && r->isSimulated())
       r->setTarget(anim,dt);
@@ -287,8 +435,14 @@ struct Actor {
   // вывод - как Pose::implMkSkeletonActive / setRagdoll
   void display() {
     disp = anim;
-    if(!r)
+    if(!r) {
+      if(blendAt>=0.f && time<blendAt+blendTime && blendFrom.size()==disp.size()) {
+        float w = 1.f-(time-blendAt)/blendTime;
+        w = w*w*(3.f-2.f*w);
+        for(size_t i=0;i<disp.size();++i) disp[i] = mixM(anim[i],blendFrom[i],w);
+        }
       return;
+      }
     if(r->state()==Ragdoll::S_Active) {
       if(!r->isSimulated()) return;
       std::vector<Matrix4x4> rel;
@@ -349,8 +503,9 @@ struct Actor {
     }
 
   // кадр для render.py: кости палочками
-  void dump(FILE* f, const char* label) const {
-    std::fprintf(f,"F %.3f %s\n",double(time),label);
+  void dump(FILE* f, const char* label, bool other = false) const {
+    if(!other)
+      std::fprintf(f,"F %.3f %s\n",double(time),label);
     // первая кость - таз (по ней камера следит)
     for(size_t i=0;i<sk.nodes.size();++i) {
       const std::string& nm = sk.nodes[i].name;
@@ -370,6 +525,7 @@ struct Actor {
       if(nm.find("THIGH")!=std::string::npos) { kind='p'; rad=8; }
       const Vec3 a = org(disp[p]), b = org(disp[i]);
       if(i==bone(sk,"BIP01 SPINE")) continue;
+      if(other) kind = 'o';
       std::fprintf(f,"B %.1f %.1f %.1f %.1f %.1f %.1f %.1f %c\n",double(a.x),double(a.y),double(a.z),double(b.x),double(b.y),double(b.z),double(rad),kind);
       }
     // голова - шар
@@ -378,7 +534,7 @@ struct Actor {
     if(h!=size_t(-1)) {
       const Vec3 a = org(disp[h]);
       Vec3 up = Vec3::normalize(org(disp[h]) - org(disp[sk.nodes[h].parent]))*12.f;
-      std::fprintf(f,"B %.1f %.1f %.1f %.1f %.1f %.1f %.1f h\n",double(a.x),double(a.y),double(a.z),double(a.x+up.x),double(a.y+up.y),double(a.z+up.z),9.0);
+      std::fprintf(f,"B %.1f %.1f %.1f %.1f %.1f %.1f %.1f %c\n",double(a.x),double(a.y),double(a.z),double(a.x+up.x),double(a.y+up.y),double(a.z+up.z),9.0,other ? 'o' : 'h');
       }
     }
     for(auto& m:marks)

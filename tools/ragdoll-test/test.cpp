@@ -315,9 +315,32 @@ struct Shake {
   };
 
 // Сцены активного регдолла (ragtest vis <сцена> out.txt): тело на экране по кадрам для render.py
-static int visScene(const std::string& name, const char* out, Shake* shake = nullptr, float* peakT = nullptr) {
+extern std::vector<std::pair<Vec3,Vec3>> benchBoxes;
+
+// итог сцены толчка или подъёма (balanceTests)
+struct SceneResult {
+  float fellAt      = -1;  // с: не устоял (S_Fall)
+  float recoveredAt = -1;  // с: устоял или встал - поза в анимации
+  int   steps       = 0;   // шагов, ловя равновесие
+  bool  gripped     = false;
+  float getUpErr    = 0;   // наибольшее отставание тела от кадра подъёма, см
+  float gatherErr   = 0;   // собрался лёжа: насколько тело (таз, грудь, голова, кисти, ступни) не в позе начала подъёма, см
+  float holdRise    = 0;   // пока не начал вставать: наибольшая скорость головы и груди вверх, м/с («тянут за голову»)
+  float pelvisY     = 0;   // таз на последнем кадре, см
+  Vec3  pelvis      = {};
+  double physMs     = 0;   // среднее время шага мира с куклой, мс
+  int   physFrames  = 0;
+  };
+
+static int visScene(const std::string& name, const char* out, Shake* shake = nullptr, float* peakT = nullptr,
+                    SceneResult* res = nullptr) {
   zenkit::Mesh mesh;
+  // стена за спиной (толчок спереди - валится к ней): центр и половины размеров, см
+  benchBoxes.clear();
+  if(name=="shove_wall")
+    benchBoxes.push_back({Vec3(0,110,-100), Vec3(160,110,10)});
   DynamicWorld dw(nullptr,mesh);
+  benchBoxes.clear();
   auto hum = mkSkeleton(human(),"HUMANS.MDH");
   FILE* f = out!=nullptr ? std::fopen(out,"w") : nullptr;
   if(f==nullptr && out!=nullptr)
@@ -393,6 +416,53 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
         a.hit(at, Vec3(0,0,-1), pw, big ? bl.dmg*1.8f : bl.dmg);
         }});
       }
+    }
+  // толчок с разбега (герой плечом или руками): тело ловит равновесие шагами, руками, опорой; не устоял - падает.
+  // SPD - скорость центра масс после толчка, м/с (по умолчанию - своя у сцены)
+  else if(name.rfind("shove",0)==0) {
+    len = 4.f;
+    const float spd = std::getenv("SPD") ? float(std::atof(std::getenv("SPD"))) : 0.f;
+    auto pick = [spd](float def) { return spd>0.f ? spd : def; };
+    if(name=="shove_front")
+      ev.push_back({0.3f,[&,pick]{ a.shove(chest(),Vec3(0,0,-1),pick(1.8f)); }});
+    else if(name=="shove_back")
+      ev.push_back({0.3f,[&,pick]{ a.shove(chest()-Vec3(0,0,24),Vec3(0,0,1),pick(2.2f)); }});
+    else if(name=="shove_side")
+      ev.push_back({0.3f,[&,pick]{ a.shove(bonePos(a,"BIP01 R UPPERARM")+Vec3(-6,-4,0),Vec3(1,0,0),pick(1.6f)); }});
+    else if(name=="shove_light")
+      ev.push_back({0.3f,[&,pick]{ a.shove(chest(),Vec3(0,0,-1),pick(0.9f)); }});
+    else if(name=="shove_hard")
+      ev.push_back({0.3f,[&,pick]{ a.shove(chest(),Vec3(0,0,-1),pick(3.f)); }});
+    else if(name=="shove_wall")
+      ev.push_back({0.3f,[&,pick]{ a.shove(chest(),Vec3(0,0,-1),pick(2.2f)); }});
+    else if(name=="shove_npc")
+      ev.push_back({0.3f,[&,pick]{ a.shove(chest()+Vec3(-8,0,0),Vec3(0.45f,0,-1),pick(2.f)); }});
+    else {
+      if(f!=nullptr) std::fclose(f);
+      std::printf("unknown scene %s\n",name.c_str());
+      return 1;
+      }
+    }
+  // встаёт телом (S_GetUp): сбит с ног, лежит, встаёт - на спине и на животе; getup_anim - как раньше (поза куклы
+  // переходит в анимацию подъёма)
+  else if(name=="getup_back" || name=="getup_belly" || name=="getup_anim") {
+    len = 5.f;
+    const bool belly = (name=="getup_belly");
+    ev.push_back({0.2f,[&,belly]{
+      if(belly)
+        a.fall(chest()-Vec3(0,0,24),Vec3(0,0,1),3.5f,Ragdoll::H_Melee,Vec3(0,0,1.2f)); else
+        a.fall(chest(),Vec3(0,0,-1),3.5f,Ragdoll::H_Melee,Vec3(0,0,-1.2f));
+      }});
+    ev.push_back({2.4f,[&,name]{ a.getUp(name!="getup_anim"); }});
+    }
+  // стойка героя перед толчком (слой позы, Npc::tickShove -> InjuryRig::applyBrace): бежит, за 0,35 с до человека -
+  // плечо вперёд или руки к его груди, врезался - руки разгибаются, корпус пружинит
+  else if(name=="brace_shoulder" || name=="brace_push1" || name=="brace_push2") {
+    len = 2.2f;
+    a.walking = true; a.speed = 360;
+    a.inj.braceKind = name=="brace_shoulder" ? Injury::B_Shoulder : (name=="brace_push1" ? Injury::B_Push1 : Injury::B_Push2);
+    a.inj.braceSide = 0;
+    a.braceDemo = true;
     }
   else if(name=="walkhit") {
     len = 3.f;
@@ -495,6 +565,10 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
     std::printf("unknown scene %s\n",name.c_str());
     return 1;
     }
+  // другой человек рядом (опора для руки): стоит слева сзади
+  std::unique_ptr<bench::Actor> other;
+  if(name=="shove_npc")
+    other = std::make_unique<bench::Actor>(dw,*hum,Vec3(62,0,-45),180.f);
   size_t next = 0;
   float  peakDev = 0;
   // DT - шаг времени мира за кадр, мс (как в слоумо: 3-8 мс вместо 33); кадры для render.py - по-прежнему раз в 33 мс
@@ -503,7 +577,50 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
   int lastFrame = -1;
   for(float t=0; t<len; t+=float(stepMs)/1000.f) {
     while(next<ev.size() && ev[next].first<=t) { ev[next].second(); ++next; }
+    const auto tick0 = std::chrono::steady_clock::now();
+    if(other) {
+      // за что можно схватиться: плечи и грудь другого (как Npc::ragdollGrips)
+      a.grips.clear();
+      uint32_t id = 1;
+      for(auto nm:{"BIP01 L UPPERARM","BIP01 R UPPERARM","BIP01 SPINE2","BIP01 L FOREARM","BIP01 R FOREARM"}) {
+        Ragdoll::Grip g; g.at = bonePos(*other,nm); g.id = id; a.grips.push_back(g);
+        }
+      other->tick();
+      }
     a.tick();
+    if(res!=nullptr) {
+      if(a.r && a.r->isSimulated()) {
+        res->physMs += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-tick0).count();
+        res->physFrames++;
+        }
+      if(a.r && a.r->state()==Ragdoll::S_Balance) {
+        res->steps   = std::max(res->steps, a.r->balanceSteps());
+        res->gripped = res->gripped || a.r->isGripping();
+        }
+      if(a.r && a.r->state()==Ragdoll::S_Fall && res->fellAt<0.f)
+        res->fellAt = t;
+      if(a.r && a.r->state()==Ragdoll::S_GetUp)
+        res->getUpErr = std::max(res->getUpErr, a.r->getUpError());
+      if(a.getUpAt>=0.f && a.time-a.getUpAt<a.getUpHold) {
+        static Vec3 prevH, prevC;
+        const Vec3 h = bonePos(a,"BIP01 HEAD"), c = bonePos(a,"BIP01 SPINE2");
+        if(a.time-a.getUpAt>0.04f) {
+          const float dts = float(a.dt)/1000.f;
+          res->holdRise = std::max(res->holdRise, std::max(h.y-prevH.y, c.y-prevC.y)*0.01f/dts);
+          }
+        prevH = h; prevC = c;
+        }
+      if(a.getUpAt>=0.f && !a.r && a.blendAt>=0.f && std::abs(a.time-a.blendAt)<1e-4f) {
+        for(auto nm:{"BIP01 PELVIS","BIP01 SPINE2","BIP01 HEAD","BIP01 L HAND","BIP01 R HAND","BIP01 L FOOT","BIP01 R FOOT"}) {
+          const size_t b = bench::bone(a.sk,nm);
+          res->gatherErr = std::max(res->gatherErr, (org(a.blendFrom[b])-org(a.anim[b])).length());
+          }
+        }
+      if(a.recovered && res->recoveredAt<0.f)
+        res->recoveredAt = t;
+      res->pelvis  = bonePos(a,"BIP01 PELVIS");
+      res->pelvisY = res->pelvis.y;
+      }
     const int frame = int(t/0.033f+1e-4f);
     if(frame==lastFrame)
       continue;
@@ -553,7 +670,21 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
       continue;
     char label[96];
     std::snprintf(label,sizeof(label),"%s show=%.2f",name.c_str(),a.r ? double(a.r->showWeight()) : 0.0);
+    if(a.r && a.r->state()==Ragdoll::S_Balance)
+      std::snprintf(label,sizeof(label),"%s balance",name.c_str());
+    else if(a.r && a.r->state()==Ragdoll::S_Fall)
+      std::snprintf(label,sizeof(label),"%s fall",name.c_str());
+    else if(a.r && a.r->state()==Ragdoll::S_GetUp)
+      std::snprintf(label,sizeof(label),"%s getup err=%.0f",name.c_str(),double(a.r->getUpError()));
+    else if(a.getUpAt>=0.f)
+      std::snprintf(label,sizeof(label),"%s getup (anim)",name.c_str());
+    else if(a.recovered)
+      std::snprintf(label,sizeof(label),"%s recovered",name.c_str());
     a.dump(f,label);
+    if(other)
+      other->dump(f,"",true);
+    if(name=="shove_wall")
+      std::fprintf(f,"B 0 0 -100 0 220 -100 10 w\n");
     }
   if(f!=nullptr)
     std::fclose(f);
@@ -786,7 +917,7 @@ static int throesTests() {
   }
 
 static int shakeReport() {
-  for(auto nm:{"chest","arm","head","shoulder","stumble","series","stagger","leg","side"}) {
+  for(auto nm:{"chest","arm","head","shoulder","stumble","series","stagger","leg","side","shove_light","shove_front","shove_side","shove_npc","getup_back"}) {
     Shake sh;
     float peak = 0;
     visScene(nm,nullptr,&sh,&peak);
@@ -1347,13 +1478,112 @@ static int perf() {
   return 0;
   }
 
+// Толчок с разбега (S_Balance) и подъём телом (S_GetUp): устоял или упал - по направлению и силе толчка; стена и
+// человек рядом держат; встаёт, не отставая от кадра подъёма; то же при шаге мира 4 мс (слоумо)
+static int balanceTests() {
+  int fail = 0;
+  auto scene = [](const char* name, float spd, int dt = 0, float steady = 1.f) {
+    SceneResult r;
+    if(spd>0.f) setenv("SPD",std::to_string(spd).c_str(),1); else unsetenv("SPD");
+    if(dt>0) setenv("DT",std::to_string(dt).c_str(),1); else unsetenv("DT");
+    setenv("STEADY",std::to_string(steady).c_str(),1);
+    visScene(name,nullptr,nullptr,nullptr,&r);
+    unsetenv("SPD");
+    unsetenv("DT");
+    unsetenv("STEADY");
+    return r;
+    };
+  auto expect = [&](const char* title, const SceneResult& r, bool keep, int minSteps, bool grip) {
+    const bool kept = r.recoveredAt>0.f && r.fellAt<0.f;
+    bool ok = keep ? kept : (r.fellAt>0.f);
+    ok = ok && r.steps>=minSteps && (!grip || r.gripped);
+    std::printf("shove: %-34s %s at %.2f s, steps %d%s, %.2f ms/frame %s\n", title, kept ? "kept balance" : (r.fellAt>0.f ? "fell" : "still"),
+                double(kept ? r.recoveredAt : r.fellAt), r.steps, r.gripped ? ", gripped" : "",
+                r.physFrames>0 ? r.physMs/r.physFrames : 0.0, ok ? "" : "^^^ FAIL");
+    if(!ok) fail++;
+    };
+  // Человек борется (пользователь: «один шаг и падает - нелепо»): толчок с разбега (~1,8-2,2 м/с) - несколько шагов
+  // назад, вбок через ногу, вперёд, руки машут - и обычно устоит; сильный - борется шагами и падает; у каждого NPC
+  // своя устойчивость (Shove::steady): слабый на ногах падает там, где крепкий устоит
+  expect("light, from the front (0.9 m/s)",  scene("shove_light",0),       true,  1, false);
+  expect("from the front 1.2 m/s",           scene("shove_front",1.2f),    true,  1, false);
+  expect("from the front 1.8 m/s",           scene("shove_front",1.8f),    true,  2, false);
+  expect("from the front 2.2 m/s",           scene("shove_front",2.2f),    true,  3, false);
+  expect("from the front 3.0 m/s",           scene("shove_front",3.0f),    false, 3, false);
+  expect("front 2.6 m/s, unsteady (0.8)",    scene("shove_front",2.6f,0,0.8f), false, 3, false);
+  expect("front 2.6 m/s, steady (1.2)",      scene("shove_front",2.6f,0,1.2f), true,  3, false);
+  expect("from behind 1.5 m/s",              scene("shove_back",1.5f),     true,  1, false);
+  expect("from behind 2.2 m/s",              scene("shove_back",2.2f),     true,  2, false);
+  expect("from behind 3.0 m/s",              scene("shove_back",3.0f),     false, 1, false);
+  expect("from the side 0.8 m/s",            scene("shove_side",0.8f),     true,  1, false);
+  expect("from the side 1.8 m/s",            scene("shove_side",1.8f),     true,  3, false);
+  expect("from the side 2.2 m/s",            scene("shove_side",2.2f),     false, 3, false);
+  expect("into a wall 2.2 m/s",              scene("shove_wall",2.2f),     true,  0, true);
+  expect("toward a person 1.5 m/s",          scene("shove_npc",1.5f),      true,  1, true);
+  expect("front 1.2 m/s, world step 4 ms",   scene("shove_front",1.2f,4),  true,  1, false);
+  expect("front 1.8 m/s, world step 4 ms",   scene("shove_front",1.8f,4),  true,  2, false);
+  expect("front 3.0 m/s, world step 4 ms",   scene("shove_front",3.0f,4),  false, 2, false);
+  {
+    // у стены: тело остаётся у стены, а не проходит сквозь неё
+    const auto r = scene("shove_wall",2.6f);
+    const bool ok = r.pelvis.z>-92.f;
+    std::printf("shove: into a wall 2.6 m/s - pelvis at z %.0f (wall face -90) %s\n", double(r.pelvis.z), ok ? "" : "^^^ FAIL");
+    if(!ok) fail++;
+  }
+  // встаёт: собрался лёжа почти в позу начала подъёма (переход позы - короткий, по земле), пока лежит - ничто не
+  // «всплывает» (голова и грудь не идут вверх раньше анимации), в конце стоит
+  for(auto nm:{"getup_back","getup_belly","getup_anim"}) {
+    const auto r = scene(nm,0);
+    const bool phys = std::string(nm)!="getup_anim";
+    const bool ok = r.fellAt>0.f && r.recoveredAt>0.f && r.pelvisY>80.f && r.holdRise<0.45f && (!phys || r.gatherErr<30.f);
+    std::printf("getup: %-12s fell at %.2f, stood at %.2f, gathered within %.0f cm, rises before the animation %.2f m/s, pelvis at the end %.0f cm %s\n",
+                nm, double(r.fellAt), double(r.recoveredAt), double(r.gatherErr), double(r.holdRise), double(r.pelvisY), ok ? "" : "^^^ FAIL");
+    if(!ok) fail++;
+    }
+  {
+    const auto r = scene("getup_back",0,4);
+    const bool ok = r.recoveredAt>0.f && r.pelvisY>80.f && r.holdRise<0.45f && r.gatherErr<30.f;
+    std::printf("getup: back, world step 4 ms - gathered within %.0f cm, rises before the animation %.2f m/s %s\n",
+                double(r.gatherErr), double(r.holdRise), ok ? "" : "^^^ FAIL");
+    if(!ok) fail++;
+  }
+  return fail;
+  }
+
+// Сводка «устоял/упал» по направлению и силе толчка: ./ragtest sweep - шагов, когда устоял или упал
+static int balanceSweep() {
+  std::string out;
+  for(auto nm:{"shove_front","shove_back","shove_side"}) {
+    char buf[64];
+    std::snprintf(buf,sizeof(buf),"%-12s",nm);
+    out += buf;
+    for(float spd:{1.0f,1.4f,1.8f,2.2f,2.6f,3.0f}) {
+      SceneResult r;
+      setenv("SPD",std::to_string(spd).c_str(),1);
+      visScene(nm,nullptr,nullptr,nullptr,&r);
+      unsetenv("SPD");
+      const bool kept = r.recoveredAt>0.f && r.fellAt<0.f;
+      std::snprintf(buf,sizeof(buf)," %.1f:%s %dst %.1fs |", double(spd), kept ? "kept" : (r.fellAt>0.f ? "FELL" : "still"), r.steps,
+                    double(kept ? r.recoveredAt-0.3f : r.fellAt-0.3f));
+      out += buf;
+      }
+    out += "\n";
+    }
+  std::printf("sweep (m/s: устоял/упал, шагов, через сколько с после толчка)\n%s", out.c_str());
+  return 0;
+  }
+
 int main(int argc, char** argv) {
   if(argc>3 && std::string(argv[1])=="vis")
     return visScene(argv[2],argv[3]);
+  if(argc>1 && std::string(argv[1])=="sweep")
+    return balanceSweep();
   if(argc>1 && std::string(argv[1])=="shake")
     return shakeReport();
   if(argc>1 && std::string(argv[1])=="throes")
     return throesTests();
+  if(argc>1 && std::string(argv[1])=="balance")
+    return balanceTests();
   if(argc>1 && std::string(argv[1])=="injury") {
     injuryJump("BIP01 HEAD",Vec3(0,8,10),true);
     injuryJump("BIP01 SPINE2",Vec3(0,0,12),true);
@@ -1508,6 +1738,7 @@ int main(int argc, char** argv) {
   fail += aimTests(*hum,*wlf);
   fail += activeTests(dw,*hum,*wlf);
   fail += throesTests();
+  fail += balanceTests();
 
   std::printf(fail==0 ? "ALL OK\n" : "FAILED: %d\n",fail);
   return fail;

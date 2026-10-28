@@ -166,6 +166,25 @@ public class GraphicsSettingsTest {
     }
 
     @Test
+    public void shoveAndRiseAreOnByDefaultAndDependOnRagdoll() {
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        // ключи читает Gothic::Gothic (patch движка): ragdollShove - толчок с разбега, ragdollRise - подъём: тело собирается по земле
+        assertTrue(g.iniText().contains("\nragdollShove=1\n"));
+        assertTrue(g.iniText().contains("\nragdollRise=1\n"));
+        assertTrue(g.isAvailable(GraphicsSettings.RAGDOLL_SHOVE));
+        assertTrue(g.isAvailable(GraphicsSettings.RAGDOLL_RISE));
+        g.setOn(GraphicsSettings.RAGDOLL_ACTIVE, false);
+        assertFalse(g.isAvailable(GraphicsSettings.RAGDOLL_SHOVE));
+        assertTrue(g.isAvailable(GraphicsSettings.RAGDOLL_RISE));
+        g.setOn(GraphicsSettings.RAGDOLL_ACTIVE, true);
+        g.setOn(GraphicsSettings.RAGDOLL_FALL, false);
+        assertFalse(g.isAvailable(GraphicsSettings.RAGDOLL_SHOVE));
+        assertFalse(g.isAvailable(GraphicsSettings.RAGDOLL_RISE));
+        g.setOn(GraphicsSettings.RAGDOLL_SHOVE, false);
+        assertTrue(g.iniText().contains("\nragdollShove=0\n"));
+    }
+
+    @Test
     public void ragdollKeepsOldSetting() {
         // прежняя версия хранила тот же ключ с вариантами «по физике»/«анимацией игры» - значение не меняется
         MemoryPrefs prefs = new MemoryPrefs();

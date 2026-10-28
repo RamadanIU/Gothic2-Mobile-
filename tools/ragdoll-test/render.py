@@ -15,6 +15,8 @@ COLORS = {
     'a': (120, 170, 230),   # руки
     'l': (110, 200, 140),   # ноги
     'k': (150, 150, 150),   # прочее
+    'o': (170, 120, 200),   # другой человек (опора для руки)
+    'w': (95, 95, 110),     # стена
 }
 MARK = {'r': (230, 60, 60), 'g': (80, 220, 80), 'b': (80, 120, 255), 'y': (240, 220, 60)}
 
@@ -64,15 +66,18 @@ def draw_view(img, ox, view, fr, center):
         d.line([(gx, gy), (gx, gy + 6)], fill=(90, 90, 90), width=1)
     items = []
     for a, b, r, kind in fr['bones']:
+        # стена - только сбоку, позади всего
+        if kind == 'w' and view != 'side':
+            continue
         pa = project(view, center, a)
         pb = project(view, center, b)
-        items.append(((pa[2] + pb[2]) / 2, pa, pb, r, kind))
+        items.append(((pa[2] + pb[2]) / 2 if kind != 'w' else -1e9, pa, pb, r, kind))
     items.sort(key=lambda t: t[0])
-    zs = [t[0] for t in items] or [0]
+    zs = [t[0] for t in items if t[4] != 'w'] or [0]
     zmin, zmax = min(zs), max(zs)
     for z, pa, pb, r, kind in items:
         col = COLORS.get(kind, COLORS['k'])
-        f = 0.65 + 0.35 * ((z - zmin) / (zmax - zmin + 1e-3))
+        f = 0.65 + 0.35 * ((z - zmin) / (zmax - zmin + 1e-3)) if kind != 'w' else 1.0
         col = tuple(int(c * f) for c in col)
         w = max(2, int(r * 2 * 1.05))
         d.line([(ox + pa[0], pa[1]), (ox + pb[0], pb[1])], fill=col, width=w)

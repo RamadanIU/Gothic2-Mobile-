@@ -97,6 +97,21 @@ final class GraphicsSettings {
         "Агония: раненые корчатся, пытаются встать, дышат",
         new String[]{"включена", "выключена"}, new String[]{"1", "0"}, true);
     /**
+     * Толчок с разбега: герой, врезаясь в человека на бегу, подставляет плечо или толкает руками; тот всем телом (полный
+     * регдолл) ловит равновесие шагами, руками, хватается за стену или соседа — устоит или упадёт. Только с активным
+     * регдоллом и регдоллом живых.
+     */
+    static final Option RAGDOLL_SHOVE = new Option("gfx_ragdoll_shove", "ragdollShove",
+        "Толчок с разбега: плечом или руками, тот ловит равновесие",
+        new String[]{"включён", "выключен"}, new String[]{"1", "0"}, true);
+    /**
+     * Встают, собравшись: упавший и оглушённый сначала по физике подтягивают руки и ноги по земле в позу начала подъёма,
+     * потом встают анимацией игры; выключено — поза тела сразу переходит в эту позу. Только с регдоллом живых.
+     */
+    static final Option RAGDOLL_RISE = new Option("gfx_ragdoll_rise", "ragdollRise",
+        "Подъём: тело сначала собирается по земле",
+        new String[]{"включено", "выключено"}, new String[]{"1", "0"}, true);
+    /**
      * Не рисовать заслонённое (карта перекрытий движка): быстрее. Выключить — если пропадают стены, предметы или
      * тело героя, хотя видны: тогда рисуется всё в кадре.
      */
@@ -112,7 +127,7 @@ final class GraphicsSettings {
         new String[]{"мягкое — тени видны", "светлое — тени ещё светлее", "контрастное — тёмные тени, как раньше"},
         new String[]{"1", "2", "0"});
     static final Option[] EXTRA = {LIGHTING, SHOW_FPS, RAGDOLL, RAGDOLL_FALL, RAGDOLL_ACTIVE, RAGDOLL_KNOCKDOWN,
-        RAGDOLL_THROES, OCCLUSION};
+        RAGDOLL_THROES, RAGDOLL_SHOVE, RAGDOLL_RISE, OCCLUSION};
 
     /**
      * Лук и арбалет: прицел сам наводится на грудь цели в фокусе. Без него прицел — середина экрана: куда смотрит
@@ -187,12 +202,14 @@ final class GraphicsSettings {
     }
 
     /**
-     * Действует ли галочка: регдолл живых, активный и агония — только с регдоллом, сбивание с ног — с активным и с регдоллом
-     * живых (сбитый падает и встаёт, как упавший). Недействующая галочка на экране неактивна.
+     * Действует ли галочка: регдолл живых, активный и агония — только с регдоллом, сбивание с ног и толчок с разбега — с
+     * активным и с регдоллом живых (сбитый падает и встаёт, как упавший), подъём телом — с регдоллом живых. Недействующая
+     * галочка на экране неактивна.
      */
     boolean isAvailable(Option o) {
         if (o == RAGDOLL_FALL || o == RAGDOLL_ACTIVE || o == RAGDOLL_THROES) return isOn(RAGDOLL);
-        if (o == RAGDOLL_KNOCKDOWN) return isOn(RAGDOLL) && isOn(RAGDOLL_ACTIVE) && isOn(RAGDOLL_FALL);
+        if (o == RAGDOLL_KNOCKDOWN || o == RAGDOLL_SHOVE) return isOn(RAGDOLL) && isOn(RAGDOLL_ACTIVE) && isOn(RAGDOLL_FALL);
+        if (o == RAGDOLL_RISE) return isOn(RAGDOLL) && isOn(RAGDOLL_FALL);
         // плавная смена цели - у прицела с автонаведением (без него прицел - середина экрана, цели нет)
         if (o == AIM_SMOOTH) return isOn(AIM_ASSIST);
         if (o == KILLCAM_WHEN || o == KILLCAM_CINEMA || o == KILLCAM_ARROW) return isOn(KILLCAM);
