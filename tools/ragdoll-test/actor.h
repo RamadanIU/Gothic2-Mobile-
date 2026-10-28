@@ -131,6 +131,12 @@ struct Actor {
   std::vector<Matrix4x4>   anim, prevAnim, disp;
   std::vector<std::pair<Vec3,char>> marks;
   uint64_t                 dt = 33;
+  // агония после гибели или оглушения (как Npc::startRagdoll -> ragdollThroes): life < 0 - без агонии
+  float                    throesLife = -1;
+  bool                     throesRise = true;
+  uint32_t                 throesSeed = 1;
+  size_t                   killBone   = size_t(-1); // рана от последнего удара (метка на кадрах): кость и точка в ней
+  Vec3                     killLocal  = {};
 
   Actor(DynamicWorld& dw, const Skeleton& sk, Vec3 at, float rotY=0):sk(sk), dw(dw), at(at), rotY(rotY) {
     rig = InjuryRig::of(sk);
@@ -178,9 +184,21 @@ struct Actor {
   void kill(Vec3 atPt, Vec3 dir, float power, uint8_t kind = Ragdoll::H_Melee, Ragdoll::State st = Ragdoll::S_Dead,
             Vec3 vel = Vec3()) {
     Ragdoll::Hit h; h.at = atPt; h.dir = dir; h.power = power; h.kind = kind;
+    {
+    float best = 1e9f;
+    for(size_t i=0;i<sk.nodes.size();++i) {
+      if(sk.nodes[i].name.rfind("ZS_",0)==0) continue;
+      const float d = (org(disp[i])-atPt).length();
+      if(d<best) { best = d; killBone = i; }
+      }
+    Matrix4x4 inv = disp[killBone]; inv.inverse();
+    killLocal = atPt; inv.project(killLocal);
+    }
     if(r && r->state()==Ragdoll::S_Active) {
       r->setState(st);
       r->startSag();
+      if(throesLife>=0.f)
+        r->startThroes(throesLife,throesRise,throesSeed);
       r->hit(h);
       return;
       }
@@ -189,6 +207,8 @@ struct Actor {
     r->setVelocity(vel);
     if(vel.length()<0.5f)
       r->startSag();
+    if(throesLife>=0.f)
+      r->startThroes(throesLife,throesRise,throesSeed);
     r->hit(h);
     }
 
