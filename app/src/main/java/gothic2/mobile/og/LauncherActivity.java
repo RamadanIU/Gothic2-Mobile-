@@ -307,8 +307,14 @@ public class LauncherActivity extends Activity {
         Button b = button("", v -> {
             graphics.cycle(o);
             refreshGraphics();
+            if (isControl(o)) writeSettingsQuietly();
         });
-        graphicsRefresh.add(() -> b.setText(graphics.label(o)));
+        graphicsRefresh.add(() -> {
+            b.setText(graphics.label(o));
+            boolean enabled = graphics.isAvailable(o);
+            b.setEnabled(enabled);
+            b.setAlpha(enabled ? 1f : 0.5f);
+        });
         col.addView(b);
     }
 
@@ -325,9 +331,19 @@ public class LauncherActivity extends Activity {
         section(col, "Лук и арбалет");
         col.addView(note("Прицел — точка и круг: стрела уходит в случайное место круга, и чем выше умение, тем он уже "
             + "(100 % — точка). Попадание решает полёт стрелы: в голову — урон вдвое, в ноги — вдвое меньше."));
-        for (GraphicsSettings.Option o : GraphicsSettings.CONTROLS) addOption(col, o);
+        for (GraphicsSettings.Option o : GraphicsSettings.BOW) addOption(col, o);
         col.addView(note("С автонаведением прицел сам встаёт на грудь цели. Без него прицел — середина экрана: "
-            + "куда повернёшь камеру, туда и стрела (можно целиться в голову). Меняется и посреди игры."));
+            + "куда повернёшь камеру, туда и стрела (можно целиться в голову). Плавная смена цели: сражённый ещё "
+            + "секунду в прицеле — видно попадание и падение, потом прицел плавно переходит к следующему врагу, "
+            + "герой поворачивается вслед. Меняется и посреди игры."));
+
+        section(col, "Слоумо (как в Max Payne)");
+        col.addView(note("Герой победил врага — время замедляется, камера со стороны показывает, как он падает, "
+            + "звук становится ниже, цвета приглушены, сверху и снизу полосы кино. Выстрел из лука или арбалета, "
+            + "который победит, — камера летит за стрелой и останавливается перед целью."));
+        for (GraphicsSettings.Option o : GraphicsSettings.KILLCAM_OPTIONS) addOption(col, o);
+        col.addView(note("«Последний враг в бою» — как в Max Payne 3: только когда рядом больше никто не дерётся "
+            + "с героем и отрядом. Коснись экрана — пропустить. Меняется и посреди игры."));
 
         section(col, "Как играть");
         col.addView(note(

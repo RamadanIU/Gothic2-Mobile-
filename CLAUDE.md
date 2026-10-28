@@ -97,8 +97,12 @@ docs/AI_NPC.md, «Кто что слышит», «Происшествия и с
 вкл; docs/CONTROLS.md, «Лук и арбалет: прицел»; docs/PROGRESS.md, «Лук и арбалет…»; ждёт проверки). Там же **агония
 убитых и оглушённых** (регдолл): легло — корчится (руки к ране, колени по очереди к животу, на животе — ползком) или
 пытается встать (на спине — садится на руки, на животе — отжимается) и падает, потом обмякает; дышит (умирающий — часто,
-потом реже и замирает; оглушённый — ровно до подъёма); добитый — сразу; галочка «Агония» (docs/PROGRESS.md, последний
-раздел; ждёт проверки).
+потом реже и замирает; оглушённый — ровно до подъёма); добитый — сразу; галочка «Агония» (docs/PROGRESS.md; ждёт
+проверки). Там же **слоумо-добивание, как в Max Payne** (`game/killcam.*`): победа героя (по умолчанию — над последним
+врагом в бою) — «стоп-кадр», время мира ×0,3, камера сбоку показывает падение, звук ниже, цвета приглушены, полосы кино,
+плавный возврат; смертельный выстрел из лука — камера летит за стрелой; касание — пропустить. И **плавная смена цели**
+у лука: сражённый ещё 0,9 с в прицеле, потом точка по дуге к следующему, герой — вслед (docs/CONTROLS.md,
+«Слоумо-добивание»; docs/PROGRESS.md, последний раздел; настройки — «Управление»; ждут проверки).
 
 - **Приложение** (`app/`, Java, пакет `gothic2.mobile.og`): `LauncherActivity` — разрешение «Файлы», поиск
   папки игры (`GameFolder`), «Играть»; настройки — страницы разделов (`showPage`: «Графика», «Управление» — настройка
@@ -180,6 +184,19 @@ docs/AI_NPC.md, «Кто что слышит», «Происшествия и с
     земли), броска кубика нет; урон по месту — `DamageCalculator::rangeDamage` (`RangedAim::zoneMul`); стрела в теле —
     `Npc::stickArrow` → `MdlVisual::addStuck/tickStuck`; настройка `[CONTROLS] aimAssist` в `g2m.ini`
     (`Gothic::reloadControls`, `GameActivity.onResume` → `nativeSettingsChanged`);
+  - **слоумо-добивание** (`common/game/killcam.*`, `KillCam` — член `Gothic`, `Gothic::inst().killCam()`): события
+    `onShot` (из `Npc::shootBow`: полёт стрелы заранее — `predict` по `DynamicWorld::aimRay`, урон —
+    `DamageCalculator::arrowDamage`) и `onHit` (конец `Npc::takeDamage`); «последний враг» — `GameScript::squadEnemyLeft`;
+    **время мира** — `MainWindow::tick` (`worldDt`: мир, анимации, физика, движение героя — по нему; камера, окна,
+    касания — по реальному `frameRealDt`; кадр без хода мира — мир не тикает); ракурс — `MainWindow::tickCamera` →
+    `KillCam::tickCamera` (`Camera::setDirector/setDirectorLens`, возврат — `Camera::clearDirector(blend)`: выход камеры
+    плавно от ракурса к обычному, `Camera::Blend`); цвет — `slowmoGrade` (`tonemapping.glsl`, push `slowmo`, и в CMAA2);
+    звук — `WorldSound` (`SoundEffect::setPitch`, патч Tempest), музыка — `GameMusic::setVolumeMul`; полосы кино —
+    `MainWindow::paintEvent`; кнопок нет, касание — пропустить (`TouchMode::KillCam`, `TouchInput::Ui::KillCam`);
+    настройки `[CONTROLS] killCam/killCamWhen/killCamCinema/killCamArrow`; журнал `[g2m] killcam: …`;
+  - **плавная смена цели** у лука (`[CONTROLS] aimSmooth`): `PlayerControl::tickRangedAim` (`AimGlide`: задержка на
+    сражённом `RangedAim::LingerMs`, переход `GlideMs` по дуге `slerpDir/glide`; `aim.settling` — не стрелять в тело;
+    стрела летит в саму цель, плавно — точка и поворот героя `turnTo(aim.at)`);
   - «Взять всё» (`InventoryMenu::takeAll`), путь к игре из `gothic_path.txt` (`InstallDetect`), имя сохранения
     по умолчанию — дата, кнопка «Назад» телефона = Esc (Tempest);
   - **живой NPC** (`common/game/ainpc.*`, JNI — `ailink.*`): Геральт = `Vlk_2000_Thorus` с другим именем и
@@ -248,7 +265,7 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
     common/ui/touchicons.cpp common/ui/touchicons.h common/game/cooking.cpp \
     common/utils/applink.cpp common/utils/applink.h common/physics/ragdoll.cpp common/physics/ragdoll.h \
     common/game/aiteach.cpp common/game/rangedaim.h common/graphics/mesh/injury.cpp common/graphics/mesh/injury.h \
-    common/graphics/mesh/limbik.h
+    common/graphics/mesh/limbik.h common/game/killcam.cpp common/game/killcam.h
     # и другие новые файлы (все: git ls-files --others --exclude-standard | grep -v ^build/); не -A: build/ не в .gitignore
   git diff --ignore-submodules=all > ../opengothic.patch && git reset -q
   git -C lib/Tempest diff > ../opengothic-tempest.patch
@@ -288,7 +305,7 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
   `chest shoulder leg head stagger side knock series death limp walkhit arm stumble`, гибель и падения — `die_front die_back
   die_side die_head die_run die_hits die_arrow ko troll drop fallfwd`, драка удар за ударом — `fight fight2h`, агония —
   `throes throes_belly throes_ko` с `TS`/`TL`/`TR`); числа «отклик N см» не говорят, желе это или живое
-  тело. Углы суставов по ходу: сборка с `RAGDOLL_TRACE=1`, запуск с `JTRACE=1`. **Тряска** — `./ragtest shake` (скорость кистей, головы, груди относительно таза; пределы — в
+  тело. `DT=4` — шаг времени мира 4 мс вместо 33 (как при слоумо-добивании): поведение тела должно остаться тем же. Углы суставов по ходу: сборка с `RAGDOLL_TRACE=1`, запуск с `JTRACE=1`. **Тряска** — `./ragtest shake` (скорость кистей, головы, груди относительно таза; пределы — в
   проверках): сцены с ударом по лёгкой руке (`arm`) и с анимацией игры «отшатнуться» (`stumble`) обязательны — в игре
   они постоянно. IK колен и локтей — с подсказкой сгиба (`LimbIk::solve`): у почти прямой ноги иначе колено
   перещёлкивает и дёргает всё тело. Мышцы на ногах — устойчивая PD (пружина с демпфером) с тонусом, а не привод скоростью с T = 60 мс
@@ -312,6 +329,10 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
   считается по той же параболе, что и полёт (`RangedAim::launch` и `0,5·g·dt²` в `moveBullet`): меняя одно, менять и
   другое — стенд проверяет попадание в точку прицела (`aim: shot … off the aim point`). Баланс круга прицела — моделью
   попаданий в силуэт против шанса игры на 15 м (docs/PROGRESS.md, «Лук и арбалет…»), а не на глаз.
+- **Время мира и реальное время:** при слоумо-добивании мир идёт медленнее (`MainWindow::tick` → `KillCam::worldDt`).
+  Всё, что живёт в мире (ИИ, анимации, физика, эффекты, таймеры NPC), — по `dt` мира и `World::tickCount`; камера,
+  окна, касания, плавность интерфейса — по реальному времени (`frameRealDt`, `Application::tickCount`). Шаг мира в
+  слоумо — 1–10 мс: не рассчитывать на шаг ~16–33 мс (физику тела проверять стендом с `DT=4`).
 - Новая работа движка на кадр — с оглядкой на телефон: не перебирать каждый кадр все объекты мира (NPC, ветер,
   свет) без отсечения по дальности; счётчики — в `utils/perfstats.h` и строку `[perf]`. ИИ и движение дальних
   NPC реже не тикать: большой шаг движения проходит сквозь стены.

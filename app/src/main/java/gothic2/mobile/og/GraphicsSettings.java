@@ -122,7 +122,37 @@ final class GraphicsSettings {
     static final Option AIM_ASSIST = new Option("ctl_aim_assist", "aimAssist",
         "Автонаведение прицела в грудь",
         new String[]{"включено", "выключено"}, new String[]{"1", "0"}, true);
-    static final Option[] CONTROLS = {AIM_ASSIST};
+    /**
+     * Плавная смена цели: цель упала — прицел ещё держится на ней (видно попадание и падение), потом плавно переходит
+     * к следующей, герой поворачивается вслед. Без неё прицел перескакивает сразу. Только с {@link #AIM_ASSIST}.
+     */
+    static final Option AIM_SMOOTH = new Option("ctl_aim_smooth", "aimSmooth",
+        "Плавная смена цели: прицел задерживается на сражённом",
+        new String[]{"включено", "выключено"}, new String[]{"1", "0"}, true);
+    static final Option[] BOW = {AIM_ASSIST, AIM_SMOOTH};
+
+    /**
+     * Слоумо-добивание, как в Max Payne: герой победил врага — время замедляется, камера со стороны показывает падение,
+     * звук ниже, цвета приглушены. Остальные параметры слоумо действуют только с ним.
+     */
+    static final Option KILLCAM = new Option("ctl_killcam", "killCam",
+        "Слоумо-добивание, как в Max Payne",
+        new String[]{"включено", "выключено"}, new String[]{"1", "0"}, true);
+    /** Когда: по умолчанию — последний враг в бою (как в Max Payne 3), иначе — каждый побеждённый. */
+    static final Option KILLCAM_WHEN = new Option("ctl_killcam_when", "killCamWhen", "Когда",
+        new String[]{"последний враг в бою", "каждый побеждённый"}, new String[]{"0", "1"});
+    /** Камера со стороны: без неё — только замедление и цвет, камера обычная. */
+    static final Option KILLCAM_CINEMA = new Option("ctl_killcam_cinema", "killCamCinema",
+        "Камера со стороны (иначе — только замедление)",
+        new String[]{"включена", "выключена"}, new String[]{"1", "0"}, true);
+    /** Лук и арбалет: выстрел, который победит, — камера летит за стрелой и останавливается перед целью. */
+    static final Option KILLCAM_ARROW = new Option("ctl_killcam_arrow", "killCamArrow",
+        "Камера за стрелой (лук и арбалет)",
+        new String[]{"включена", "выключена"}, new String[]{"1", "0"}, true);
+    static final Option[] KILLCAM_OPTIONS = {KILLCAM, KILLCAM_WHEN, KILLCAM_CINEMA, KILLCAM_ARROW};
+
+    /** Раздел [CONTROLS] g2m.ini: экран запуска пишет его сразу, идущая игра перечитывает (Gothic::reloadControls). */
+    static final Option[] CONTROLS = {AIM_ASSIST, AIM_SMOOTH, KILLCAM, KILLCAM_WHEN, KILLCAM_CINEMA, KILLCAM_ARROW};
 
     /** Готовые наборы: индексы вариантов в порядке {@link #ALL}. */
     static final String[] PRESET_NAMES = {"Экономно", "Сбалансированно", "Красиво"};
@@ -163,6 +193,9 @@ final class GraphicsSettings {
     boolean isAvailable(Option o) {
         if (o == RAGDOLL_FALL || o == RAGDOLL_ACTIVE || o == RAGDOLL_THROES) return isOn(RAGDOLL);
         if (o == RAGDOLL_KNOCKDOWN) return isOn(RAGDOLL) && isOn(RAGDOLL_ACTIVE) && isOn(RAGDOLL_FALL);
+        // плавная смена цели - у прицела с автонаведением (без него прицел - середина экрана, цели нет)
+        if (o == AIM_SMOOTH) return isOn(AIM_ASSIST);
+        if (o == KILLCAM_WHEN || o == KILLCAM_CINEMA || o == KILLCAM_ARROW) return isOn(KILLCAM);
         return true;
     }
 
