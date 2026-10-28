@@ -19,6 +19,20 @@ if [ "$fetched" != 1 ]; then
     exit 0
 fi
 
+# Неполная копия (git clone --depth): номер версии APK считается по числу коммитов - догрузить всю историю, иначе APK
+# получит номер меньше установленного и не встанет поверх («Приложение не установлено»)
+if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+    for delay in 0 2 4 8; do
+        sleep "$delay"
+        if git fetch -q --unshallow origin 2>/dev/null; then
+            note "догружена полная история git: номер версии APK - по всем коммитам"
+            break
+        fi
+    done
+    [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ] && \
+        note "история git неполная - перед сборкой APK: git fetch --unshallow origin (иначе APK не встанет поверх)"
+fi
+
 branch="$(git rev-parse --abbrev-ref HEAD)"
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     note "в ветке $branch есть незакоммиченные правки — с origin/main не синхронизировано, сделать это вручную (merge)"

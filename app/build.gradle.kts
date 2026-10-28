@@ -40,6 +40,13 @@ val commitCount: Int = runCatching {
         .standardOutput.asText.get().trim().toInt()
 }.getOrDefault(1)
 
+// В неполной копии репозитория (git clone --depth: облачная сессия, CI) коммитов видно меньше, номер версии вышел бы
+// меньше установленного, и Android не поставил бы APK поверх («Приложение не установлено»). Такой APK не собирать.
+val shallowClone: Boolean = runCatching {
+    providers.exec { commandLine("git", "rev-parse", "--is-shallow-repository") }
+        .standardOutput.asText.get().trim() == "true"
+}.getOrDefault(false)
+
 android {
     namespace = "gothic2.mobile.og"
     compileSdk = 35
@@ -179,5 +186,16 @@ val generateLicenses = tasks.register<GenerateLicenses>("generateLicenses") {
 androidComponents {
     onVariants { variant ->
         variant.sources.assets?.addGeneratedSourceDirectory(generateLicenses, GenerateLicenses::outputDir)
+    }
+}
+
+tasks.matching { it.name == "packageDebug" || it.name == "packageRelease" }.configureEach {
+    doFirst {
+        if (shallowClone) {
+            throw GradleException(
+                "Неполная история git (shallow clone): номер версии APK (${100 + commitCount}) был бы меньше " +
+                    "установленного, и APK не встал бы поверх. Сначала: git fetch --unshallow origin"
+            )
+        }
     }
 }

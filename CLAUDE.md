@@ -250,6 +250,10 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
 ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
+- **Номер версии APK = 100 + число коммитов** (`git rev-list --count HEAD`). В неполной копии (`git clone --depth`)
+  он меньше установленного — Android не ставит APK поверх («Приложение не установлено»; 2026-10-28 так и было).
+  Хук начала сессии догружает историю (`git fetch --unshallow`), сборка APK из неполной копии останавливается
+  (`packageDebug`). Проверка перед отправкой: `aapt2 dump badging app-debug.apk | head -1` — versionCode.
 - APK для пользователя: `app/build/outputs/apk/debug/app-debug.apk` (≈ 17 МБ, только arm64-v8a; лимит
   отправки файла здесь — 30 МБ). Шейдеры для Android собираются без `-g` (`shader/CMakeLists.txt`) — с ним
   SPIR-V втрое больше. Движок и в debug собирается как Release (отладочный — сотни МБ).
