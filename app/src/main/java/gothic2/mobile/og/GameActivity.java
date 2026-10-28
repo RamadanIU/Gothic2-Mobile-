@@ -37,6 +37,8 @@ public class GameActivity extends NativeActivity {
 
     private static native void nativeEditControls();
 
+    private static native void nativeSettingsChanged();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         // Отчёт о сбое прошлого запуска — в crash.prev.log (один, старее удаляются): иначе в журнале навсегда
@@ -85,6 +87,17 @@ public class GameActivity extends NativeActivity {
             nativeEditControls();
         } catch (UnsatisfiedLinkError ignored) {
             // движок без связи с приложением - настройка кнопок есть и в главном меню игры
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Экран запуска поверх игры мог поменять настройки управления (автонаведение лука): движок перечитает g2m.ini
+        try {
+            nativeSettingsChanged();
+        } catch (UnsatisfiedLinkError ignored) {
+            // движок без связи с приложением - настройки управления - при следующем запуске
         }
     }
 

@@ -196,4 +196,18 @@ public class GraphicsSettingsTest {
         g.applyPreset(GraphicsSettings.ECONOMY_PRESET);
         assertTrue("набор освещение не меняет", g.iniText().contains("\nlighting=0\n"));
     }
+
+    @Test
+    public void aimAssistIsOnByDefaultInControlsSection() {
+        // [CONTROLS] aimAssist читает Gothic::Gothic и Gothic::reloadControls: прицел лука - в грудь цели
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        String ini = g.iniText();
+        assertTrue(ini.contains("\n[CONTROLS]\naimAssist=1\n"));
+        assertTrue("ключ - после раздела графики", ini.indexOf("aimAssist=") > ini.indexOf("occlusion="));
+        g.setOn(GraphicsSettings.AIM_ASSIST, false);
+        assertTrue(g.iniText().contains("\naimAssist=0\n"));
+        g.applyPreset(GraphicsSettings.ECONOMY_PRESET);
+        assertTrue("не входит в наборы", g.iniText().contains("\naimAssist=0\n"));
+        assertTrue(g.isAvailable(GraphicsSettings.AIM_ASSIST));
+    }
 }

@@ -90,7 +90,11 @@ docs/AI_NPC.md, «Кто что слышит», «Происшествия и с
 вещи** (как читовый `ch` и `PC_Rockefeller` из скриптов): «Научи меня.» — уроки даром функциями учителей игры (сила,
 ловкость, мана до 300, здоровье до 1000, оружие до 100 %, воровские умения, трофеи, алхимия, кузнечное дело, круги и руны,
 язык зодчих…), «Покажи свои товары.» — обмен даром с запасами всех вещей мира на время окна; сам носит своё
-(`common/game/aiteach.cpp`, docs/AI_NPC.md, «Учитель и запасы»; ждёт проверки).
+(`common/game/aiteach.cpp`, docs/AI_NPC.md, «Учитель и запасы»; ждёт проверки). 2026-10-28: **лук и арбалет — настоящий
+прицел** вместо броска кубика: точка и круг (умение 100 % — точка, 10 % — 5,5°), стрела уходит в случайное место круга и
+попадает, если задела тело (по частям куклы регдолла); голова — урон ×2, ноги — ×0,5; стрелы 60/75 м/с по дуге, тело
+шатается, рука к ране; стрела торчит в теле 5 с; «Автонаведение прицела в грудь» на странице «Управление» (по умолчанию
+вкл; docs/CONTROLS.md, «Лук и арбалет: прицел»; docs/PROGRESS.md, последний раздел; ждёт проверки).
 
 - **Приложение** (`app/`, Java, пакет `gothic2.mobile.og`): `LauncherActivity` — разрешение «Файлы», поиск
   папки игры (`GameFolder`), «Играть»; настройки — страницы разделов (`showPage`: «Графика», «Управление» — настройка
@@ -161,6 +165,14 @@ docs/AI_NPC.md, «Кто что слышит», «Происшествия и с
     IK — `graphics/mesh/limbik.h`; точка удара ближнего боя — `Npc::meleeHitPoint` (не `mapWeaponBone`: у меча это ноги
     нападающего);
     галочки `ragdoll`, `ragdollFall`, `ragdollActive`, `ragdollKnockdown` в `g2m.ini` (экран запуска, «Регдолл…»);
+  - **лук и арбалет** (`common/game/rangedaim.h`, docs/CONTROLS.md, «Лук и арбалет: прицел»): прицел героя —
+    `PlayerControl::tickRangedAim` (грудь цели в фокусе — `Npc::aimChest`, или луч камеры — `DynamicWorld::aimRay`),
+    рисует `TouchInput::drawReticle` (кольцо — `TouchIcons::ring`); выстрел — `Npc::rangedLaunch` (разброс по умению
+    `RangedAim::spreadDeg/scatter`, парабола `launch`) → `World::shootBullet(pos, velocity)`; попадание — отрезок шага по
+    частям тела (`Bullet::hitTest` → `Npc::rangedHitTest` → `Ragdoll::rayTest`, в `DynamicWorld::moveBullet` раньше
+    земли), броска кубика нет; урон по месту — `DamageCalculator::rangeDamage` (`RangedAim::zoneMul`); стрела в теле —
+    `Npc::stickArrow` → `MdlVisual::addStuck/tickStuck`; настройка `[CONTROLS] aimAssist` в `g2m.ini`
+    (`Gothic::reloadControls`, `GameActivity.onResume` → `nativeSettingsChanged`);
   - «Взять всё» (`InventoryMenu::takeAll`), путь к игре из `gothic_path.txt` (`InstallDetect`), имя сохранения
     по умолчанию — дата, кнопка «Назад» телефона = Esc (Tempest);
   - **живой NPC** (`common/game/ainpc.*`, JNI — `ailink.*`): Геральт = `Vlk_2000_Thorus` с другим именем и
@@ -228,7 +240,8 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
     common/game/ailink.cpp common/game/ailink.h common/utils/mobileperf.cpp common/utils/mobileperf.h common/utils/perfstats.h \
     common/ui/touchicons.cpp common/ui/touchicons.h common/game/cooking.cpp \
     common/utils/applink.cpp common/utils/applink.h common/physics/ragdoll.cpp common/physics/ragdoll.h \
-    common/game/aiteach.cpp
+    common/game/aiteach.cpp common/game/rangedaim.h common/graphics/mesh/injury.cpp common/graphics/mesh/injury.h \
+    common/graphics/mesh/limbik.h
     # и другие новые файлы (все: git ls-files --others --exclude-standard | grep -v ^build/); не -A: build/ не в .gitignore
   git diff --ignore-submodules=all > ../opengothic.patch && git reset -q
   git -C lib/Tempest diff > ../opengothic-tempest.patch
@@ -281,6 +294,11 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
   ошибка в игре (удар мечом — в голень) на стенде с ручными точками была не видна. Тела куклы —
   категория `C_Ragdoll`: новая проверка столкновений или луч в `DynamicWorld` должен их пропускать (как
   `needsCollision` с `C_Landscape/C_Object`), иначе живые NPC споткнутся о трупы.
+- **Лук и арбалет:** попадание стрелы — только по частям тела (`Ragdoll::rayTest`), не по габаритам NPC (они вдвое больше
+  тела); точка удара для регдолла и раны — где стрела вошла (`Bullet::hitPoint`), а не где была в начале шага. Выстрел
+  считается по той же параболе, что и полёт (`RangedAim::launch` и `0,5·g·dt²` в `moveBullet`): меняя одно, менять и
+  другое — стенд проверяет попадание в точку прицела (`aim: shot … off the aim point`). Баланс круга прицела — моделью
+  попаданий в силуэт против шанса игры на 15 м (docs/PROGRESS.md, «Лук и арбалет…»), а не на глаз.
 - Новая работа движка на кадр — с оглядкой на телефон: не перебирать каждый кадр все объекты мира (NPC, ветер,
   свет) без отсечения по дальности; счётчики — в `utils/perfstats.h` и строку `[perf]`. ИИ и движение дальних
   NPC реже не тикать: большой шаг движения проходит сквозь стены.

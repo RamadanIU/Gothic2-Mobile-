@@ -5,6 +5,7 @@
 #include "physics/dynamicworld.h"
 #include "graphics/mesh/skeleton.h"
 #include "graphics/mesh/animmath.h"
+#include "game/rangedaim.h"
 #include "actor.h"
 
 #include <zenkit/Mesh.hh>
@@ -274,6 +275,20 @@ static Vec3 bonePos(const bench::Actor& a, const char* name) {
   return org(a.disp[bench::bone(a.sk,name)]);
   }
 
+// Стрела, как в игре: летит из точки в 15 м спереди (+Z) в aim, попадание и место - Ragdoll::rayTest по телу на экране;
+// урон - по месту (RangedAim::zoneMul). Мимо - false
+static bool shootArrow(bench::Actor& a, Vec3 aim, float power, float damage, Ragdoll::RayHit* out = nullptr) {
+  const Vec3 from = aim + Vec3(0,20,1500);
+  const Vec3 dir  = Vec3::normalize(aim-from);
+  Ragdoll::RayHit h;
+  if(!Ragdoll::rayTest(a.sk,a.disp.data(),a.disp.size(),from,aim+dir*200.f,h))
+    return false;
+  a.hit(h.at,dir,power,damage*RangedAim::zoneMul(h.zone),Ragdoll::H_Missile);
+  if(out!=nullptr)
+    *out = h;
+  return true;
+  }
+
 // Тряска: наибольшая скорость частей корпуса, головы и рук на экране относительно таза, м/с (бег и шаги не в счёт)
 struct Shake {
   std::vector<Vec3> prev, prevAnim;
@@ -412,6 +427,29 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
     ev.push_back({0.2f,[&]{ a.hit(chest(),Vec3(0,0,-1),3.2f,0.15f); }});
     ev.push_back({0.7f,[&]{ a.kill(chest()+Vec3(8,0,0),Vec3(-0.3f,0,-1),3.6f); }});
     }
+  else if(name=="arrow_chest") {
+    // стрела из лука (60 м/с) в грудь: отдача и пошатывание, руки без оружия - к ране
+    len = 3.5f;
+    ev.push_back({0.3f,[&]{ shootArrow(a,chest()+Vec3(6,0,0),RangedAim::BowImpact*1.1f,0.2f); }});
+    }
+  else if(name=="arrow_head") {
+    ev.push_back({0.3f,[&]{ shootArrow(a,bonePos(a,"BIP01 HEAD")+Vec3(0,9,0),RangedAim::BowImpact*1.2f,0.2f); }});
+    }
+  else if(name=="arrow_leg") {
+    len = 4.f;
+    ev.push_back({0.3f,[&]{ shootArrow(a,(bonePos(a,"BIP01 L THIGH")+bonePos(a,"BIP01 L CALF"))*0.5f,RangedAim::BowImpact,0.3f); }});
+    }
+  else if(name=="arrow_bolt") {
+    // сильный болт арбалета: шатает, но с ног не сбивает
+    len = 3.5f;
+    ev.push_back({0.3f,[&]{ shootArrow(a,chest(),RangedAim::CrossbowImpact*1.6f,0.6f); }});
+    }
+  else if(name=="arrows") {
+    len = 4.f;
+    ev.push_back({0.3f,[&]{ shootArrow(a,chest()+Vec3(8,0,0),RangedAim::BowImpact*1.1f,0.15f); }});
+    ev.push_back({1.1f,[&]{ shootArrow(a,chest()+Vec3(-8,-10,0),RangedAim::BowImpact*1.1f,0.15f); }});
+    ev.push_back({1.9f,[&]{ shootArrow(a,bonePos(a,"BIP01 R UPPERARM"),RangedAim::BowImpact*1.1f,0.15f); }});
+    }
   else if(name=="die_arrow") {
     len = 3.f;
     ev.push_back({0.2f,[&]{ a.kill(chest()+Vec3(-6,4,0),Vec3(0,-0.1f,-1),3.f,Ragdoll::H_Missile); }});
@@ -536,6 +574,106 @@ static int shakeReport() {
                 sh.worst,double(sh.at),double(sh.maxAnim),double(peak));
     }
   return 0;
+  }
+
+// Лук и арбалет (game/rangedaim.h): попадание по частям тела (Ragdoll::rayTest), грудь - точка автонаведения, круг
+// прицела по умению, выстрел по параболе - в точку прицела
+static int aimTests(const Skeleton& hum, const Skeleton& wlf) {
+  int fail = 0;
+  auto ok = [&](bool v, const char* what) { if(!v) { fail++; std::printf("   ^^^ FAIL: %s\n",what); } };
+
+  // человек в стойке лицом к +Z; стрела летит спереди назад
+  const auto w = bench::stancePose(hum);
+  auto P = [&](const char* nm) { return org(w[bench::bone(hum,nm)]); };
+  struct Case { const char* what; Vec3 at; bool hit; uint8_t zone; };
+  const Case cases[] = {
+    {"head",           P("BIP01 HEAD")+Vec3(0,9,0),                     true,  Ragdoll::Z_Head},
+    {"chest",          P("BIP01 SPINE2"),                               true,  Ragdoll::Z_Body},
+    {"belly",          P("BIP01 SPINE")+Vec3(0,5,0),                    true,  Ragdoll::Z_Body},
+    {"thigh",          (P("BIP01 L THIGH")+P("BIP01 L CALF"))*0.5f,     true,  Ragdoll::Z_Legs},
+    {"shin",           (P("BIP01 R CALF")+P("BIP01 R FOOT"))*0.5f,      true,  Ragdoll::Z_Legs},
+    {"beside chest",   P("BIP01 SPINE2")+Vec3(60,0,0),                  false, 0},
+    {"between knees",  (P("BIP01 L CALF")+P("BIP01 R CALF"))*0.5f,      false, 0},
+    {"over the head",  P("BIP01 HEAD")+Vec3(0,40,0),                    false, 0},
+    };
+  for(auto& c:cases) {
+    Ragdoll::RayHit h;
+    const bool hit  = Ragdoll::rayTest(hum,w.data(),w.size(),c.at+Vec3(0,0,800),c.at-Vec3(0,0,800),h);
+    const bool good = hit==c.hit && (!hit || (h.zone==c.zone && h.at.z>0.f && h.at.z<30.f));
+    std::printf("aim: arrow to %-14s %s zone %d, enters at z=%.1f cm\n",c.what,hit ? "hits  " : "misses",int(h.zone),double(h.at.z));
+    ok(good,c.what);
+    }
+  {
+    Vec3 ch;
+    const bool has = Ragdoll::chestPoint(hum,w.data(),w.size(),ch);
+    std::printf("aim: chest point (%.0f %.0f %.0f)\n",double(ch.x),double(ch.y),double(ch.z));
+    ok(has && ch.y>115.f && ch.y<150.f && std::abs(ch.x)<5.f,"chest point at the chest");
+  }
+  // волк боком (стрела вдоль X): передние и задние лапы - ноги, голова - голова, бок - тело
+  {
+    std::vector<Matrix4x4> ww(wlf.tr.begin(),wlf.tr.end());
+    auto Q = [&](const char* nm) { return org(ww[bench::bone(wlf,nm)]); };
+    const Case wc[] = {
+      {"wolf front leg", (Q("BIP01 L FOREARM")+Q("BIP01 L HAND"))*0.5f, true, Ragdoll::Z_Legs},
+      {"wolf hind leg",  (Q("BIP01 L THIGH")+Q("BIP01 L CALF"))*0.5f,   true, Ragdoll::Z_Legs},
+      {"wolf head",      Q("BIP01 HEAD")+Vec3(0,0,8),                   true, Ragdoll::Z_Head},
+      {"wolf side",      Q("BIP01 SPINE1"),                             true, Ragdoll::Z_Body},
+      };
+    for(auto& c:wc) {
+      Ragdoll::RayHit h;
+      const bool hit = Ragdoll::rayTest(wlf,ww.data(),ww.size(),c.at+Vec3(500,0,0),c.at-Vec3(500,0,0),h);
+      std::printf("aim: arrow to %-14s %s zone %d\n",c.what,hit ? "hits  " : "misses",int(h.zone));
+      ok(hit && h.zone==c.zone,c.what);
+      }
+  }
+  // круг прицела: 100 % - точка, 10 % - SpreadAt10, уже с умением; разброс не выходит за круг
+  {
+    float prev = 1e9f;
+    bool  mono = true;
+    for(int sk=0; sk<=100; sk+=5) {
+      const float r = RangedAim::spreadDeg(sk);
+      mono &= r<=prev;
+      prev  = r;
+      }
+    std::printf("aim: spread 10%% %.2f deg, 30%% %.2f, 60%% %.2f, 100%% %.2f\n",double(RangedAim::spreadDeg(10)),
+                double(RangedAim::spreadDeg(30)),double(RangedAim::spreadDeg(60)),double(RangedAim::spreadDeg(100)));
+    ok(mono && RangedAim::spreadDeg(100)==0.f && std::abs(RangedAim::spreadDeg(10)-RangedAim::SpreadAt10)<1e-4f,"spread by skill");
+    const Vec3 from(0,150,0), at(300,180,2500);
+    float worst = 0;
+    for(int i=0; i<500; ++i) {
+      const Vec3  p = RangedAim::scatter(from,at,4.f,float(i%25)/24.f,float(i/25)/20.f);
+      const float a = std::acos(std::clamp(Vec3::dotProduct(Vec3::normalize(p-from),Vec3::normalize(at-from)),-1.f,1.f));
+      worst = std::max(worst,a*180.f/float(M_PI));
+      }
+    std::printf("aim: scatter 4 deg - widest %.2f deg\n",double(worst));
+    ok(worst<=4.01f && worst>3.9f,"scatter stays in the circle");
+  }
+  // выстрел по параболе (как DynamicWorld::moveBullet: шаг 33 мс) приходит в точку прицела
+  {
+    struct Shot { Vec3 to; float speed; };
+    const Shot shots[] = {{Vec3(0,150,1500),RangedAim::BowSpeed},{Vec3(400,450,3000),RangedAim::BowSpeed},
+                          {Vec3(-200,100,6000),RangedAim::CrossbowSpeed},{Vec3(0,-300,2500),RangedAim::BowSpeed}};
+    for(auto& sh:shots) {
+      const Vec3 from(0,150,0);
+      Vec3  v    = RangedAim::launch(from,sh.to,sh.speed,DynamicWorld::gravity);
+      Vec3  p    = from;
+      float best = 1e9f;
+      for(int k=0; k<400; ++k) {
+        const float dt = 33.f;
+        const Vec3  q  = p + v*dt - Vec3(0,0.5f*DynamicWorld::gravity*dt*dt,0);
+        // ближайшая к цели точка шага (стрела проверяет отрезок шага)
+        const Vec3  d  = q-p;
+        const float t  = std::clamp(Vec3::dotProduct(sh.to-p,d)/std::max(Vec3::dotProduct(d,d),1e-6f),0.f,1.f);
+        best = std::min(best,(p+d*t-sh.to).length());
+        p    = q;
+        v.y -= DynamicWorld::gravity*dt;
+        }
+      std::printf("aim: shot %2.0f m at %.0f m/s - off the aim point by %.1f cm\n",double((sh.to-from).length()/100.f),
+                  double(sh.speed*10.f),double(best));
+      ok(best<3.f,"shot lands on the aim point");
+      }
+  }
+  return fail;
   }
 
 static int activeTests(DynamicWorld& dw, const Skeleton& hum, const Skeleton& wlf) {
@@ -715,6 +853,40 @@ static int activeTests(DynamicWorld& dw, const Skeleton& hum, const Skeleton& wl
     for(int f=0; f<30; ++f) { a.tick(); twist = std::max(twist,std::abs(yaw()-y0)); }
     std::printf("active: arrow in shoulder         torso turns %.0f deg\n",double(twist));
     ok(twist>8.f,"arrow: torso twists");
+  }
+  // 7б) стрела из лука в грудь (место - по телу, как в игре): тело шатается шагами, рука без оружия - к ране, стоит
+  {
+    bench::Actor a(dw,hum,Vec3(-2100,0,-600));
+    for(int f=0; f<5; ++f) a.tick();
+    const Vec3 p0 = a.at;
+    Ragdoll::RayHit h;
+    const bool hit = shootArrow(a,bonePos(a,"BIP01 SPINE2")+Vec3(6,0,0),RangedAim::BowImpact*1.1f,0.2f,&h);
+    bool  stag = false, lost = false;
+    float reach = 1e9f;
+    for(int f=0; f<60; ++f) {
+      a.tick();
+      stag |= a.r && a.r->isStaggering();
+      lost |= a.r && a.r->state()!=Ragdoll::S_Active;
+      if(a.inj.arm>=0) {
+        Vec3 p = a.inj.local; a.disp[a.inj.bone].project(p);
+        reach = std::min(reach,(bonePos(a, a.inj.arm==0 ? "BIP01 L HAND" : "BIP01 R HAND")-p).length());
+        }
+      }
+    const float moved = (a.at-p0).length();
+    std::printf("active: arrow in chest            %s, staggers %d, moved %.0f cm, hand to wound %.1f cm, %s\n",
+                hit ? "hits" : "misses",int(stag),double(moved),double(reach),lost ? "falls" : "stands");
+    ok(hit && h.zone==Ragdoll::Z_Body,"arrow: hits the chest"); ok(stag && moved>4.f,"arrow: body staggers");
+    ok(reach<16.f,"arrow: hand reaches the wound"); ok(!lost,"arrow: keeps balance");
+  }
+  // 7в) сильный болт арбалета: шатает, но одна стрела с ног не сбивает
+  {
+    bench::Actor a(dw,hum,Vec3(-2400,0,-600));
+    for(int f=0; f<5; ++f) a.tick();
+    shootArrow(a,bonePos(a,"BIP01 SPINE2"),RangedAim::CrossbowImpact*1.6f,0.6f);
+    bool lost = false;
+    for(int f=0; f<70; ++f) { a.tick(); lost |= a.r && a.r->state()!=Ragdoll::S_Active; }
+    std::printf("active: crossbow bolt 60%% hp       %s\n",lost ? "falls" : "stands");
+    ok(!lost,"bolt: one missile does not knock down");
   }
   // 8) убит стоя: оседает (не падает сразу), потом лежит и застывает
   {
@@ -1082,6 +1254,7 @@ int main(int argc, char** argv) {
   std::printf("matrix<->sample max error: %g\n",double(maxErr));
   if(maxErr>1e-4f) fail++;
 
+  fail += aimTests(*hum,*wlf);
   fail += activeTests(dw,*hum,*wlf);
 
   std::printf(fail==0 ? "ALL OK\n" : "FAILED: %d\n",fail);

@@ -322,6 +322,13 @@ public class LauncherActivity extends Activity {
         col.addView(button("Настроить кнопки в игре", v -> editControls()));
         col.addView(button("Вернуть кнопки на места по умолчанию", v -> resetControls()));
 
+        section(col, "Лук и арбалет");
+        col.addView(note("Прицел — точка и круг: стрела уходит в случайное место круга, и чем выше умение, тем он уже "
+            + "(100 % — точка). Попадание решает полёт стрелы: в голову — урон вдвое, в ноги — вдвое меньше."));
+        for (GraphicsSettings.Option o : GraphicsSettings.CONTROLS) addOption(col, o);
+        col.addView(note("С автонаведением прицел сам встаёт на грудь цели. Без него прицел — середина экрана: "
+            + "куда повернёшь камеру, туда и стрела (можно целиться в голову). Меняется и посреди игры."));
+
         section(col, "Как играть");
         col.addView(note(
             "• Слева — джойстик: появляется под пальцем; чуть сдвинуть — шаг, до края — бег.\n"
@@ -338,6 +345,7 @@ public class LauncherActivity extends Activity {
                 + "• Напарники: в разговоре с безымянным жителем, стражником или наёмником — «Пойдём со мной». "
                 + "До шести, 10 золотых за уровень.\n"
                 + "• «Приложение» в главном меню игры открывает этот экран, игра ждёт на паузе."));
+        refreshGraphics();
         return col;
     }
 
@@ -392,8 +400,24 @@ public class LauncherActivity extends Activity {
             if (on == graphics.isOn(o)) return;
             graphics.setOn(o, on);
             refreshGraphics();
+            // управление идущая игра перечитывает, вернувшись на экран (GameActivity.onResume)
+            if (isControl(o)) writeSettingsQuietly();
         });
         return c;
+    }
+
+    private static boolean isControl(GraphicsSettings.Option o) {
+        for (GraphicsSettings.Option c : GraphicsSettings.CONTROLS) if (c == o) return true;
+        return false;
+    }
+
+    /** g2m.ini сразу: идущая игра берёт из него настройки управления (Gothic::reloadControls). */
+    private void writeSettingsQuietly() {
+        try {
+            graphics.write(getFilesDir());
+        } catch (IOException e) {
+            Toast.makeText(this, "Не удалось сохранить настройку: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     private void refreshGraphics() {

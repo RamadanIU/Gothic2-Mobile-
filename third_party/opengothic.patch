@@ -6787,6 +6787,65 @@ index 0000000..ac43c3a
 +    Gothic::inst().onPrint(toCp1251("Пожарено мяса: ") + std::to_string(total) + toCp1251(" шт."));
 +  cooking = Cooking();
 +  }
+diff --git a/common/game/damagecalculator.cpp b/common/game/damagecalculator.cpp
+index 011162f..a147330 100644
+--- a/common/game/damagecalculator.cpp
++++ b/common/game/damagecalculator.cpp
+@@ -5,14 +5,11 @@
+ #include "world/world.h"
+ #include "world/bullet.h"
+ #include "gothic.h"
++#include "rangedaim.h"
+ 
+ // https://forum.worldofplayers.de/forum/threads/127320-Damage-System?p=2198181#post2198181
+ // https://strafkolonie-online.net/forum/board/thread/1895-info-erkl%C3%A4rung-der-berechnung-der-trefferchance-im-fernkampf/
+ 
+-static float mix(float x, float y, float a) {
+-  return x + (y-x)*a;
+-  }
+-
+ DamageCalculator::Val DamageCalculator::damageValue(Npc& src, Npc& other, const Bullet* b, bool isSpell, const DamageCalculator::Damage& splDmg, const CollideMask bMsk) {
+   DamageCalculator::Val ret;
+   if(b!=nullptr) {
+@@ -65,21 +62,11 @@ DamageCalculator::Val DamageCalculator::rangeDamage(Npc& nsrc, Npc& nother, cons
+ 
+   if(!b.isSpell()) {
+     auto& script    = nsrc.world().script();
+-    float hitChance = float(script.rand(100))/100.f;
+-    float hitCh     = 0;
+     bool  g2        = Gothic::inst().version().game==2;
+-    float refRange  = g2 ? ReferenceBowRangeG2 : ReferenceBowRangeG1;
+-    float maxRange  = float(MaxBowRange);
+-    float chance    = b.hitChance();
+-
+-    if(dist<refRange)
+-      hitCh = mix(1.f, chance, (dist / refRange));
+-    else if(dist<maxRange)
+-      hitCh = mix(chance, 0.f, (dist-refRange) / (maxRange-refRange));
+-    else
+-      hitCh = 0;
+-
+-    noHit = (dist>float(MaxBowRange) || hitCh<=hitChance);
++    // Gothic II Mobile: попала ли стрела, решил её полёт (прицел и разброс по умению - game/rangedaim.h,
++    // попадание по телу - Ragdoll::rayTest): броска кубика (шанс - умение, ниже с расстоянием) и предела
++    // дальности больше нет
++    noHit = false;
+ 
+     if(!g2 && !noHit && !invincible) {
+       const int32_t mul        = script.criticalDamageMultiplyer();
+@@ -98,7 +85,11 @@ DamageCalculator::Val DamageCalculator::rangeDamage(Npc& nsrc, Npc& nother, cons
+   if((bMsk & (COLL_APPLYDAMAGE | COLL_APPLYDOUBLEDAMAGE | COLL_APPLYHALVEDAMAGE | COLL_DOEVERYTHING))==0)
+     return Val(0,true,true);
+ 
+-  return rangeDamage(nsrc,nother,dmg,bMsk);
++  auto ret = rangeDamage(nsrc,nother,dmg,bMsk);
++  // Gothic II Mobile: стрела - урон по месту попадания: в голову вдвое, в ноги вдвое меньше (RangedAim::zoneMul)
++  if(!b.isSpell() && ret.value>0)
++    ret.value = std::max(1, int(std::lround(float(ret.value)*RangedAim::zoneMul(b.hitZone()))));
++  return ret;
+   }
+ 
+ DamageCalculator::Val DamageCalculator::rangeDamage(Npc&, Npc& nother, Damage dmg, const CollideMask bMsk) {
 diff --git a/common/game/fightalgo.cpp b/common/game/fightalgo.cpp
 index b1d951f..8d5f5cd 100644
 --- a/common/game/fightalgo.cpp
@@ -7542,10 +7601,10 @@ index bdae2eb..d2c1f5f 100644
  
      bool    testSlide(const Tempest::Vec3& p, DynamicWorld::CollisionTest& out) const;
 diff --git a/common/game/playercontrol.cpp b/common/game/playercontrol.cpp
-index aa16509..6c6d3cc 100644
+index aa16509..da8a7cf 100644
 --- a/common/game/playercontrol.cpp
 +++ b/common/game/playercontrol.cpp
-@@ -1,13 +1,22 @@
+@@ -1,13 +1,24 @@
  #include "playercontrol.h"
  
 +#include <Tempest/Log>
@@ -7555,6 +7614,7 @@ index aa16509..6c6d3cc 100644
 +#include <cstring>
 +#include <iterator>
  
++#include "game/rangedaim.h"
  #include "world/objects/npc.h"
  #include "world/objects/item.h"
  #include "world/objects/interactive.h"
@@ -7563,12 +7623,13 @@ index aa16509..6c6d3cc 100644
  #include "world/world.h"
  #include "ui/dialogmenu.h"
  #include "ui/inventorymenu.h"
++#include "utils/applink.h"
 +#include "utils/cp1251.h"
 +#include "camera.h"
  #include "gothic.h"
  
  PlayerControl::PlayerControl(DialogMenu& dlg, InventoryMenu &inv)
-@@ -26,6 +35,10 @@ void PlayerControl::setupSettings() {
+@@ -26,6 +37,10 @@ void PlayerControl::setupSettings() {
      } else {
      g2Ctrl = false;
      }
@@ -7579,7 +7640,7 @@ index aa16509..6c6d3cc 100644
    }
  
  void PlayerControl::setTarget(Npc *other) {
-@@ -33,6 +46,8 @@ void PlayerControl::setTarget(Npc *other) {
+@@ -33,6 +48,8 @@ void PlayerControl::setTarget(Npc *other) {
    auto pl = w ? w->player() : nullptr;
    if(pl==nullptr || pl->isFinishingMove())
      return;
@@ -7588,7 +7649,7 @@ index aa16509..6c6d3cc 100644
    const auto ws    = pl->weaponState();
    const bool melle = (ws==WeaponState::Fist || ws==WeaponState::W1H || ws==WeaponState::W2H);
    if(other==nullptr) {
-@@ -271,6 +286,9 @@ void PlayerControl::drawVobRay(DbgPainter& p) const {
+@@ -271,6 +288,9 @@ void PlayerControl::drawVobRay(DbgPainter& p) const {
  
  void PlayerControl::tickFocus() {
    currentFocus = findFocus(&currentFocus);
@@ -7598,7 +7659,7 @@ index aa16509..6c6d3cc 100644
    setTarget(currentFocus.npc);
  
    if(!ctrl[Action::ActionGeneric])
-@@ -444,6 +462,1399 @@ void PlayerControl::clearInput() {
+@@ -444,6 +464,1399 @@ void PlayerControl::clearInput() {
    std::memset(ctrl, 0,sizeof(ctrl));
    std::memset(actrl,0,sizeof(actrl));
    std::memset(wctrl,0,sizeof(wctrl));
@@ -8998,18 +9059,83 @@ index aa16509..6c6d3cc 100644
    }
  
  void PlayerControl::marvinF8(uint64_t dt) {
-@@ -579,6 +1990,10 @@ bool PlayerControl::tickMove(uint64_t dt) {
+@@ -579,6 +1992,13 @@ bool PlayerControl::tickMove(uint64_t dt) {
    if(pl==nullptr)
      return true;
  
 +#if defined(__MOBILE_PLATFORM__)
 +  tickTravel(*pl);
 +  tickGather(*pl);
++  if(AppLink::takeSettingsReload())
++    Gothic::inst().reloadControls();
 +#endif
++  tickRangedAim(*pl);
    implMove(dt);
  
    float runAngle = pl->runAngle();
-@@ -619,6 +2034,11 @@ void PlayerControl::implMove(uint64_t dt) {
+@@ -602,6 +2022,50 @@ bool PlayerControl::tickMove(uint64_t dt) {
+   return true;
+   }
+ 
++void PlayerControl::tickRangedAim(Npc& pl) {
++  // Лук и арбалет (game/rangedaim.h): куда целится герой. С автонаведением (настройка, по умолчанию) - в грудь цели в
++  // фокусе; иначе - куда смотрит камера: первое, во что упрётся луч из середины экрана (земля, стена, тело NPC), или
++  // RangedAim::MaxAimDist вперёд. Луч начинается у героя: то, что между камерой и героем, не мешает
++  aim = AimState();
++  const auto ws = pl.weaponState();
++  if(ws!=WeaponState::Bow && ws!=WeaponState::CBow)
++    return;
++  aim.on     = true;
++  aim.from   = pl.mapWeaponBone();
++  aim.spread = pl.rangedSpread();
++  if(Gothic::options().aimAssist) {
++    if(auto tg = pl.target(); tg!=nullptr && !tg->isDown()) {
++      aim.locked = true;
++      aim.at     = tg->aimChest();
++      }
++    }
++  auto cam = Gothic::inst().camera();
++  auto w   = Gothic::inst().world();
++  if(!aim.locked && cam!=nullptr && w!=nullptr) {
++    auto inv = cam->viewProj();
++    inv.inverse();
++    float px = 0, py = 0, pz = 0.5f, pw = 1;
++    inv.project(px,py,pz,pw);
++    const Tempest::Vec3 o = cam->originLwc();
++    Tempest::Vec3       d = (std::abs(pw)>1e-6f ? Tempest::Vec3(px,py,pz)/pw : o) - o;
++    if(d.length()<1e-3f) {
++      const float a = pl.rotationRad();
++      d = Tempest::Vec3(std::cos(a), 0, std::sin(a));
++      }
++    d = Tempest::Vec3::normalize(d);
++    const float         skip = std::max(0.f, Tempest::Vec3::dotProduct(aim.from-o, d));
++    const Tempest::Vec3 s    = o + d*skip;
++    const Tempest::Vec3 e    = s + d*RangedAim::MaxAimDist;
++    const auto          rc   = w->physic()->aimRay(s, e, &pl);
++    aim.at = rc.hasCol ? rc.v : e;
++    }
++  else if(!aim.locked) {
++    const float a = pl.rotationRad();
++    aim.at = aim.from + Tempest::Vec3(std::cos(a), 0, std::sin(a))*3000.f;
++    }
++  pl.setRangedAim(aim.at);
++  }
++
+ void PlayerControl::implMove(uint64_t dt) {
+   auto  w         = Gothic::inst().world();
+   Npc&  pl        = *w->player();
+@@ -611,7 +2075,9 @@ void PlayerControl::implMove(uint64_t dt) {
+   float rspeed    = (pl.weaponState()==WeaponState::NoWeapon ? 90.f : 180.f)*(float(dt)/1000.f);
+   auto  ws        = pl.weaponState();
+   auto  bs        = pl.bodyStateMasked();
+-  bool  allowRot  = !ctrl[KeyCodec::ActionGeneric] && pl.isRotationAllowed();
++  // Gothic II Mobile: целясь из лука без автонаведения, герой поворачивается пальцем (прицел - середина экрана)
++  const bool freeAim = aim.on && !aim.locked;
++  bool  allowRot  = (!ctrl[KeyCodec::ActionGeneric] || freeAim) && pl.isRotationAllowed();
+ 
+   Npc::Anim ani = Npc::Anim::Idle;
+ 
+@@ -619,6 +2085,11 @@ void PlayerControl::implMove(uint64_t dt) {
      return;
    if(bs==BS_UNCONSCIOUS)
      return;
@@ -9021,7 +9147,7 @@ index aa16509..6c6d3cc 100644
  
    if(!pl.isAiQueueEmpty()) {
      runAngleDest = 0;
-@@ -675,6 +2095,12 @@ void PlayerControl::implMove(uint64_t dt) {
+@@ -675,6 +2146,12 @@ void PlayerControl::implMove(uint64_t dt) {
        }
      }
  
@@ -9034,8 +9160,22 @@ index aa16509..6c6d3cc 100644
    if(!pl.isInState(ScriptFn()) || dlg.isActive()) {
      runAngleDest = 0;
      return;
+@@ -727,7 +2204,12 @@ void PlayerControl::implMove(uint64_t dt) {
+ 
+   if((ws==WeaponState::Bow || ws==WeaponState::CBow) && pl.hasAmmunition()) {
+     if(actrl[ActGeneric] || actrl[ActForward]) {
+-      if(auto other = pl.target()) {
++      // Gothic II Mobile: прицел без автонаведения - герой не доворачивается к цели сам: куда смотрит камера, туда
++      // и стрела (tickRangedAim), поворачивает палец
++      if(!aim.locked) {
++        pl.aimBow();
++        }
++      else if(auto other = pl.target()) {
+         auto dp = other->position()-pl.position();
+         pl.turnTo(dp.x,dp.z,true,dt);
+         pl.aimBow();
 diff --git a/common/game/playercontrol.h b/common/game/playercontrol.h
-index fb8d625..9c55e54 100644
+index fb8d625..64b30a1 100644
 --- a/common/game/playercontrol.h
 +++ b/common/game/playercontrol.h
 @@ -5,6 +5,9 @@
@@ -9056,7 +9196,7 @@ index fb8d625..9c55e54 100644
  
  class PlayerControl final {
    public:
-@@ -48,6 +52,73 @@ class PlayerControl final {
+@@ -48,6 +52,84 @@ class PlayerControl final {
      bool  tickMove(uint64_t dt);
      bool  tickCameraMove(uint64_t dt);
  
@@ -9127,10 +9267,21 @@ index fb8d625..9c55e54 100644
 +    // На героя нападают (быстрое сохранение в бою запрещено)
 +    bool  isHeroAttacked() const;
 +
++    // Лук и арбалет: прицел этого кадра (game/rangedaim.h) - сенсорный слой рисует его, стрела летит в at с разбросом.
++    // С автонаведением - на груди цели в фокусе (locked), иначе - куда смотрит камера (середина экрана)
++    struct AimState {
++      bool          on     = false; // лук или арбалет в руках
++      bool          locked = false;
++      Tempest::Vec3 at     = {};    // см
++      Tempest::Vec3 from   = {};    // откуда вылетит стрела, см
++      float         spread = 0;     // радиус круга, градусы
++      };
++    auto  rangedAim() const -> const AimState& { return aim; }
++
    private:
      enum WeaponAction : uint8_t {
        WeaponClose,
-@@ -153,6 +224,66 @@ class PlayerControl final {
+@@ -153,10 +235,72 @@ class PlayerControl final {
      int            rotationAni    = 0;
      bool           g2Ctrl         = false;
  
@@ -9193,11 +9344,17 @@ index fb8d625..9c55e54 100644
 +    uint64_t       travelHealIdle = 0;      // лечиться нечем - до этого времени не искать снова
 +    uint8_t        travelHealMiss = 0;      // предмет не взялся (герой не стоял) - сколько раз подряд
 +    bool           travelWide     = false;  // после боя - собрать шире (тела побеждённых)
++    AimState       aim;
 +
      DialogMenu&    dlg;
      InventoryMenu& inv;
  
-@@ -177,6 +308,38 @@ class PlayerControl final {
+     void           setupSettings();
++    void           tickRangedAim(Npc& pl);
+     bool           canInteract() const;
+     void           marvinF8(uint64_t dt);
+     void           marvinK(uint64_t dt);
+@@ -177,6 +321,38 @@ class PlayerControl final {
      void           setAnimRotate (Npc& pl, float rotation, int anim, bool force, uint64_t dt);
      void           processAutoRotate(Npc& pl, float& rot, uint64_t dt);
  
@@ -9277,6 +9434,89 @@ index 65a578e..0821d90 100644
  
      void   save(Serialize &fout);
      void   load(Serialize &fin);
+diff --git a/common/game/rangedaim.h b/common/game/rangedaim.h
+new file mode 100644
+index 0000000..261869c
+--- /dev/null
++++ b/common/game/rangedaim.h
+@@ -0,0 +1,77 @@
++#pragma once
++
++#include <Tempest/Vec>
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++
++// Gothic II Mobile: лук и арбалет - настоящий прицел вместо броска кубика (docs/CONTROLS.md, «Лук и арбалет»).
++// В игре попадание решал бросок: шанс - умение стрелка на 15 м (ближе - выше, дальше - ниже, до нуля на 45 м), а
++// стрела всё равно летела в цель. Теперь стрела летит туда, куда целятся, и попадает, если задела тело
++// (Ragdoll::rayTest). Умение - круг прицела: стрела уходит в случайную точку внутри него; 100 % - точка, 10 % -
++// радиус SpreadAt10, между ними круг сужается быстрее к мастерству (степень SpreadPow). При 10-60 % это почти тот же
++// шанс, что у броска игры на 15 м (в человека: 10 % - одна стрела из 9, 45 % - одна из 3, 60 % - две из 3), вблизи и у
++// мастера - выше: стрела летит, куда целились. Стрелы быстрые (лук 60 м/с, арбалет 75 м/с) и летят по параболе:
++// выстрел считается по ней же (launch) - прицел попадает в точку и вдали. Урон - по месту попадания (zoneMul).
++namespace RangedAim {
++  constexpr float    SpreadAt10    = 5.5f;   // градусы: радиус круга при умении 10 %
++  constexpr float    SpreadPow     = 1.5f;
++  constexpr float    BowSpeed      = 6.0f;   // см/мс
++  constexpr float    CrossbowSpeed = 7.5f;
++  constexpr float    BowImpact     = 4.2f;   // сила толчка тела (Ragdoll::Hit::power): у прежних медленных стрел - 3
++  constexpr float    CrossbowImpact= 4.8f;
++  constexpr float    MaxAimDist    = 8000;   // см: дальше прицел точку не ищет
++  constexpr uint64_t StuckTime     = 5000;   // мс: стрела торчит в теле, потом исчезает
++  constexpr size_t   MaxStuck      = 8;      // стрел в одном теле, лишние - старые исчезают
++
++  // Радиус круга прицела, градусы: умение 100 % - 0 (точка), 10 % - SpreadAt10; меньше 10 % - шире
++  inline float spreadDeg(int skill) {
++    const float s = float(std::clamp(skill,0,100));
++    return SpreadAt10*std::pow((100.f-s)/90.f, SpreadPow);
++    }
++
++  // Множитель урона по месту попадания (Ragdoll::Zone): тело - 1, голова - 2, ноги - 0,5
++  inline float zoneMul(uint8_t zone) {
++    switch(zone) {
++      case 1:  return 2.f;
++      case 2:  return 0.5f;
++      default: return 1.f;
++      }
++    }
++
++  // Куда уйдёт стрела: случайная точка круга углового радиуса spread (градусы) вокруг at, как видно из from;
++  // u1, u2 - случайные 0..1 (равномерно по площади круга)
++  inline Tempest::Vec3 scatter(const Tempest::Vec3& from, const Tempest::Vec3& at, float spread, float u1, float u2) {
++    const Tempest::Vec3 d = at-from;
++    const float         l = d.length();
++    if(spread<=0.f || l<1.f)
++      return at;
++    const Tempest::Vec3 f    = d/l;
++    Tempest::Vec3       side = Tempest::Vec3::crossProduct(f, Tempest::Vec3(0,1,0));
++    if(side.length()<1e-3f)
++      side = Tempest::Vec3(1,0,0);
++    side = Tempest::Vec3::normalize(side);
++    const Tempest::Vec3 up  = Tempest::Vec3::crossProduct(side, f);
++    const float         rad = spread*float(M_PI)/180.f*std::sqrt(std::clamp(u1,0.f,1.f));
++    const float         ph  = 2.f*float(M_PI)*u2;
++    const float         r   = l*std::tan(rad);
++    return at + side*(r*std::cos(ph)) + up*(r*std::sin(ph));
++    }
++
++  // Скорость вылета (см/мс), чтобы стрела со скоростью speed (см/мс) по параболе с ускорением g (см/мс2, вниз) пришла
++  // в to: из двух решений - пологое. Не долетит при любом угле - под 45 градусов
++  inline Tempest::Vec3 launch(const Tempest::Vec3& from, const Tempest::Vec3& to, float speed, float g) {
++    const Tempest::Vec3 d  = to-from;
++    const float         dx = std::sqrt(d.x*d.x + d.z*d.z);
++    if(dx<1.f) {
++      const float s = d.y>=0.f ? 1.f : -1.f;
++      return Tempest::Vec3(0,speed*s,0);
++      }
++    const float v2   = speed*speed;
++    const float disc = v2*v2 - g*(g*dx*dx + 2.f*d.y*v2);
++    const float ang  = disc>=0.f ? std::atan2(v2 - std::sqrt(disc), g*dx) : float(M_PI)*0.25f;
++    const float c    = std::cos(ang), s = std::sin(ang);
++    return Tempest::Vec3(d.x/dx*c*speed, s*speed, d.z/dx*c*speed);
++    }
++  }
 diff --git a/common/game/travelcamera.cpp b/common/game/travelcamera.cpp
 new file mode 100644
 index 0000000..5c9686f
@@ -9862,7 +10102,7 @@ index 0000000..915c632
 +    static void             resolve(World& w, std::vector<Spot>& out);
 +  };
 diff --git a/common/gothic.cpp b/common/gothic.cpp
-index 56c5d58..9e40c4a 100644
+index 56c5d58..33c006b 100644
 --- a/common/gothic.cpp
 +++ b/common/gothic.cpp
 @@ -18,6 +18,7 @@
@@ -9899,7 +10139,7 @@ index 56c5d58..9e40c4a 100644
          }
        if(FileExt::hasExt(file, u"mod")) {
          // Remove all *.mod files, that are not listed in modvdfs
-@@ -149,6 +160,51 @@ Gothic::Gothic(GameModDescriptor desc) {
+@@ -149,6 +160,53 @@ Gothic::Gothic(GameModDescriptor desc) {
      iniFile->set("INTERNAL", "vidResIndex", 0); // full-res
      }
    {
@@ -9946,12 +10186,29 @@ index 56c5d58..9e40c4a 100644
 +                    " occlusion=",int(opts.occlusion)," lighting=",opts.lighting,
 +                    " wind=",int(iniFile->getI("ENGINE","zWindEnabled")!=0 ? opts.windRange/100.f : 0.f),"m");
 +    }
++  opts.aimAssist = g2m.getI("CONTROLS","aimAssist",1)!=0;
++  Tempest::Log::i("[g2m] controls: aimAssist=",int(opts.aimAssist));
 +  }
 +  {
    defaults.reset(new IniFile());
    defaults->set("GAME", "enableMouse",         1);
    defaults->set("GAME", "mouseSensitivity",    0.5f);
-@@ -644,7 +700,12 @@ void Gothic::updateAnimation(uint64_t dt) {
+@@ -523,6 +581,14 @@ void Gothic::setBenchmarkMode(Benchmark b) {
+   isBenchmark = b;
+   }
+ 
++void Gothic::reloadControls() {
++  IniFile g2m(u"g2m.ini");
++  const bool assist = g2m.getI("CONTROLS","aimAssist",1)!=0;
++  if(assist!=opts.aimAssist)
++    Tempest::Log::i("[g2m] controls: aimAssist=",int(assist));
++  opts.aimAssist = assist;
++  }
++
+ const Gothic::Options& Gothic::options() {
+   assert(instance!=nullptr);
+   return instance->opts;
+@@ -644,7 +710,12 @@ void Gothic::updateAnimation(uint64_t dt) {
    }
  
  void Gothic::quickSave() {
@@ -9964,7 +10221,7 @@ index 56c5d58..9e40c4a 100644
    }
  
  void Gothic::quickLoad() {
-@@ -749,27 +810,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
+@@ -749,27 +820,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
    }
  
  zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const ScriptLang lang) {
@@ -10012,7 +10269,7 @@ index 56c5d58..9e40c4a 100644
    if(!FileUtil::exists(path) && int(lang)>=0) {
      gscript = CommandLine::inst().scriptPath(lang);
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
-@@ -783,6 +855,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
+@@ -783,6 +865,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
      }
  
@@ -10021,10 +10278,10 @@ index 56c5d58..9e40c4a 100644
    zenkit::DaedalusScript script;
    script.load(buf.get());
 diff --git a/common/gothic.h b/common/gothic.h
-index 2654cc4..2f7e7eb 100644
+index 2654cc4..bc5f60b 100644
 --- a/common/gothic.h
 +++ b/common/gothic.h
-@@ -71,11 +71,33 @@ class Gothic final {
+@@ -71,11 +71,36 @@ class Gothic final {
        bool     showHealthBar     = true;
        uint8_t  showManaBar       = 2;
        uint8_t  showSwimBar       = 1;
@@ -10041,6 +10298,9 @@ index 2654cc4..2f7e7eb 100644
 +      bool     ragdollActive     = true; // активный регдолл: живые откликаются телом на удары (мышцы к позе анимации)
 +      bool     ragdollKnockdown  = true; // сильный удар (двуручник, огненный шар) может сбить с ног
 +      bool     occlusion         = true; // не рисовать заслонённое (HiZ); выключить - проверить пропадающие стены
++      // лук и арбалет: прицел сам наводится на грудь цели в фокусе (game/rangedaim.h); ключ [CONTROLS] aimAssist,
++      // меняется и посреди игры (Gothic::reloadControls)
++      bool     aimAssist         = true;
 +      // освещение (ключ lighting): 0 - контрастное, как в движке; 1 - мягкое (по умолчанию); 2 - светлое
 +      int      lighting          = 1;
 +      float    ambientMul        = 1.7f;  // рассеянный свет (то, что видно в тени) - во столько раз сильнее
@@ -10058,7 +10318,16 @@ index 2654cc4..2f7e7eb 100644
      bool         isInGameAndAlive() const;
  
      std::string_view defaultWorld()       const;
-@@ -257,6 +279,7 @@ class Gothic final {
+@@ -127,6 +152,8 @@ class Gothic final {
+     void         setMarvinEnabled(bool m);
+ 
+     static auto  options() -> const Options&;
++    // Gothic II Mobile: управление из g2m.ini ([CONTROLS]) - экран запуска поверх игры мог его поменять
++    void         reloadControls();
+     static float interfaceScale(const Tempest::Widget* w);
+ 
+     bool         isGodMode() const { return godMode; }
+@@ -257,6 +284,7 @@ class Gothic final {
  
      std::mutex                              syncSnd;
      Tempest::SoundDevice                    sndDev;
@@ -10093,10 +10362,18 @@ index 1bf7897..a6854f8 100644
      auto* pso = &Shaders::inst().visibilityPassSh;
      if(viewport==SceneGlobals::V_Main)
 diff --git a/common/graphics/mdlvisual.cpp b/common/graphics/mdlvisual.cpp
-index cc2576c..5a55ce3 100644
+index cc2576c..5c802de 100644
 --- a/common/graphics/mdlvisual.cpp
 +++ b/common/graphics/mdlvisual.cpp
-@@ -290,7 +290,10 @@ void MdlVisual::dropWeapon(Npc& npc) {
+@@ -1,6 +1,7 @@
+ #include "mdlvisual.h"
+ 
+ #include "graphics/mesh/skeleton.h"
++#include "game/rangedaim.h"
+ #include "game/serialize.h"
+ #include "world/objects/npc.h"
+ #include "world/objects/interactive.h"
+@@ -290,7 +291,10 @@ void MdlVisual::dropWeapon(Npc& npc) {
    if(itm==nullptr)
      return;
  
@@ -10108,7 +10385,7 @@ index cc2576c..5a55ce3 100644
    it->setCount(1);
  
    npc.delItem(itm->clsId(),1);
-@@ -311,7 +314,10 @@ void MdlVisual::dropShield(Npc& npc) {
+@@ -311,7 +315,10 @@ void MdlVisual::dropShield(Npc& npc) {
    if(itm==nullptr)
      return;
  
@@ -10120,7 +10397,7 @@ index cc2576c..5a55ce3 100644
    it->setCount(1);
  
    npc.delItem(itm->clsId(),1);
-@@ -818,6 +824,33 @@ uint16_t MdlVisual::comboLength() const {
+@@ -818,6 +825,56 @@ uint16_t MdlVisual::comboLength() const {
    return skInst->comboLength();
    }
  
@@ -10143,6 +10420,29 @@ index cc2576c..5a55ce3 100644
 +  skInst->clearRagdoll();
 +  }
 +
++void MdlVisual::addStuck(MeshObjects::Mesh&& arrow, size_t boneId, const Tempest::Matrix4x4& matrix, uint64_t until) {
++  // Стрела в теле идёт за своей костью (анимация, отклик тела, падение куклы); старые - уступают место
++  if(boneId>=skInst->boneCount() || arrow.isEmpty())
++    return;
++  if(stuck.size()>=RangedAim::MaxStuck)
++    stuck.erase(stuck.begin());
++  StuckSlot s;
++  s.view   = std::move(arrow);
++  s.boneId = boneId;
++  s.local  = skInst->bone(boneId);
++  s.local.inverse();
++  s.local.mul(matrix);
++  s.until  = until;
++  s.view.setObjMatrix(matrix);
++  stuck.push_back(std::move(s));
++  }
++
++void MdlVisual::tickStuck(uint64_t now) {
++  if(stuck.empty())
++    return;
++  stuck.erase(std::remove_if(stuck.begin(),stuck.end(),[now](const StuckSlot& s){ return s.until<=now; }),stuck.end());
++  }
++
 +const Animation::Sequence* MdlVisual::findSequence(std::string_view name) const {
 +  return solver.solveFrm(name);
 +  }
@@ -10154,8 +10454,28 @@ index cc2576c..5a55ce3 100644
  Bounds MdlVisual::bounds() const {
    auto b = view.bounds();
    if(!head.view.isEmpty())
+@@ -858,6 +915,8 @@ void MdlVisual::rebindAttaches(const Skeleton& to) {
+     i.view.bindAttaches(*skInst,to);
+   pfx.view.bindAttaches(*skInst,to);
+   hnpcVisual.view.bindAttaches(*skInst,to);
++  // Gothic II Mobile: стрелы в теле - по номерам костей прежнего скелета
++  stuck.clear();
+   }
+ 
+ template<class View>
+@@ -881,6 +940,10 @@ void MdlVisual::syncAttaches() {
+     }
+   pfx.view.setObjMatrix(pos);
+   hnpcVisual.view.setObjMatrix(pos);
++  for(auto& i:stuck) {
++    if(i.boneId<skInst->boneCount())
++      i.view.setObjMatrix(skInst->bone(i.boneId)*i.local);
++    }
+   if(torch.view!=nullptr) {
+     auto& pose = *skInst;
+     auto  p    = pos;
 diff --git a/common/graphics/mdlvisual.h b/common/graphics/mdlvisual.h
-index dadfd6d..eb65cb1 100644
+index dadfd6d..9fc1436 100644
 --- a/common/graphics/mdlvisual.h
 +++ b/common/graphics/mdlvisual.h
 @@ -7,6 +7,9 @@
@@ -10168,7 +10488,7 @@ index dadfd6d..eb65cb1 100644
  class Serialize;
  class ObjVisual;
  class Npc;
-@@ -114,6 +117,17 @@ class MdlVisual final {
+@@ -114,6 +117,20 @@ class MdlVisual final {
  
      Bounds                         bounds() const;
  
@@ -10180,12 +10500,37 @@ index dadfd6d..eb65cb1 100644
 +                                                        const Stance& stance);
 +    void                           setInjury(const Injury& inj);
 +    void                           clearRagdollPose();
++    // Gothic II Mobile: стрела в теле - модель у кости boneId (matrix - её мировая матрица сейчас), до until (мс)
++    void                           addStuck(MeshObjects::Mesh&& arrow, size_t boneId, const Tempest::Matrix4x4& matrix, uint64_t until);
++    void                           tickStuck(uint64_t now);
 +    const Animation::Sequence*     findSequence(std::string_view name) const;
 +    bool                           replaceLayer(const Animation::Sequence* sq, uint64_t tickCount);
 +
    private:
      template<class View>
      struct Attach {
+@@ -136,6 +153,13 @@ class MdlVisual final {
+       size_t                     boneId=size_t(-1);
+       };
+ 
++    struct StuckSlot {
++      MeshObjects::Mesh  view;
++      size_t             boneId = size_t(-1);
++      Tempest::Matrix4x4 local;  // в системе кости
++      uint64_t           until  = 0;
++      };
++
+     void implSetBody(Npc* npc, World& world, MeshObjects::Mesh&& body, const int32_t version);
+     void setSlotAttachment(MeshObjects::Mesh&& itm, std::string_view bone);
+ 
+@@ -163,6 +187,7 @@ class MdlVisual final {
+     PfxSlot                        pfx;
+ 
+     TorchSlot                      torch;
++    std::vector<StuckSlot>         stuck;
+ 
+     std::string                    hnpcVisualName;
+     bool                           hnpcFlagGhost = false;
 diff --git a/common/graphics/mesh/injury.cpp b/common/graphics/mesh/injury.cpp
 new file mode 100644
 index 0000000..485746d
@@ -12998,7 +13343,7 @@ index fb084a3..5b3bf33 100644
      btVector3                                   bbox[2] = {btVector3(0,0,0), btVector3(0,0,0)};
  
 diff --git a/common/physics/dynamicworld.cpp b/common/physics/dynamicworld.cpp
-index 0683815..89fae08 100644
+index 0683815..56bd9c4 100644
 --- a/common/physics/dynamicworld.cpp
 +++ b/common/physics/dynamicworld.cpp
 @@ -3,9 +3,12 @@
@@ -13014,7 +13359,67 @@ index 0683815..89fae08 100644
  #include <cmath>
  #include <cassert>
  #include <cstddef>
-@@ -554,6 +557,28 @@ struct DynamicWorld::BBoxList final {
+@@ -13,6 +16,7 @@
+ #include "graphics/mesh/submesh/packedmesh.h"
+ #include "world/objects/item.h"
+ #include "world/bullet.h"
++#include "world/objects/npc.h"
+ #include "world/world.h"
+ 
+ #include "utils/dbgpainter.h"
+@@ -340,6 +344,37 @@ struct DynamicWorld::NpcBodyList final {
+     return ret;
+     }
+ 
++  // Gothic II Mobile: стрела - все NPC, к которым отрезок s-e проходит ближе их размера (с запасом); попадание по
++  // телу проверяет сама стрела (BulletCallback::hitTest), так что стрела, вошедшая в габариты мимо тела, на
++  // следующем шаге цель не теряет. coarse - доля отрезка до габаритов, как в rayTest, или -1 - мимо них
++  template<class F>
++  void rayEach(const Tempest::Vec3& s, const Tempest::Vec3& e, float extR, F&& f) {
++    const auto  d    = e-s;
++    const float tMax = d.length();
++    if(tMax<=0.f)
++      return;
++    const auto dir = d/tMax;
++    auto test = [&](NpcBody& n) {
++      if(!n.enable)
++        return;
++      const float R  = n.maxR*1.3f + extR + 30.f;
++      const auto  oc = n.pos - s;
++      const float k  = std::clamp(Tempest::Vec3::dotProduct(oc,dir), 0.f, tMax);
++      if((s + dir*k - n.pos).quadLength()>R*R)
++        return;
++      float proj   = 0;
++      float coarse = -1.f;
++      if(rayTest(n, s, dir, tMax, extR, proj))
++        coarse = proj/tMax;
++      f(n, coarse);
++      };
++    for(auto i:body)
++      test(*i.body);
++    for(auto i:frozen)
++      if(i.body!=nullptr)
++        test(*i.body);
++    }
++
+   bool hasCollision(const DynamicWorld::NpcItem& obj, Tempest::Vec3& normal, Npc*& npc, float& colDepth) {
+     static bool disable=false;
+     if(disable)
+@@ -496,7 +531,12 @@ struct DynamicWorld::BulletsList final {
+       float proj = 0;
+       auto  dp = i.pos - i.lastPos; // move is symetrical: move of npc and move of projectile is the same
+       if(i.cb!=nullptr && list.rayTest(npc, i.pos, Tempest::Vec3::normalize(dp), dp.length(), i.tgRange, proj)) {
+-        if(i.cb->onCollide(*npc.toNpc()))
++        // Gothic II Mobile: стрела - только если тело NPC и вправду задело её последний шаг
++        DynamicWorld::BulletHit hit;
++        hit.at = i.pos;
++        if(!i.isSpell() && !i.cb->hitTest(*npc.toNpc(), i.lastPos, i.pos, proj/std::max(dp.length(),1e-3f), hit))
++          continue;
++        if(i.cb->onCollide(*npc.toNpc(),hit))
+           i.cb->onStop();
+         }
+       }
+@@ -554,6 +594,28 @@ struct DynamicWorld::BBoxList final {
    DynamicWorld&          wrld;
    };
  
@@ -13043,7 +13448,7 @@ index 0683815..89fae08 100644
  DynamicWorld::DynamicWorld(World* owner, const zenkit::Mesh& worldMesh) {
    world.reset(new CollisionWorld());
  
-@@ -617,6 +642,8 @@ DynamicWorld::DynamicWorld(World* owner, const zenkit::Mesh& worldMesh) {
+@@ -617,6 +679,8 @@ DynamicWorld::DynamicWorld(World* owner, const zenkit::Mesh& worldMesh) {
    npcList   .reset(new NpcBodyList(*this));
    bulletList.reset(new BulletsList(*this));
    bboxList  .reset(new BBoxList   (*this));
@@ -13052,7 +13457,87 @@ index 0683815..89fae08 100644
  
    if(owner!=nullptr) {
      world->setItemHitCallback([owner](::Item& itm, zenkit::MaterialGroup mat, float impulse, float mass) {
-@@ -1026,7 +1053,46 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
+@@ -807,6 +871,25 @@ DynamicWorld::RayQueryResult DynamicWorld::rayNpc(const Tempest::Vec3& from, con
+   return r;
+   }
+ 
++DynamicWorld::RayQueryResult DynamicWorld::aimRay(const Tempest::Vec3& from, const Tempest::Vec3& to, const Npc* except) const {
++  // Gothic II Mobile: прицел - первое, во что упрётся луч: земля, стена или тело NPC (по частям тела, как стрела)
++  RayQueryResult r;
++  static_cast<RayLandResult&>(r) = ray(from,to);
++  const auto end  = r.hasCol ? r.v : to;
++  float      best = 2.f;
++  npcList->rayEach(from, end, 0, [&](NpcBody& n, float coarse) {
++    auto npc = n.toNpc();
++    BulletHit h;
++    if(npc==nullptr || npc==except || !npc->rangedHitTest(from,end,coarse,h) || h.t>=best)
++      return;
++    best     = h.t;
++    r.npcHit = npc;
++    r.v      = h.at;
++    r.hasCol = true;
++    });
++  return r;
++  }
++
+ float DynamicWorld::soundOclusion(const Tempest::Vec3& from, const Tempest::Vec3& to) const {
+   struct CallBack:btCollisionWorld::AllHitsRayResultCallback {
+     using AllHitsRayResultCallback::AllHitsRayResultCallback;
+@@ -924,7 +1007,9 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
+   const bool  isSpell = b.isSpell();
+ 
+   auto  pos = b.pos;
+-  auto  to  = pos + dir*dtF - Tempest::Vec3(0,(isSpell ? 0 : gravity*dtF*dtF),0);
++  // Gothic II Mobile: путь стрелы - точная парабола (полёт за шаг - с половиной ускорения): прицел
++  // (game/rangedaim.h) считает выстрел по ней же
++  auto  to  = pos + dir*dtF - Tempest::Vec3(0,(isSpell ? 0 : 0.5f*gravity*dtF*dtF),0);
+ 
+   struct CallBack:btCollisionWorld::ClosestRayResultCallback {
+     using ClosestRayResultCallback::ClosestRayResultCallback;
+@@ -964,6 +1049,31 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
+   world->rayCast(pos, to, callback);
+ 
+   bool stopBullet = false;
++  if(!isSpell && b.cb!=nullptr) {
++    // Gothic II Mobile: стрела попадает, только если задела тело (по частям куклы, Ragdoll::rayTest), а не габариты
++    // NPC: ближайшее касание за шаг - раньше земли и стены, если NPC перед ними
++    const float land   = callback.matId!=zenkit::MaterialGroup::NONE ? callback.m_closestHitFraction : 1.f;
++    Npc*        hitNpc = nullptr;
++    BulletHit   hit;
++    hit.t = land;
++    npcList->rayEach(pos, to, b.targetRange(), [&](NpcBody& n, float coarse) {
++      BulletHit h;
++      if(b.cb->hitTest(*n.toNpc(), pos, to, coarse, h) && h.t<=hit.t) {
++        hit    = h;
++        hitNpc = n.toNpc();
++        }
++      });
++    if(hitNpc!=nullptr) {
++      const auto at = pos + (to-pos)*hit.t;
++      if(b.cb->onCollide(*hitNpc,hit)) {
++        b.move(at);
++        b.addPathLen((at-pos).length());
++        b.cb->onStop();
++        return;
++        }
++      }
++    }
++
+   if(callback.matId != zenkit::MaterialGroup::NONE) {
+     if(isSpell){
+       if(b.cb!=nullptr)
+@@ -1003,7 +1113,9 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
+         }
+       }
+     } else {
+-    if(auto ptr = npcList->rayTest(pos,to,b.targetRange(),nullptr)) {
++    // стрелу по NPC проверили выше
++    auto ptr = (isSpell || b.cb==nullptr) ? npcList->rayTest(pos,to,b.targetRange(),nullptr) : nullptr;
++    if(ptr!=nullptr) {
+       if(b.cb!=nullptr)
+         stopBullet |= b.cb->onCollide(*ptr->toNpc()); else
+         stopBullet  = true;
+@@ -1026,7 +1138,46 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
  void DynamicWorld::tick(uint64_t dt) {
    npcList   ->tickAabbs();
    bulletList->tick(dt);
@@ -13100,7 +13585,7 @@ index 0683815..89fae08 100644
  
  void DynamicWorld::deleteObj(BulletBody* obj) {
 diff --git a/common/physics/dynamicworld.h b/common/physics/dynamicworld.h
-index 02725e0..82a59e8 100644
+index 02725e0..b6c3ebc 100644
 --- a/common/physics/dynamicworld.h
 +++ b/common/physics/dynamicworld.h
 @@ -26,6 +26,8 @@ class Interactive;
@@ -13112,7 +13597,7 @@ index 02725e0..82a59e8 100644
  
  class DynamicWorld final {
    private:
-@@ -34,6 +36,7 @@ class DynamicWorld final {
+@@ -34,11 +36,12 @@ class DynamicWorld final {
      struct NpcBodyList;
      struct BulletsList;
      struct BBoxList;
@@ -13120,6 +13605,12 @@ index 02725e0..82a59e8 100644
  
    public:
      static constexpr float gravityMS   = 9.8f; // meters per second^2
+     static constexpr float gravity     = gravityMS*100.f/(1000.f*1000.f); // centimeters per milliseconds^2
+-    static constexpr float bulletSpeed = 3; // centimeters per milliseconds
++    static constexpr float bulletSpeed = 3; // centimeters per milliseconds (Gothic II Mobile: стрелы - game/rangedaim.h)
+     static constexpr float spellSpeed  = 1; // centimeters per milliseconds
+ 
+     DynamicWorld(World *world, const zenkit::Mesh& mesh);
 @@ -52,6 +55,7 @@ class DynamicWorld final {
        C_Object    = 4,
        C_Ghost     = 5,
@@ -13128,7 +13619,48 @@ index 02725e0..82a59e8 100644
        };
  
      enum PtrType {
-@@ -276,6 +280,9 @@ class DynamicWorld final {
+@@ -177,12 +181,31 @@ class DynamicWorld final {
+       Npc* npcHit = nullptr;
+       };
+ 
++    // Gothic II Mobile: куда стрела вошла в тело NPC (game/rangedaim.h)
++    struct BulletHit final {
++      float         t    = 0;          // доля шага снаряда
++      Tempest::Vec3 at   = {};         // см
++      size_t        bone = size_t(-1);
++      uint8_t       zone = 0;          // Ragdoll::Zone
++      };
++
+     struct BulletCallback {
+       virtual ~BulletCallback()=default;
+       virtual void onStop(){}
+       virtual void onMove(){}
+       virtual void onCollide(zenkit::MaterialGroup matId){(void)matId;}
+       virtual bool onCollide(Npc& other){(void)other; return true; }
++      // Gothic II Mobile: стрела проверяет попадание по телу точно (отрезок a-b прошёл рядом с NPC; coarse - доля
++      // шага до его габаритов, <0 - мимо них); false - пролетела мимо. По умолчанию - по габаритам, как в игре
++      virtual bool hitTest(Npc& other, const Tempest::Vec3& a, const Tempest::Vec3& b, float coarse, BulletHit& hit) {
++        (void)other;
++        if(coarse<0.f)
++          return false;
++        hit.t  = coarse;
++        hit.at = a+(b-a)*coarse;
++        return true;
++        }
++      virtual bool onCollide(Npc& other, const BulletHit& hit){(void)hit; return onCollide(other); }
+       };
+ 
+     struct BulletBody final {
+@@ -261,6 +284,8 @@ class DynamicWorld final {
+     RayLandResult  ray          (const Tempest::Vec3& from, const Tempest::Vec3& to) const;
+     RayLandResult  sweep        (const Tempest::Vec3& from, const Tempest::Vec3& to, float R) const;
+     RayQueryResult rayNpc       (const Tempest::Vec3& from, const Tempest::Vec3& to, const Npc* except) const;
++    // Gothic II Mobile: прицел (PlayerControl::tickRangedAim) - луч до земли, стены или тела NPC (по частям тела, как стрела)
++    RayQueryResult aimRay       (const Tempest::Vec3& from, const Tempest::Vec3& to, const Npc* except) const;
+     float          soundOclusion(const Tempest::Vec3& from, const Tempest::Vec3& to) const;
+ 
+     NpcItem        addGhostObj  (const Skeleton* src);
+@@ -276,6 +301,9 @@ class DynamicWorld final {
  
      void           deleteObj(BulletBody* obj);
  
@@ -13138,7 +13670,7 @@ index 02725e0..82a59e8 100644
      static float   materialFriction(zenkit::MaterialGroup mat);
      static float   materialDensity (zenkit::MaterialGroup mat);
  
-@@ -302,6 +309,11 @@ class DynamicWorld final {
+@@ -302,6 +330,11 @@ class DynamicWorld final {
      RayWaterResult implWaterRay(const Tempest::Vec3& from, const Tempest::Vec3& to, float stepHeight) const;
      bool           hasCollision(const NpcItem &it, CollisionTest& out);
  
@@ -13150,7 +13682,7 @@ index 02725e0..82a59e8 100644
      std::unique_ptr<CollisionWorld>    world;
  
      std::vector<std::string>           sectors;
-@@ -318,6 +330,9 @@ class DynamicWorld final {
+@@ -318,6 +351,9 @@ class DynamicWorld final {
      std::unique_ptr<NpcBodyList>       npcList;
      std::unique_ptr<BulletsList>       bulletList;
      std::unique_ptr<BBoxList>          bboxList;
@@ -13175,10 +13707,10 @@ index daa4a7d..455d40d 100644
  #include <BulletCollision/CollisionShapes/btBoxShape.h>
 diff --git a/common/physics/ragdoll.cpp b/common/physics/ragdoll.cpp
 new file mode 100644
-index 0000000..85711fb
+index 0000000..4efb48c
 --- /dev/null
 +++ b/common/physics/ragdoll.cpp
-@@ -0,0 +1,3180 @@
+@@ -0,0 +1,3288 @@
 +#include "ragdoll.h"
 +
 +#include <Tempest/Log>
@@ -13520,6 +14052,7 @@ index 0000000..85711fb
 +constexpr float StaggerDecel = 1.9f;   // м/с2: толчок гаснет (тело тормозит шагами)
 +constexpr float StaggerFall  = 1.9f;   // м/с: толчок сильнее - не устоит, упадёт после первого шага
 +constexpr float StaggerMax   = 2.1f;   // м/с: быстрее тело не толкается
++constexpr float MissileStagger = 1.5f; // м/с: стрела шатает, но с ног не сбивает (меньше StaggerFall)
 +constexpr float LimitReturn  = 1.0f;   // рад/с: расширенный предел сустава сходится к анатомическому
 +constexpr float DeadImpulse  = 7.f;    // кг: импульс удара по упавшему или убитому = масса * сила удара (м/с)
 +
@@ -14419,6 +14952,113 @@ index 0000000..85711fb
 +  auto ret = lay.get();
 +  cache[&sk] = std::move(lay);
 +  return ret;
++  }
++
++namespace {
++
++// Луч ro + rd*t (rd - единичный) и капсула pa-pb радиуса r: расстояние до входа, <0 - мимо (Inigo Quilez, capIntersect)
++float rayCapsule(const Vec3& ro, const Vec3& rd, const Vec3& pa, const Vec3& pb, float r) {
++  if(pointSegmentDistance(ro,pa,pb)<=r)
++    return 0.f; // начало внутри
++  const Vec3  ba   = pb-pa;
++  const Vec3  oa   = ro-pa;
++  const float baba = Vec3::dotProduct(ba,ba);
++  const float bard = Vec3::dotProduct(ba,rd);
++  const float baoa = Vec3::dotProduct(ba,oa);
++  const float rdoa = Vec3::dotProduct(rd,oa);
++  const float oaoa = Vec3::dotProduct(oa,oa);
++  const float a    = baba - bard*bard;
++  const float b    = baba*rdoa - baoa*bard;
++  const float c    = baba*oaoa - baoa*baoa - r*r*baba;
++  float       y    = baoa<=0.f ? -1.f : baba+1.f; // луч вдоль оси - сразу в полусферы
++  if(a>1e-6f) {
++    const float h = b*b - a*c;
++    if(h<0.f)
++      return -1.f;
++    const float t = (-b-std::sqrt(h))/a;
++    y = baoa + t*bard;
++    if(y>0.f && y<baba)
++      return t;
++    }
++  // полусферы на концах
++  const Vec3  oc = (y<=0.f) ? oa : ro-pb;
++  const float bc = Vec3::dotProduct(rd,oc);
++  const float cc = Vec3::dotProduct(oc,oc) - r*r;
++  const float hc = bc*bc - cc;
++  if(hc<0.f)
++    return -1.f;
++  return -bc - std::sqrt(hc);
++  }
++
++}
++
++bool Ragdoll::hasLayout(const Skeleton& sk) {
++  return layoutOf(sk)!=nullptr;
++  }
++
++bool Ragdoll::rayTest(const Skeleton& sk, const Matrix4x4* bones, size_t count, const Vec3& a, const Vec3& b, RayHit& hit) {
++  auto lay = layoutOf(sk);
++  if(lay==nullptr || bones==nullptr)
++    return false;
++  const Vec3  ab  = b-a;
++  const float len = ab.length();
++  if(len<1e-3f)
++    return false;
++  const Vec3 rd = ab/len;
++  // капсулы куклы - по костям, без одежды и доспехов: попадание - чуть шире (2,5 см)
++  const float pad  = 2.5f;
++  float       best = len;
++  size_t      part = size_t(-1);
++  for(size_t i=0; i<lay->parts.size(); ++i) {
++    auto& p = lay->parts[i];
++    if(p.bone>=count)
++      continue;
++    const Matrix4x4 m  = bones[p.bone]*p.bodyInBone;
++    const Vec3      c  = originOf(m);
++    const Vec3      ax = Vec3::normalize(axisOf(m,0))*p.halfLen;
++    const float     t  = rayCapsule(a, rd, c-ax, c+ax, p.radius+pad);
++    if(t>=0.f && t<best) {
++      best = t;
++      part = i;
++      }
++    }
++  if(part==size_t(-1))
++    return false;
++  const auto& p = lay->parts[part];
++  hit.t    = best/len;
++  hit.at   = a + rd*best;
++  hit.bone = p.bone;
++  switch(Kind(p.kind)) {
++    case K_Head:
++      hit.zone = Z_Head;
++      break;
++    case K_Thigh:
++    case K_Calf:
++    case K_Foot:
++      hit.zone = Z_Legs;
++      break;
++    case K_UpperArm:
++    case K_ForeArm:
++    case K_Hand:
++      // у людей и человекоподобных - руки, у зверей - передние лапы
++      hit.zone = lay->humanoid ? Z_Body : Z_Legs;
++      break;
++    default:
++      hit.zone = Z_Body;
++      break;
++    }
++  return true;
++  }
++
++bool Ragdoll::chestPoint(const Skeleton& sk, const Matrix4x4* bones, size_t count, Vec3& at) {
++  auto lay = layoutOf(sk);
++  if(lay==nullptr || bones==nullptr || lay->chest>=lay->parts.size())
++    return false;
++  auto& p = lay->parts[lay->chest];
++  if(p.bone>=count)
++    return false;
++  at = originOf(bones[p.bone]*p.bodyInBone);
++  return true;
 +  }
 +
 +
@@ -15358,7 +15998,7 @@ index 0000000..85711fb
 +    v += std::max(0.f, b.pain-6.f)*0.12f;
 +    if(h.kind==H_Fly)
 +      v += 1.f;
-+    v = std::clamp(v, 0.f, StaggerMax);
++    v = std::clamp(v, 0.f, missile ? MissileStagger : StaggerMax);
 +    if(v>0.3f) {
 +      const btVector3 cur = b.push*b.pushVel;
 +      btVector3       nd  = cur + hp*v;
@@ -16361,10 +17001,10 @@ index 0000000..85711fb
 +  }
 diff --git a/common/physics/ragdoll.h b/common/physics/ragdoll.h
 new file mode 100644
-index 0000000..828f35e
+index 0000000..8c66e2f
 --- /dev/null
 +++ b/common/physics/ragdoll.h
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,275 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -16539,6 +17179,28 @@ index 0000000..828f35e
 +
 +    // Место в физике для новой куклы (или для пробуждения застывшей): false - падать анимацией игры
 +    static bool           reserve(DynamicWorld& owner, float viewDist, State st, bool keep);
++
++    // Лук и арбалет (game/rangedaim.h): куда попала стрела - по капсулам тех же частей тела, что у куклы, в позе bones
++    // (мировые матрицы всех костей скелета), без физики. Голова - урон вдвое, ноги (у зверей - и передние лапы) - вдвое
++    // меньше, остальное - как есть
++    enum Zone : uint8_t {
++      Z_Body = 0,
++      Z_Head = 1,
++      Z_Legs = 2,
++      };
++    struct RayHit final {
++      float         t    = 0;          // доля отрезка a-b до входа в тело
++      Tempest::Vec3 at   = {};         // точка входа, см
++      size_t        bone = size_t(-1); // кость задетой части
++      uint8_t       zone = Z_Body;
++      };
++    // Схема тела для скелета есть (иначе - проверка по габаритам NPC, как в игре)
++    static bool           hasLayout(const Skeleton& sk);
++    // Отрезок a-b задевает тело: hit - первое касание
++    static bool           rayTest(const Skeleton& sk, const Tempest::Matrix4x4* bones, size_t count,
++                                  const Tempest::Vec3& a, const Tempest::Vec3& b, RayHit& hit);
++    // Куда целиться - середина груди (часть груди куклы); false - схемы нет
++    static bool           chestPoint(const Skeleton& sk, const Tempest::Matrix4x4* bones, size_t count, Tempest::Vec3& at);
 +    // Все куклы мира в физике: после шага физики - позы, «улеглось ли», бюджет (DynamicWorld::tick)
 +    static void           tickAll(std::vector<Ragdoll*>& active, uint64_t dt, float minY);
 +    static void           preStepAll(const std::vector<Ragdoll*>& active, float dt);
@@ -17878,10 +18540,10 @@ index fbb1b8a..298f487 100644
    };
 diff --git a/common/ui/touchicons.cpp b/common/ui/touchicons.cpp
 new file mode 100644
-index 0000000..b59b937
+index 0000000..e4c541e
 --- /dev/null
 +++ b/common/ui/touchicons.cpp
-@@ -0,0 +1,795 @@
+@@ -0,0 +1,819 @@
 +#include "touchicons.h"
 +
 +#include <Tempest/Pixmap>
@@ -18621,6 +19283,30 @@ index 0000000..b59b937
 +    });
 +  }
 +
++const Texture2d& TouchIcons::ring(int size, int width) {
++  size  = std::clamp(size,8,2048);
++  width = std::clamp(width,1,16);
++  const uint64_t key = (uint64_t(6)<<40) | (uint64_t(width)<<16) | uint64_t(size);
++  return cached(key,[size,width](){
++    const float R    = float(size)*0.5f;
++    const float hw   = float(width)*0.5f;
++    const float edge = std::max(1.f, float(width)*0.6f); // тёмная кайма
++    const float rad  = R - hw - edge - 0.5f;
++    std::vector<float> rgba(size_t(size*size*4));
++    for(int y=0; y<size; ++y)
++      for(int x=0; x<size; ++x) {
++        const float dx = float(x)+0.5f-R, dy = float(y)+0.5f-R;
++        const float d  = std::abs(std::sqrt(dx*dx+dy*dy) - rad);
++        const float ln = std::clamp(hw+0.5f-d, 0.f, 1.f);
++        const float hl = std::clamp(hw+edge+0.5f-d, 0.f, 1.f)*0.55f;
++        const Rgba  c  = over(Rgba{1.f,1.f,1.f,ln}, Rgba{0.f,0.f,0.f,hl});
++        float* o = &rgba[size_t((y*size+x)*4)];
++        o[0] = c.r; o[1] = c.g; o[2] = c.b; o[3] = c.a;
++        }
++    return toTexture(rgba,size,size);
++    });
++  }
++
 +const Texture2d& TouchIcons::pill(int w, int h) {
 +  w = std::clamp(w,8,2048);
 +  h = std::clamp(h,8,1024);
@@ -18679,10 +19365,10 @@ index 0000000..b59b937
 +  }
 diff --git a/common/ui/touchicons.h b/common/ui/touchicons.h
 new file mode 100644
-index 0000000..8538a5a
+index 0000000..ba348d0
 --- /dev/null
 +++ b/common/ui/touchicons.h
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,91 @@
 +#pragma once
 +
 +#include <Tempest/Texture2d>
@@ -18762,6 +19448,9 @@ index 0000000..8538a5a
 +    const Tempest::Texture2d& glow (int size);
 +    // Подложка-«пилюля» w×h для кнопок с подписью
 +    const Tempest::Texture2d& pill (int w, int h);
++    // Кольцо прицела диаметром size: линия width белая (цвет задаёт кисть), по краям - тёмная кайма (читается на
++    // светлом небе и снегу)
++    const Tempest::Texture2d& ring (int size, int width);
 +    // Тень значка: тот же значок, размытый
 +    const Tempest::Texture2d& shadow(Icon i, int size);
 +
@@ -18772,10 +19461,10 @@ index 0000000..8538a5a
 +    const Tempest::Texture2d& cached(uint64_t key, const std::function<Tempest::Texture2d()>& make);
 +  };
 diff --git a/common/ui/touchinput.cpp b/common/ui/touchinput.cpp
-index d9f1730..8770a61 100644
+index d9f1730..ebece0e 100644
 --- a/common/ui/touchinput.cpp
 +++ b/common/ui/touchinput.cpp
-@@ -1,41 +1,2488 @@
+@@ -1,41 +1,2534 @@
  #include "touchinput.h"
  
 +#include <Tempest/Application>
@@ -19223,6 +19912,7 @@ index d9f1730..8770a61 100644
    Painter p(e);
 +  if(ui==Ui::World) {
 +    drawTarget(p);
++    drawReticle(p);
 +    drawSquad(p);
 +    drawJoystick(p);
 +    drawTravelBanner(p);
@@ -19404,9 +20094,7 @@ index d9f1730..8770a61 100644
 +  auto& t = icons.pill(r.w,r.h);
 +  p.setBrush(Brush(t,Color(1.f,1.f,1.f,pressed ? 1.f : 0.92f)));
 +  p.drawRect(r.x, r.y, r.w, r.h, 0,0,t.w(),t.h());
- 
--  p.setBrush(Color(1,1,1, 0.2f));
--  p.drawRect(10, h()-10 - 100, 100, 100);
++
 +  const int   gs  = int(float(r.h)*0.48f);
 +  auto&       fnt = Resources::font(pressed ? Resources::FontType::Hi : Resources::FontType::Normal, Gothic::interfaceScale(this));
 +  const auto  ts  = fnt.textSize(label);
@@ -19415,11 +20103,8 @@ index d9f1730..8770a61 100644
 +  const int   x0  = r.x + (r.w-tw)/2;
 +  drawGlyph(p, ic, Point(x0+gs/2, r.y+r.h/2), gs, pressed ? GoldBright : GoldIdle);
 +  fnt.drawText(p, x0+gs+gap, r.y+(r.h+ts.h)/2, label);
-   }
- 
--void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
--  auto r = Rect(10, h()-10-100, 100, 100);
--  if(!r.contains(e.pos())) {
++  }
++
 +void TouchInput::drawLabel(Painter& p, std::string_view txt, Point c, bool hi, float scale) {
 +  auto&      fnt = Resources::font(hi ? Resources::FontType::Hi : Resources::FontType::Normal, Gothic::interfaceScale(this)*scale);
 +  const auto sz  = fnt.textSize(txt);
@@ -19515,7 +20200,9 @@ index d9f1730..8770a61 100644
 +  kb.r = kr;
 +  drawRound(p, kb, TouchIcons::I_Dot, false, active && joyRun, alpha+0.15f);
 +  }
-+
+ 
+-  p.setBrush(Color(1,1,1, 0.2f));
+-  p.drawRect(10, h()-10 - 100, 100, 100);
 +void TouchInput::drawTarget(Painter& p) {
 +  auto tg  = ctrl.touchTarget();
 +  auto cam = Gothic::inst().camera();
@@ -19538,6 +20225,51 @@ index d9f1730..8770a61 100644
 +  drawGlyph(p, TouchIcons::I_Down, Point(ix, iy-int(26*d)+bob), gs, GoldBright);
 +  if(ctrl.focus().npc!=tg)
 +    drawLabel(p, tg->displayName(), Point(ix, iy-int(44*d)+bob), false, 0.85f);
++  }
++
++void TouchInput::drawReticle(Painter& p) {
++  // Лук и арбалет: прицел (PlayerControl::tickRangedAim). Точка - куда целится герой (с автонаведением - грудь цели в
++  // фокусе, иначе - середина экрана); круг - куда может уйти стрела: его радиус - разброс по умению (100 % - только
++  // точка). Круг - в мире у точки прицела: вблизи шире, вдали уже
++  const auto& aim = ctrl.rangedAim();
++  auto        cam = Gothic::inst().camera();
++  auto        pl  = Gothic::inst().player();
++  if(!aim.on || cam==nullptr || pl==nullptr || !pl->hasAmmunition())
++    return;
++  const auto vp = cam->viewProj();
++  auto toScreen = [&](Vec3 v, PointF& out) {
++    float pw = 1.f;
++    vp.project(v.x,v.y,v.z,pw);
++    if(pw<=0.f)
++      return false;
++    v /= pw;
++    out = PointF((0.5f*v.x+0.5f)*float(w()), (0.5f*v.y+0.5f)*float(h()));
++    return true;
++    };
++  PointF c;
++  if(!toScreen(aim.at,c))
++    return;
++  const float d    = dp();
++  const Color cl   = aim.locked ? GoldBright : GoldIdle;
++  const Vec3  view = aim.at - cam->originLwc();
++  Vec3        side = Vec3::crossProduct(view, Vec3(0,1,0));
++  float       rad  = 0;
++  if(side.length()>1e-3f && aim.spread>0.f) {
++    const float r = (aim.at-aim.from).length()*std::tan(aim.spread*Pi/180.f);
++    PointF e;
++    if(toScreen(aim.at + Vec3::normalize(side)*r, e))
++      rad = std::sqrt((e.x-c.x)*(e.x-c.x) + (e.y-c.y)*(e.y-c.y));
++    }
++  rad = std::min(rad, float(std::max(w(),h())));
++  const int cx = int(c.x), cy = int(c.y);
++  if(rad>=4*d) {
++    const int lw = std::max(1, int(1.6f*d));
++    const int ds = int(2.f*rad) + 2*(lw+int(std::max(1.f,float(lw)*0.6f))+2);
++    auto& t = icons.ring(ds, lw);
++    p.setBrush(Brush(t,Color(cl.r(),cl.g(),cl.b(),0.85f),Painter::Alpha));
++    p.drawRect(cx-ds/2, cy-ds/2, ds, ds, 0,0,t.w(),t.h());
++    }
++  drawGlyph(p, TouchIcons::I_Dot, Point(cx,cy), std::max(4, int(7*d)), cl);
 +  }
 +
 +void TouchInput::drawSquad(Painter& p) {
@@ -19791,8 +20523,11 @@ index d9f1730..8770a61 100644
 +  else
 +    title = toCp1251(wheel==Wheel::Weapon ? "Оружие" : (wheel==Wheel::Camera ? "Камера" : "Отряд"));
 +  drawLabel(p, fit(title, int(float(R)*0.95f), 1.f), c, true, 1.f);
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDownEvent(Tempest::MouseEvent& e) {
+-  auto r = Rect(10, h()-10-100, 100, 100);
+-  if(!r.contains(e.pos())) {
 +void TouchInput::mouseDownEvent(MouseEvent& e) {
 +  const Ui ui = currentUi();
 +  if(ui==Ui::Hidden || e.mouseID<0 || size_t(e.mouseID)>=fingers.size()) {
@@ -20479,14 +21214,8 @@ index d9f1730..8770a61 100644
 +    if(mapSpots[i].spot.point->map==mapTab)
 +      ret.push_back(int(i));
 +  return ret;
-   }
- 
--void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
--  auto dp = e.pos() - mpos;
--  mpos = e.pos();
--  if(std::abs(dp.x)>0) {
--    const float scale = 4.f;
--    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
++  }
++
 +void TouchInput::selectSpot(int id) {
 +  mapSel      = (id>=0 && size_t(id)<mapSpots.size()) ? id : -1;
 +  mapStatus.clear();
@@ -20528,11 +21257,9 @@ index d9f1730..8770a61 100644
 +      mapScroll = y;
 +    if(y+l.rowH>mapScroll+l.list.h)
 +      mapScroll = y+l.rowH-l.list.h;
-     }
-   }
- 
--void TouchInput::mouseUpEvent(Tempest::MouseEvent& e) {
--  ctrl.onKeyReleased(KeyCodec::Forward, KeyCodec::Mapping::Primary);
++    }
++  }
++
 +void TouchInput::travelTo(bool instant) {
 +  if(mapSel<0) {
 +    mapStatus = toCp1251("Сначала выбери место");
@@ -21115,8 +21842,14 @@ index d9f1730..8770a61 100644
 +  editSel    = C_None;
 +  editFinger = -1;
 +  update();
-+  }
-+
+   }
+ 
+-void TouchInput::mouseDragEvent(Tempest::MouseEvent& e) {
+-  auto dp = e.pos() - mpos;
+-  mpos = e.pos();
+-  if(std::abs(dp.x)>0) {
+-    const float scale = 4.f;
+-    ctrl.onRotateMouse(float(-dp.x) * scale, 0.f);
 +void TouchInput::closeEditor() {
 +  if(!editOpen)
 +    return;
@@ -21200,12 +21933,14 @@ index d9f1730..8770a61 100644
 +  if(editPanel().contains(p)) {
 +    editTap(p);
 +    return;
-+    }
+     }
 +  // Касание мимо кнопок - настраиваются все сразу
 +  if(editHit(p)==C_None)
 +    editSel = C_None;
-+  }
-+
+   }
+ 
+-void TouchInput::mouseUpEvent(Tempest::MouseEvent& e) {
+-  ctrl.onKeyReleased(KeyCodec::Forward, KeyCodec::Mapping::Primary);
 +void TouchInput::editTap(Point p) {
 +  int k = -1;
 +  for(int i=0; i<6; ++i)
@@ -21282,10 +22017,10 @@ index d9f1730..8770a61 100644
 +  paintAlpha = saved;
    }
 diff --git a/common/ui/touchinput.h b/common/ui/touchinput.h
-index f46becc..450fcc5 100644
+index f46becc..14b30d4 100644
 --- a/common/ui/touchinput.h
 +++ b/common/ui/touchinput.h
-@@ -1,21 +1,295 @@
+@@ -1,21 +1,296 @@
  #pragma once
  
  #include <Tempest/Widget>
@@ -21580,6 +22315,7 @@ index f46becc..450fcc5 100644
 +    void           drawJoystick(Tempest::Painter& p);
 +    void           drawWheel   (Tempest::Painter& p);
 +    void           drawTarget  (Tempest::Painter& p);
++    void           drawReticle (Tempest::Painter& p);
 +    void           drawSquad   (Tempest::Painter& p);
 +    void           drawBadge   (Tempest::Painter& p, const Button& b, size_t n);
 +    void           drawHoldRing(Tempest::Painter& p, const Button& b, float k);
@@ -21591,10 +22327,10 @@ index f46becc..450fcc5 100644
 +  };
 diff --git a/common/utils/applink.cpp b/common/utils/applink.cpp
 new file mode 100644
-index 0000000..1651c62
+index 0000000..3a76782
 --- /dev/null
 +++ b/common/utils/applink.cpp
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,86 @@
 +#include "applink.h"
 +
 +#include <Tempest/Log>
@@ -21608,6 +22344,7 @@ index 0000000..1651c62
 +
 +namespace {
 +  std::atomic_bool editRequest{false};
++  std::atomic_bool settingsReload{false};
 +#ifdef __ANDROID__
 +  JavaVM*   jvm      = nullptr;
 +  jclass    jcls     = nullptr;
@@ -21657,9 +22394,17 @@ index 0000000..1651c62
 +  return editRequest.exchange(false);
 +  }
 +
++bool AppLink::takeSettingsReload() {
++  return settingsReload.exchange(false);
++  }
++
 +#ifdef __ANDROID__
 +extern "C" JNIEXPORT void JNICALL Java_gothic2_mobile_og_GameActivity_nativeEditControls(JNIEnv*, jclass) {
 +  editRequest = true;
++  }
++
++extern "C" JNIEXPORT void JNICALL Java_gothic2_mobile_og_GameActivity_nativeSettingsChanged(JNIEnv*, jclass) {
++  settingsReload = true;
 +  }
 +
 +// Java-методы движка находятся только после System.loadLibrary в GameActivity
@@ -21674,10 +22419,10 @@ index 0000000..1651c62
 +#endif
 diff --git a/common/utils/applink.h b/common/utils/applink.h
 new file mode 100644
-index 0000000..de9237c
+index 0000000..e64d00c
 --- /dev/null
 +++ b/common/utils/applink.h
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,12 @@
 +#pragma once
 +
 +// Gothic II Mobile: вызовы приложения (Java, gothic2.mobile.og.GameActivity) из движка. Без приложения
@@ -21687,6 +22432,8 @@ index 0000000..de9237c
 +  void openAppMenu();
 +  // «Настроить кнопки» на экране запуска: игра открывает настройку кнопок (один раз за просьбу)
 +  bool takeEditRequest();
++  // Игра снова на экране (могли поменять настройки управления на экране запуска): перечитать g2m.ini, один раз
++  bool takeSettingsReload();
 +  }
 diff --git a/common/utils/cp1251.h b/common/utils/cp1251.h
 new file mode 100644
@@ -22068,10 +22815,23 @@ index f8badbd..a918201 100644
    while(true) {
      {
 diff --git a/common/world/bullet.cpp b/common/world/bullet.cpp
-index 7ad7be3..1d07dfb 100644
+index 7ad7be3..b468226 100644
 --- a/common/world/bullet.cpp
 +++ b/common/world/bullet.cpp
-@@ -103,6 +103,14 @@ bool Bullet::isFinished() const {
+@@ -3,9 +3,12 @@
+ #include <Tempest/Log>
+ 
+ #include "graphics/visualfx.h"
++#include "physics/ragdoll.h"
++#include "utils/cp1251.h"
+ #include "world/objects/item.h"
+ #include "world/objects/npc.h"
+ #include "world.h"
++#include "gothic.h"
+ 
+ using namespace Tempest;
+ 
+@@ -103,6 +106,14 @@ bool Bullet::isFinished() const {
    return true;
    }
  
@@ -22086,20 +22846,75 @@ index 7ad7be3..1d07dfb 100644
  float Bullet::pathLength() const {
    return obj->pathLength();
    }
+@@ -138,6 +149,30 @@ void Bullet::onCollide(zenkit::MaterialGroup matId) {
+   wrld->runEffect(std::move(vfx));
+   }
+ 
++bool Bullet::hitTest(Npc& npc, const Vec3& a, const Vec3& b, float coarse, DynamicWorld::BulletHit& h) {
++  // Gothic II Mobile: стрела задела тело (части куклы в позе кадра), а не габариты NPC; своего стрелка не задевает
++  if(&npc==origin() || isFinished())
++    return false;
++  return npc.rangedHitTest(a,b,coarse,h);
++  }
++
++bool Bullet::onCollide(Npc& npc, const DynamicWorld::BulletHit& h) {
++  if(&npc==origin() || isFinished())
++    return false;
++  hit    = h;
++  hasHit = true;
++  const bool alive = !npc.isDown();
++  if(!onCollide(npc))
++    return false;
++  // попадание героя в голову - урон вдвое (RangedAim::zoneMul): игроку видно, что выстрел удался
++  if(alive && ow!=nullptr && ow->isPlayer() && !isSpell() && h.zone==Ragdoll::Z_Head)
++    Gothic::inst().onPrint(toCp1251("В голову!"));
++  // Gothic II Mobile: стрела остаётся в теле (RangedAim::StuckTime) - модель переходит к кости, куда вошла
++  if(!isSpell() && !view.isEmpty())
++    npc.stickArrow(std::move(view), h.at, obj->direction(), h.bone);
++  return true;
++  }
++
+ bool Bullet::onCollide(Npc& npc) {
+   if(&npc==origin() || isFinished())
+     return false;
 diff --git a/common/world/bullet.h b/common/world/bullet.h
-index ee0f31c..8092509 100644
+index ee0f31c..9a425dc 100644
 --- a/common/world/bullet.h
 +++ b/common/world/bullet.h
-@@ -55,6 +55,9 @@ class Bullet final : public DynamicWorld::BulletCallback {
+@@ -55,6 +55,14 @@ class Bullet final : public DynamicWorld::BulletCallback {
  
      bool     isFinished() const;
      float    pathLength() const;
 +    // Gothic II Mobile: куда и откуда летит снаряд - толчок упавшему телу (регдолл)
 +    auto     position()  const -> Tempest::Vec3;
 +    auto     direction() const -> Tempest::Vec3;
++    // Gothic II Mobile: стрела (game/rangedaim.h) - куда вошла в тело (Ragdoll::Zone: урон по месту), сила толчка тела
++    uint8_t  hitZone() const { return hit.zone; }
++    auto     hitPoint() const -> Tempest::Vec3 { return hasHit ? hit.at : position(); }
++    float    impact() const { return impactPw; }
++    void     setImpact(float v) { impactPw = v; }
  
      bool     onEffectCollide(Npc& other);
  
+@@ -63,6 +71,8 @@ class Bullet final : public DynamicWorld::BulletCallback {
+     void     onMove() override;
+     void     onCollide(zenkit::MaterialGroup matId) override;
+     bool     onCollide(Npc& other) override;
++    bool     onCollide(Npc& other, const DynamicWorld::BulletHit& h) override;
++    bool     hitTest(Npc& other, const Tempest::Vec3& a, const Tempest::Vec3& b, float coarse, DynamicWorld::BulletHit& h) override;
+ 
+   private:
+     DynamicWorld::BulletBody* obj=nullptr;
+@@ -72,6 +82,9 @@ class Bullet final : public DynamicWorld::BulletCallback {
+     DamageCalculator::Damage  dmg        = {};
+     float                     hitCh      = 1.f;
+     float                     critCh     = 0.f;
++    float                     impactPw   = 3.f;
++    DynamicWorld::BulletHit   hit;
++    bool                      hasHit     = false;
+ 
+     MeshObjects::Mesh         view;
+     Effect                    vfx;
 diff --git a/common/world/objects/interactive.cpp b/common/world/objects/interactive.cpp
 index b0c1612..eddd52f 100644
 --- a/common/world/objects/interactive.cpp
@@ -22128,10 +22943,10 @@ index b45a9bd..35a566d 100644
      bool                isCracked() const { return isLockCracked; }
      bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..edbd541 100644
+index e015398..db19d07 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
-@@ -3,11 +3,15 @@
+@@ -3,11 +3,16 @@
  #include <Tempest/Matrix4x4>
  #include <Tempest/Log>
  
@@ -22141,13 +22956,14 @@ index e015398..edbd541 100644
 +#include "graphics/dynamic/frustrum.h"
  #include "graphics/visualfx.h"
  #include "game/damagecalculator.h"
++#include "game/rangedaim.h"
  #include "game/serialize.h"
  #include "game/gamescript.h"
 +#include "game/ainpc.h"
  #include "utils/string_frm.h"
  #include "world/objects/interactive.h"
  #include "world/objects/item.h"
-@@ -39,6 +43,9 @@ void Npc::GoTo::load(Serialize& fin) {
+@@ -39,6 +44,9 @@ void Npc::GoTo::load(Serialize& fin) {
      if(flag==GoToHint::GT_Enemy || flag==GoToHint::GT_EnemyG)
        clear(); // not persistent flags, and should be cleared by FAI
    //  }
@@ -22157,7 +22973,7 @@ index e015398..edbd541 100644
    }
  
  Vec3 Npc::GoTo::target() const {
-@@ -56,6 +63,14 @@ bool Npc::GoTo::isClose(const Npc& self, float dist) const {
+@@ -56,6 +64,14 @@ bool Npc::GoTo::isClose(const Npc& self, float dist) const {
      return MoveAlgo::isClose(self, *npc, dist);
    if(wp!=nullptr)
      return MoveAlgo::isClose(self, *wp, dist);
@@ -22172,7 +22988,7 @@ index e015398..edbd541 100644
    return MoveAlgo::isClose(self, pos, dist);
    }
  
-@@ -87,8 +102,9 @@ void Npc::GoTo::set(const Item* to) {
+@@ -87,8 +103,9 @@ void Npc::GoTo::set(const Item* to) {
    }
  
  void Npc::GoTo::set(const Vec3& to) {
@@ -22184,7 +23000,7 @@ index e015398..edbd541 100644
    }
  
  void Npc::GoTo::setFlee() {
-@@ -251,6 +267,8 @@ void Npc::save(Serialize &fout, size_t id, std::string_view directory) {
+@@ -251,6 +268,8 @@ void Npc::save(Serialize &fout, size_t id, std::string_view directory) {
    fout.setEntry("worlds/",fout.worldName(),directory,id,"/inventory");
    if(!invent.isEmpty() || id==size_t(-1))
      invent.save(fout);
@@ -22193,7 +23009,7 @@ index e015398..edbd541 100644
    }
  
  void Npc::load(Serialize &fin, size_t id, std::string_view directory) {
-@@ -321,6 +339,8 @@ void Npc::load(Serialize &fin, size_t id, std::string_view directory) {
+@@ -321,6 +340,8 @@ void Npc::load(Serialize &fin, size_t id, std::string_view directory) {
    if(fin.setEntry("worlds/",fin.worldName(),directory,id,"/inventory"))
      invent.load(fin,*this);
  
@@ -22202,7 +23018,7 @@ index e015398..edbd541 100644
    // post-alignment
    updateTransform();
    if(isUsingTorch)
-@@ -502,6 +522,16 @@ bool Npc::resetPositionToTA() {
+@@ -502,6 +523,16 @@ bool Npc::resetPositionToTA() {
    if(isPlayer())
      return true;
  
@@ -22219,7 +23035,7 @@ index e015398..edbd541 100644
    auto at = currentTaPoint();
    if(at==nullptr)
      return false;
-@@ -593,9 +623,29 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
+@@ -593,9 +624,29 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
    }
  
  void Npc::onNoHealth(bool death, HitSound sndMask) {
@@ -22251,7 +23067,7 @@ index e015398..edbd541 100644
    dropTorch();
    visual.setToFightMode(WeaponState::NoWeapon);
    updateWeaponSkeleton();
-@@ -628,6 +678,9 @@ void Npc::onNoHealth(bool death, HitSound sndMask) {
+@@ -628,6 +679,9 @@ void Npc::onNoHealth(bool death, HitSound sndMask) {
    if(death)
      setAnim(lastHitType=='A' ? Anim::DeadA        : Anim::DeadB); else
      setAnim(lastHitType=='A' ? Anim::UnconsciousA : Anim::UnconsciousB);
@@ -22261,7 +23077,7 @@ index e015398..edbd541 100644
    }
  
  bool Npc::hasAutoroll() const {
-@@ -889,6 +942,9 @@ Tempest::Vec3 Npc::animMoveSpeed(uint64_t dt) const {
+@@ -889,6 +943,9 @@ Tempest::Vec3 Npc::animMoveSpeed(uint64_t dt) const {
  void Npc::setVisual(const Skeleton* v) {
    if(visual.visualSkeleton()==v)
      return;
@@ -22271,7 +23087,7 @@ index e015398..edbd541 100644
    visual.setVisual(v);
    visual.clearOverlays();
    invalidateTalentOverlays();
-@@ -1247,7 +1303,8 @@ void Npc::changeAttribute(Attribute a, int32_t val, bool allowUnconscious) {
+@@ -1247,7 +1304,8 @@ void Npc::changeAttribute(Attribute a, int32_t val, bool allowUnconscious) {
        return;
      if(isPlayer() && owner.currentCs()!=nullptr)
        return;
@@ -22281,7 +23097,7 @@ index e015398..edbd541 100644
        return;
      }
  
-@@ -1555,7 +1612,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
+@@ -1555,7 +1613,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
    }
  
  bool Npc::implAttack(uint64_t dt) {
@@ -22290,7 +23106,7 @@ index e015398..edbd541 100644
      return false;
  
    if(currentTarget->isDown()){
-@@ -1580,8 +1637,11 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1580,8 +1638,11 @@ bool Npc::implAttack(uint64_t dt) {
      return true;
      }
  
@@ -22304,7 +23120,7 @@ index e015398..edbd541 100644
  
    if(bs==BS_LIE) {
      setAnim(Npc::Anim::Idle);
-@@ -1882,6 +1942,10 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1882,6 +1943,10 @@ bool Npc::implAttack(uint64_t dt) {
  bool Npc::implAiTick(uint64_t dt) {
    // Note AI-action queue takes priority, test case: Vatras pray at night
    if(aiQueue.size()==0) {
@@ -22315,7 +23131,7 @@ index e015398..edbd541 100644
      tickRoutine();
      if(aiQueue.size()>0)
        nextAiAction(aiQueue,dt);
-@@ -2077,6 +2141,9 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2077,6 +2142,9 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
  
    if(!isSpell || splCat==SpellCategory::SPELL_BAD) {
      perceptionProcess(other,this,0,PERC_ASSESSDAMAGE);
@@ -22325,7 +23141,7 @@ index e015398..edbd541 100644
      fghAlgo.onTakeHit();
      implFaiWait(0);
      }
-@@ -2085,6 +2152,36 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2085,6 +2153,37 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
    if(!isSpell && !isDown() && hitResult.hasHit)
      owner.addWeaponHitEffect(other,b,*this).play();
  
@@ -22335,9 +23151,10 @@ index e015398..edbd541 100644
 +  Vec3  at    = centerPosition();
 +  float power = 2.6f;
 +  if(b!=nullptr) {
-+    at    = b->position();
++    // стрела - точка, где вошла в тело (Ragdoll::rayTest), и толчок по её скорости (RangedAim::BowImpact)
++    at    = b->hitPoint();
 +    dir   = b->direction();
-+    power = isSpell ? 4.f : 3.f;
++    power = isSpell ? 4.f : b->impact();
 +    }
 +  else if(isSpell) {
 +    power = 4.f;
@@ -22362,7 +23179,7 @@ index e015398..edbd541 100644
    if(isDown()) {
      onNoHealth(dontKill,HS_NoSound);
      return;
-@@ -2107,9 +2204,13 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2107,9 +2206,13 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
      }
  
    // throw enemy
@@ -22377,7 +23194,7 @@ index e015398..edbd541 100644
  
    if(hitResult.value>0) {
      currentOther = &other;
-@@ -2130,6 +2231,17 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2130,6 +2233,17 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
          }
        }
      }
@@ -22395,7 +23212,7 @@ index e015398..edbd541 100644
    }
  
  void Npc::takeFallDamage(const Vec3& fallSpeed) {
-@@ -2247,6 +2359,9 @@ void Npc::tickTimedEvt(Animation::EvCount& ev) {
+@@ -2247,6 +2361,9 @@ void Npc::tickTimedEvt(Animation::EvCount& ev) {
          if(auto it = invent.addItem(i.item,1,world())) {
            invent.putToSlot(*this,it->clsId(),i.slot[0]);
            }
@@ -22405,7 +23222,7 @@ index e015398..edbd541 100644
          break;
          }
        case zenkit::MdsEventType::SET_FIGHT_MODE:
-@@ -2344,6 +2459,28 @@ void Npc::tick(uint64_t dt) {
+@@ -2344,6 +2461,29 @@ void Npc::tick(uint64_t dt) {
  
    tickAnimationTags();
  
@@ -22427,6 +23244,7 @@ index e015398..edbd541 100644
 +    }
 +  tickRagdoll();
 +  tickInjury();
++  visual.tickStuck(owner.tickCount());
 +  // живой лежит по физике: ни ИИ, ни перемещения, пока не встанет
 +  if(isRagdollFall() && ragdollHoldsBody())
 +    return;
@@ -22434,7 +23252,7 @@ index e015398..edbd541 100644
    if(!visual.pose().hasAnim())
      setAnim(AnimationSolver::Idle);
  
-@@ -2380,7 +2517,8 @@ void Npc::tick(uint64_t dt) {
+@@ -2380,7 +2520,8 @@ void Npc::tick(uint64_t dt) {
      if(!isPlayer() && go2.flag!=GT_Flee && faiWaitTime<owner.tickCount() && currentTarget!=nullptr) {
        implTurnToFai(*currentTarget,dt);
        }
@@ -22444,7 +23262,7 @@ index e015398..edbd541 100644
      return;
      }
  
-@@ -2398,7 +2536,9 @@ void Npc::tick(uint64_t dt) {
+@@ -2398,7 +2539,9 @@ void Npc::tick(uint64_t dt) {
        }
      }
  
@@ -22455,7 +23273,7 @@ index e015398..edbd541 100644
    implAiTick(dt);
    }
  
-@@ -2529,6 +2669,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2529,6 +2672,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -22467,7 +23285,7 @@ index e015398..edbd541 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -2579,6 +2724,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2579,6 +2727,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          break;
          }
        else if(bs==BS_UNCONSCIOUS || bs==BS_LIE) {
@@ -22477,7 +23295,7 @@ index e015398..edbd541 100644
          if(!setAnim(Anim::Idle))
            queue.pushFront(std::move(act)); else
            implAniWait(visual.pose().animationTotalTime());
-@@ -2593,14 +2741,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2593,14 +2744,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_EquipArmor:
        invent.equipArmor(act.i0,*this);
        break;
@@ -22500,7 +23318,7 @@ index e015398..edbd541 100644
        break;
      case AI_UseMob: {
        if(act.i0<0) {
-@@ -2740,6 +2893,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2740,6 +2896,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_OutputSvm:
      case AI_OutputSvmOverlay:{
        if(performOutput(act)) {
@@ -22510,7 +23328,7 @@ index e015398..edbd541 100644
          if(aiPolicy!=NpcProcessPolicy::AiFar2) {
            uint64_t msgTime = 0;
            if(act.act==AI_Output) {
-@@ -3504,6 +3660,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -3504,6 +3663,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -22519,7 +23337,7 @@ index e015398..edbd541 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +3951,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +3954,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
@@ -22530,7 +23348,7 @@ index e015398..edbd541 100644
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -3836,6 +3998,12 @@ bool Npc::finishingMove() {
+@@ -3836,6 +4001,12 @@ bool Npc::finishingMove() {
      return false;
  
    if(doAttack(Anim::AttackFinish,BS_HIT)) {
@@ -22543,7 +23361,29 @@ index e015398..edbd541 100644
      currentTarget->hnpc->attribute[ATR_HITPOINTS] = 0;
      currentTarget->checkHealth(true,false);
      owner.sendPassivePerc(*this,*this,*currentTarget,PERC_ASSESSMURDER);
-@@ -4158,10 +4326,77 @@ bool Npc::isPrehit() const {
+@@ -4091,13 +4262,19 @@ bool Npc::shootBow(Interactive* focOverride) {
+   if(itm==nullptr)
+     return false;
+ 
+-  auto& b = owner.shootBullet(*itm,*this,currentTarget,focOverride);
++  // Gothic II Mobile: стрела летит, куда целятся, с разбросом по умению (game/rangedaim.h): герой - в точку прицела,
++  // NPC - в грудь своей цели
++  auto       rgn      = currentRangedWeapon();
++  const bool crossbow = rgn!=nullptr && rgn->isCrossbow();
++  const auto from     = mapWeaponBone();
++  const auto vel      = rangedLaunch(from,focOverride,crossbow);
++  auto&      b        = owner.shootBullet(*itm,*this,currentTarget,from,vel);
+ 
+   invent.delItem(size_t(munition),1,*this);
+   b.setOrigin(this);
+   b.setDamage(DamageCalculator::rangeDamageValue(*this));
++  b.setImpact(crossbow ? RangedAim::CrossbowImpact : RangedAim::BowImpact);
+ 
+-  auto rgn = currentRangedWeapon();
+   if(Gothic::inst().version().game==1) {
+     b.setHitChance(float(hnpc->attribute[ATR_DEXTERITY])/100.f);
+     if(rgn!=nullptr && rgn->isCrossbow())
+@@ -4158,10 +4335,77 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -22621,7 +23461,7 @@ index e015398..edbd541 100644
  void Npc::setPerceptionTime(uint64_t time) {
    perceptionTime = time;
    }
-@@ -4238,6 +4473,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4482,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -22632,7 +23472,7 @@ index e015398..edbd541 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4292,6 +4531,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
+@@ -4292,6 +4540,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
  void Npc::quitInteraction() {
    if(currentInteract==nullptr)
      return;
@@ -22642,7 +23482,7 @@ index e015398..edbd541 100644
    if(invTorch)
      processDefInvTorch();
    setDirectionY(0);
-@@ -4356,6 +4598,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4607,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -22680,7 +23520,7 @@ index e015398..edbd541 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4818,7 +5091,783 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4818,7 +5100,885 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
      durtyTranform = 0;
      }
  
@@ -23043,6 +23883,108 @@ index e015398..edbd541 100644
 +  const float lat  = std::clamp(Vec3::dotProduct(by-other.position(), side)*0.5f, -r, r);
 +  const float y    = std::clamp(by.y, footY+0.4f*h, top-0.04f*h);
 +  return Vec3(me.x, y, me.z) + dir*r + side*lat;
++  }
++
++Vec3 Npc::aimChest() const {
++  // Куда целиться в этого NPC (прицел с автонаведением, стрелы NPC): середина груди - часть груди куклы в позе
++  // кадра; без схемы тела - середина габаритов
++  if(auto sk = visual.visualSkeleton()) {
++    auto& pose = visual.pose();
++    Vec3  at;
++    if(Ragdoll::chestPoint(*sk, pose.transform(), pose.boneCount(), at))
++      return at;
++    }
++  return collosionCenter();
++  }
++
++bool Npc::rangedHitTest(const Vec3& a, const Vec3& b, float coarse, DynamicWorld::BulletHit& hit) const {
++  // Стрела пролетела a-b: задела ли тело - по капсулам частей куклы в позе кадра (Ragdoll::rayTest); у скелета
++  // без схемы - по габаритам, как в игре (coarse < 0 - мимо них)
++  if(auto sk = visual.visualSkeleton(); sk!=nullptr && Ragdoll::hasLayout(*sk)) {
++    auto&           pose = visual.pose();
++    Ragdoll::RayHit rh;
++    if(!Ragdoll::rayTest(*sk, pose.transform(), pose.boneCount(), a, b, rh))
++      return false;
++    hit.t    = rh.t;
++    hit.at   = rh.at;
++    hit.bone = rh.bone;
++    hit.zone = rh.zone;
++    return true;
++    }
++  if(coarse<0.f)
++    return false;
++  hit.t    = coarse;
++  hit.at   = a+(b-a)*coarse;
++  hit.bone = size_t(-1);
++  hit.zone = Ragdoll::Z_Body;
++  return true;
++  }
++
++void Npc::stickArrow(MeshObjects::Mesh&& view, const Vec3& at, const Vec3& dir, size_t bone) {
++  // Стрела остаётся в теле, куда вошла (RangedAim::StuckTime): наконечник чуть глубже точки входа, древко - по
++  // полёту. Модель летящей стрелы смотрит наконечником в -X (DynamicWorld::BulletBody::matrix)
++  if(bone==size_t(-1) || view.isEmpty() || dir.length()<1e-4f)
++    return;
++  Vec3  tip = {};
++  float len = 60.f;
++  if(auto proto = view.protoMesh()) {
++    auto bb = proto->bbox();
++    tip = Vec3(bb[0].x, (bb[0].y+bb[1].y)*0.5f, (bb[0].z+bb[1].z)*0.5f);
++    len = std::max(bb[1].x-bb[0].x, 1.f);
++    }
++  const Vec3  d     = Vec3::normalize(dir);
++  const float depth = std::clamp(len*0.15f, 4.f, 12.f);
++  const Vec3  tipW  = at + d*depth;
++  const float a2    = std::asin(std::clamp(d.y,-1.f,1.f))*float(180/M_PI);
++  const float ang   = std::atan2(d.z,d.x)*float(180/M_PI)+180.f;
++  Matrix4x4 m = Matrix4x4::mkIdentity();
++  m.translate(tipW);
++  m.rotateOY(-ang);
++  m.rotateOZ(-a2);
++  m.translate(-tip.x,-tip.y,-tip.z);
++  visual.addStuck(std::move(view), bone, m, owner.tickCount()+RangedAim::StuckTime);
++  }
++
++float Npc::rangedSpread() {
++  // Разброс по умению стрелка: в Gothic II - умение «Лук»/«Арбалет», в Gothic I шанс попадания был ловкостью
++  auto       rgn = currentRangedWeapon();
++  const bool cb  = rgn!=nullptr && rgn->isCrossbow();
++  int skill = 0;
++  if(Gothic::inst().version().game==1)
++    skill = hnpc->attribute[ATR_DEXTERITY]; else
++    skill = hnpc->hitchance[cb ? TALENT_CROSSBOW : TALENT_BOW];
++  return RangedAim::spreadDeg(skill);
++  }
++
++void Npc::setRangedAim(const Vec3& at) {
++  rangedAimAt   = at;
++  rangedAimTick = owner.tickCount();
++  }
++
++Vec3 Npc::rangedLaunch(const Vec3& from, Interactive* focOverride, bool crossbow) {
++  // Куда летит стрела: герой - в точку прицела (PlayerControl::tickRangedAim, задаётся каждый кадр с луком в руках),
++  // NPC - в грудь своей цели, иначе - в предмет мира или прямо перед собой; разброс - случайная точка в круге
++  // прицела. Скорость вылета - чтобы по параболе прийти в эту точку
++  const uint64_t now = owner.tickCount();
++  Vec3 at;
++  if(isPlayer() && rangedAimTick!=uint64_t(-1) && now>=rangedAimTick && now-rangedAimTick<=250) {
++    at = rangedAimAt;
++    }
++  else if(currentTarget!=nullptr) {
++    at = currentTarget->aimChest();
++    }
++  else if(focOverride!=nullptr) {
++    at = focOverride->position();
++    }
++  else {
++    const float a = rotationRad();
++    at = from + Vec3(std::cos(a), 0, std::sin(a))*3000.f;
++    }
++  auto&       sc = owner.script();
++  const float u1 = float(sc.rand(10000))/10000.f;
++  const float u2 = float(sc.rand(10000))/10000.f;
++  at = RangedAim::scatter(from, at, rangedSpread(), u1, u2);
++  return RangedAim::launch(from, at, crossbow ? RangedAim::CrossbowSpeed : RangedAim::BowSpeed, DynamicWorld::gravity);
 +  }
 +
 +float Npc::limpNow(uint64_t now) const {
@@ -23465,7 +24407,7 @@ index e015398..edbd541 100644
 +  ragFollowVer = ragdoll!=nullptr ? ragdoll->version() : 0;
 +  }
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..66c2531 100644
+index 7309936..2263546 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
 @@ -10,6 +10,7 @@
@@ -23505,7 +24447,23 @@ index 7309936..66c2531 100644
  
      std::string_view displayName() const;
      auto       displayPosition() const -> Tempest::Vec3;
-@@ -289,7 +305,72 @@ class Npc final {
+@@ -278,6 +294,15 @@ class Npc final {
+     bool      aimBow();
+     bool      shootBow(Interactive* focOverride = nullptr);
+     bool      hasAmmunition() const;
++    // Gothic II Mobile: лук и арбалет - настоящий прицел (game/rangedaim.h). Куда целиться в этого NPC (грудь);
++    // попала ли в тело стрела, пролетевшая отрезок a-b (coarse - доля до габаритов, если схемы тела нет);
++    // стрела в теле (модель - к кости, RangedAim::StuckTime)
++    Tempest::Vec3 aimChest() const;
++    bool      rangedHitTest(const Tempest::Vec3& a, const Tempest::Vec3& b, float coarse, DynamicWorld::BulletHit& hit) const;
++    void      stickArrow(MeshObjects::Mesh&& view, const Tempest::Vec3& at, const Tempest::Vec3& dir, size_t bone);
++    // Разброс стрелы по умению (градусы, RangedAim::spreadDeg); герою - точка прицела на этот кадр (PlayerControl)
++    float     rangedSpread();
++    void      setRangedAim(const Tempest::Vec3& at);
+ 
+     bool      isEnemy(const Npc& other) const;
+     bool      isDead() const;
+@@ -289,7 +314,72 @@ class Npc final {
  
      bool      isAttackAnim() const;
      bool      isPrehit() const;
@@ -23578,7 +24536,7 @@ index 7309936..66c2531 100644
  
      void      setPerceptionTime   (uint64_t time);
      void      setPerceptionEnable (PercType t, size_t fn);
-@@ -456,6 +537,7 @@ class Npc final {
+@@ -456,6 +546,7 @@ class Npc final {
        Npc*             npc  = nullptr;
        const WayPoint*  wp   = nullptr;
        Tempest::Vec3    pos  = {};
@@ -23586,7 +24544,7 @@ index 7309936..66c2531 100644
  
        void             save(Serialize& fout) const;
        void             load(Serialize&  fin);
-@@ -514,6 +596,33 @@ class Npc final {
+@@ -514,6 +605,34 @@ class Npc final {
      Npc*      updateNearestBody();
      bool      checkHealth(bool onChange, bool forceKill);
      void      onNoHealth(bool death, HitSound sndMask);
@@ -23615,12 +24573,13 @@ index 7309936..66c2531 100644
 +    float     limpNow(uint64_t now) const;
 +    float     painNow(uint64_t now) const;
 +    Tempest::Vec3 meleeHitPoint(const Npc& other) const;
++    Tempest::Vec3 rangedLaunch(const Tempest::Vec3& from, Interactive* focOverride, bool crossbow);
 +    void      saveRagdoll(Serialize& fout, size_t id, std::string_view directory) const;
 +    void      loadRagdoll(Serialize& fin,  size_t id, std::string_view directory);
      bool      hasAutoroll() const;
      bool      prepareTurn();
      void      stopWalkAnimation();
-@@ -555,10 +664,57 @@ class Npc final {
+@@ -555,10 +674,60 @@ class Npc final {
  
      // visual props (cache)
      uint8_t                        durtyTranform=0;
@@ -23674,11 +24633,14 @@ index 7309936..66c2531 100644
 +    uint64_t                       painAt    = 0;
 +    float                          painSide  = 0;
 +    bool                           injuryShown = false;
++    // лук и арбалет: точка прицела героя (PlayerControl::tickRangedAim) и кадр, когда задана
++    Tempest::Vec3                  rangedAimAt   = {};
++    uint64_t                       rangedAimTick = uint64_t(-1);
 +
      WalkBit                        wlkMode                 =WalkBit::WM_Run;
      int32_t                        trGuild                 =GIL_NONE;
      int32_t                        talentsSk[TALENT_MAX_G2]={};
-@@ -608,6 +764,8 @@ class Npc final {
+@@ -608,6 +777,8 @@ class Npc final {
      AiQueue                        aiQueue;
      AiQueue                        aiQueueOverlay;
      std::vector<Routine>           routines;
@@ -23687,7 +24649,7 @@ index 7309936..66c2531 100644
  
      Interactive*                   currentInteract=nullptr;
      Npc*                           currentOther   =nullptr;
-@@ -629,6 +787,7 @@ class Npc final {
+@@ -629,6 +800,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;
@@ -23709,7 +24671,7 @@ index 915e49b..8a1732c 100644
    private:
      std::vector<const WayPoint*> dat;
 diff --git a/common/world/world.cpp b/common/world/world.cpp
-index 63a9d3f..3349620 100644
+index 63a9d3f..7409e28 100644
 --- a/common/world/world.cpp
 +++ b/common/world/world.cpp
 @@ -143,6 +143,12 @@ void World::insertPlayer(std::unique_ptr<Npc> &&npc, std::string_view waypoint)
@@ -23725,8 +24687,52 @@ index 63a9d3f..3349620 100644
  void World::setPlayer(Npc* npc) {
    if(npc==nullptr)
      return;
+@@ -670,37 +676,12 @@ Bullet& World::shootSpell(const Item &itm, const Npc &npc, const Npc *target) {
+   return b;
+   }
+ 
+-Bullet& World::shootBullet(const Item &itm, const Npc &npc, const Npc *target, const Interactive* inter) {
+-  Tempest::Vec3 dir = {1.f,0.f,0.f};
+-  auto          pos = npc.mapWeaponBone();
+-
+-  if(target!=nullptr) {
+-    dir = target->collosionCenter() - pos;
+-
+-    float lxz   = std::sqrt(dir.x*dir.x+0*0+dir.z*dir.z);
+-    float speed = DynamicWorld::bulletSpeed;
+-    float t     = lxz/speed;
+-
+-    dir/=t;
+-    dir.y += 0.5f*DynamicWorld::gravity*t;
+-    } else
+-  if(inter!=nullptr) {
+-    auto  tgPos = inter->position();
+-    dir = tgPos-pos;
+-
+-    float lxz   = std::sqrt(dir.x*dir.x+0*0+dir.z*dir.z);
+-    float speed = DynamicWorld::bulletSpeed;
+-    float t     = lxz/speed;
+-
+-    dir/=t;
+-    dir.y += 0.5f*DynamicWorld::gravity*t;
+-    } else {
+-    float a = npc.rotationRad();
+-    dir.x = std::cos(a);
+-    dir.z = std::sin(a);
+-    }
+-
+-  auto& b = wobj.shootBullet(itm, pos, dir, 0, DynamicWorld::bulletSpeed);
++Bullet& World::shootBullet(const Item &itm, const Npc &npc, const Npc *target, const Tempest::Vec3& pos, const Tempest::Vec3& velocity) {
++  // Gothic II Mobile: прежде стрела летела в цель (или в предмет мира, или прямо) со скоростью 30 м/с, а попадание решал
++  // бросок кубика; теперь - куда целился стрелок, с разбросом по умению (game/rangedaim.h)
++  (void)npc;
++  const float speed = velocity.length();
++  auto& b = wobj.shootBullet(itm, pos, speed>0 ? velocity : Tempest::Vec3(1,0,0), 0, speed>0 ? speed : DynamicWorld::bulletSpeed);
+   b.setTarget(target);
+   return b;
+   }
 diff --git a/common/world/world.h b/common/world/world.h
-index ae2719e..5fbcc19 100644
+index ae2719e..9b95167 100644
 --- a/common/world/world.h
 +++ b/common/world/world.h
 @@ -37,6 +37,8 @@ class World final {
@@ -23738,6 +24744,16 @@ index ae2719e..5fbcc19 100644
      void                 setPlayer(Npc* npc);
      void                 postInit();
      std::string_view     name() const { return wname; }
+@@ -164,7 +166,8 @@ class World final {
+     void                 removeItem (Item& it);
+     size_t               hasItems(std::string_view tag, size_t itemCls);
+ 
+-    Bullet&              shootBullet(const Item &itmId, const Npc& npc, const Npc* target, const Interactive* inter);
++    // Gothic II Mobile: стрела - откуда и с какой скоростью (см/мс) вылетает, считает стрелок (Npc::rangedLaunch)
++    Bullet&              shootBullet(const Item &itmId, const Npc& npc, const Npc* target, const Tempest::Vec3& pos, const Tempest::Vec3& velocity);
+     Bullet&              shootSpell(const Item &itm, const Npc &npc, const Npc *target);
+ 
+     void                 sendPassivePerc  (Npc& self, Npc& other, int32_t perc);
 diff --git a/common/world/worldobjects.cpp b/common/world/worldobjects.cpp
 index 4877c70..27c52de 100644
 --- a/common/world/worldobjects.cpp
