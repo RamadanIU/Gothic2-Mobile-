@@ -299,9 +299,13 @@ public final class Memory {
         for (String line : t.split("\n")) {
             String l = line.replaceAll("\\s+", " ").trim();
             if (l.isEmpty()) continue;
-            if (sb.length() + l.length() + 1 > SUMMARY_CHARS) break;
-            if (sb.length() > 0) sb.append('\n');
-            sb.append(l);
+            if (sb.length() == 0) {
+                // одна строка длиннее предела (модель не делит на строки) - обрезается сама
+                sb.append(l, 0, Math.min(l.length(), SUMMARY_CHARS));
+                continue;
+            }
+            if (sb.length() + 1 + l.length() > SUMMARY_CHARS) break;
+            sb.append('\n').append(l);
         }
         return sb.toString();
     }
