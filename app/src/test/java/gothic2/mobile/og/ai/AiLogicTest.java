@@ -432,14 +432,14 @@ public class AiLogicTest {
         File dir = tmp.newFolder("talks");
         Memory m = new Memory(dir);
         m.load(3, 0);
-        for (int i = 0; i < Memory.TALK_LINES + 4; i++) m.addTalk("VLK_420_CORAGON", "Геральт: реплика " + i);
+        for (int i = 0; i < Memory.TALK_HARD + 4; i++) m.addTalk("VLK_420_CORAGON", "Геральт: реплика " + i);
         m.addTalk("VLK_425_REGIS", "Регис: Слыхал новости?");
         m.save(3, 5);
         Memory back = new Memory(dir);
         back.load(3, 5);
         List<String> t = back.talk("VLK_420_CORAGON");
-        assertEquals(Memory.TALK_LINES, t.size());
-        assertEquals("Геральт: реплика " + (Memory.TALK_LINES + 3), t.get(t.size() - 1));
+        assertEquals(Memory.TALK_HARD, t.size());
+        assertEquals("Геральт: реплика " + (Memory.TALK_HARD + 3), t.get(t.size() - 1));
         assertEquals("Регис: Слыхал новости?", back.talk("VLK_425_REGIS").get(0));
         for (int i = 0; i < Memory.TALKS_NPCS + 5; i++) back.addTalk("N" + i, "x");
         assertEquals(Memory.TALKS_NPCS, back.talks.size());
@@ -447,14 +447,72 @@ public class AiLogicTest {
     }
 
     @Test
-    public void memorySummaryDropsOldEntries() {
-        Memory m = new Memory(new File(tmp.getRoot(), "x"));
-        for (int i = 0; i < Memory.JOURNAL_MAX + 5; i++) m.add("запись " + i);
-        assertTrue(m.needsSummary());
-        List<String> old = m.oldEntries();
-        m.applySummary("Кратко.", old.size());
-        assertEquals(Memory.JOURNAL_KEEP, m.journal.size());
-        assertTrue(m.context(5).startsWith("Что ты помнишь: Кратко."));
+    public void memoryDigestRewritesWholeMemory() throws IOException {
+        File dir = tmp.newFolder("digest");
+        Memory m = new Memory(dir);
+        m.load(2, 0);
+        m.note("Герой должен мне 100 золотых");
+        m.hear(Memory.GERALT, "Мика: «Эй!»");
+        for (int i = 0; i < Memory.STEPS; i++) m.add("[д1] запись " + i);
+        assertNull(m.digestDue());
+        assertTrue(m.context(), m.context().contains("[д1] запись 0\n"));
+        m.add("[д2] запись " + Memory.STEPS);
+        Memory.Digest d = m.digestDue();
+        assertTrue(d.geralt());
+        assertEquals(Memory.STEPS + 1 - Memory.JOURNAL_KEEP, d.entries.size());
+        String text = d.text();
+        assertTrue(text, text.contains("Герой должен мне 100 золотых") && text.contains("Мика: «Эй!»")
+            && text.contains("[д1] запись 0") && !text.contains("запись " + Memory.STEPS));
+        // Пока модель пишет, журнал пополняется - новое остаётся
+        m.add("[д2] новая");
+        assertTrue(m.applyDigest(d, "<think>хм</think>ГЛАВНОЕ:\n\n- [д1] Герой занял 100 золотых\nМЕЛОЧИ: [д1] пиво"));
+        assertEquals(Memory.JOURNAL_KEEP + 1, m.journal.size());
+        assertEquals("[д2] новая", m.journal.get(m.journal.size() - 1));
+        assertTrue(m.notes.isEmpty());
+        assertTrue(m.heardBy(Memory.GERALT).isEmpty());
+        String ctx = m.context();
+        assertTrue(ctx, ctx.startsWith("Что ты помнишь (сжатая память: главное и мелочи):\nГЛАВНОЕ:\n- [д1] Герой занял 100 золотых\nМЕЛОЧИ: [д1] пиво\n"));
+        assertFalse(ctx, ctx.contains("think"));
+        m.save(2, 7);
+        Memory back = new Memory(dir);
+        back.load(2, 7);
+        assertTrue(back.summary.startsWith("ГЛАВНОЕ:"));
+
+        // Загрузка во время сжатия - сжатое не применяется; пустой ответ - тоже
+        for (int i = 0; i < Memory.STEPS + 5; i++) back.add("x" + i);
+        Memory.Digest d2 = back.digestDue();
+        assertFalse(back.applyDigest(d2, "   "));
+        assertFalse(back.applyDigest(d2, "Извините, не могу."));
+        back.load(2, 7);
+        assertFalse(back.applyDigest(d2, "ГЛАВНОЕ: ничего"));
+        // Без сжатия журнал не растёт без конца
+        for (int i = 0; i < Memory.JOURNAL_HARD + 9; i++) back.add("y" + i);
+        assertEquals(Memory.JOURNAL_HARD, back.journal.size());
+    }
+
+    @Test
+    public void memoryDigestOfResident() throws IOException {
+        File dir = tmp.newFolder("digestNpc");
+        Memory m = new Memory(dir);
+        m.load(3, 0);
+        m.npcNote("VLK_420_CORAGON", "герой разбил кружку");
+        m.hear("VLK_420_CORAGON", "Драка у стойки");
+        for (int i = 0; i <= Memory.TALK_LINES; i++) m.addTalk("VLK_420_CORAGON", "Корагон: реплика " + i);
+        Memory.Digest d = m.digestDue();
+        assertEquals("VLK_420_CORAGON", d.id);
+        assertFalse(d.geralt());
+        assertTrue(m.applyDigest(d, "ГЛАВНОЕ:\n- Герой разбил кружку\nМЕЛОЧИ: пиво"));
+        assertNull(m.digestDue());
+        assertEquals(Memory.TALK_KEEP, m.talk("VLK_420_CORAGON").size());
+        m.save(3, 4);
+        Memory back = new Memory(dir);
+        back.load(3, 4);
+        String ctx = back.npcContext("VLK_420_CORAGON");
+        assertTrue(ctx, ctx.startsWith("Что ты помнишь (сжатая память: главное и мелочи):\nГЛАВНОЕ:\n- Герой разбил кружку"));
+        assertFalse(ctx, ctx.contains("Ты запомнил:") || ctx.contains("Драка у стойки"));
+        assertTrue(ctx, ctx.contains("Корагон: реплика " + Memory.TALK_LINES));
+        String long1 = Memory.cleanSummary(new String(new char[Memory.SUMMARY_CHARS]).replace('\0', 'а') + "\nб");
+        assertEquals(Memory.SUMMARY_CHARS, long1.length());
     }
 
     @Test

@@ -12,21 +12,38 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
- * Память Геральта: краткая сводка, важные заметки (remember) и журнал последних событий. Своя у каждого
+ * Память Геральта: сжатая память, важные заметки (remember) и журнал последних событий (до STEPS записей). Своя у каждого
  * сохранения игры: движок перед записью ставит метку (aivar Геральта), память пишется в файл
  * <прохождение>_<метка>.json; при загрузке читается файл той же метки. Загрузил старое сохранение —
  * Геральт не помнит того, что было после него.
+ * <p>
+ * Сжатие (Gothic II Mobile, 2026-10-29): набралось больше STEPS записей — модели уходит вся память (прежняя сжатая,
+ * заметки, слышанное, записи), и она переписывает её заново: поворотные события — по короткой фразе, мелочи — одним-двумя
+ * словами (Persona.digest). Сжатое заменяет всё, что ушло модели; последние JOURNAL_KEEP записей остаются как есть, чтобы
+ * не оборвать идущий разговор. То же у каждого жителя: его беседы, заметки и слышанное — в его сжатую память.
  */
 public final class Memory {
-    public static final int JOURNAL_MAX = 80;
-    public static final int JOURNAL_KEEP = 30;
-    /** Беседы с жителями: последние реплики с каждым (житель помнит, о чём говорили), не больше TALKS_NPCS жителей. */
-    public static final int TALK_LINES = 20;
+    /** Шагов памяти: столько последних записей журнала видит модель; больше — пора сжимать. */
+    public static final int STEPS = 100;
+    public static final int JOURNAL_MAX = STEPS;
+    /** После сжатия остаются как есть: идущий разговор не обрывается. */
+    public static final int JOURNAL_KEEP = 10;
+    /** Сжать не удаётся (нет сети, ключа) — журнал не растёт без конца. */
+    public static final int JOURNAL_HARD = 3 * STEPS;
+    /** Беседы с жителями: до TALK_LINES реплик с каждым, больше — сжатие; не больше TALKS_NPCS жителей. */
+    public static final int TALK_LINES = STEPS;
+    public static final int TALK_KEEP = 10;
+    public static final int TALK_HARD = 3 * STEPS;
     public static final int TALKS_NPCS = 40;
+    /** Сжатая память жителей живёт дольше бесед: не больше SUMMARY_NPCS жителей. */
+    public static final int SUMMARY_NPCS = 200;
     /** Что житель (или Геральт) видел и слышал рядом: последние HEARD_LINES записей, не больше TALKS_NPCS жителей. */
-    public static final int HEARD_LINES = 12;
+    public static final int HEARD_LINES = 30;
+    /** Сжатая память длиннее — обрезается по строкам (модель не послушалась). */
+    public static final int SUMMARY_CHARS = 6000;
     /** Ключ Геральта в беседах и «слышал рядом» (id экземпляра в скриптах). */
     public static final String GERALT = "VLK_2000_THORUS";
     private static final int FILES_MAX = 60;
@@ -45,7 +62,11 @@ public final class Memory {
      * избил, кто очнулся. Прежде NPC не знали, о чём говорили и что случилось у них под носом.
      */
     public final Map<String, List<String>> heard = new LinkedHashMap<>();
-    public static final int NPC_NOTES = 10;
+    public static final int NPC_NOTES = 20;
+    /** id жителя → его сжатая память (поворотные события и мелочи). */
+    public final Map<String, String> npcSummary = new LinkedHashMap<>();
+    /** Растёт при каждой загрузке: сжатие, начатое до загрузки, не трогает новую память. */
+    private int gen;
 
     public Memory(File dir) {
         this.dir = dir;
@@ -58,12 +79,14 @@ public final class Memory {
     /** Загрузка для прохождения и метки сохранения; метки нет или файла нет — пустая память. */
     public synchronized void load(long story, long token) {
         this.story = story;
+        gen++;
         summary = "";
         notes.clear();
         journal.clear();
         talks.clear();
         npcNotes.clear();
         heard.clear();
+        npcSummary.clear();
         if (token == 0) return;
         File f = file(story, token);
         if (!f.isFile()) return;
@@ -87,6 +110,9 @@ public final class Memory {
                 for (Object o : Json.arr(e.getValue())) lines.add(String.valueOf(o));
                 heard.put(e.getKey(), lines);
             }
+            for (Map.Entry<String, Object> e : Json.obj(m.get("npcSummary")).entrySet()) {
+                npcSummary.put(e.getKey(), String.valueOf(e.getValue()));
+            }
         } catch (IOException | IllegalArgumentException e) {
             // повреждённый файл - пустая память, игра идёт
         }
@@ -105,8 +131,9 @@ public final class Memory {
         for (Map.Entry<String, List<String>> e : npcNotes.entrySet()) nn.put(e.getKey(), new ArrayList<Object>(e.getValue()));
         Map<String, Object> hh = new LinkedHashMap<>();
         for (Map.Entry<String, List<String>> e : heard.entrySet()) hh.put(e.getKey(), new ArrayList<Object>(e.getValue()));
+        Map<String, Object> ns = new LinkedHashMap<>(npcSummary);
         String text = Json.write(Json.of("story", story, "token", token, "summary", summary, "notes", n, "journal", j,
-            "talks", t, "npcNotes", nn, "heard", hh));
+            "talks", t, "npcNotes", nn, "heard", hh, "npcSummary", ns));
         File f = file(story, token);
         File tmp = new File(dir, f.getName() + ".tmp");
         try (OutputStream os = new FileOutputStream(tmp)) {
@@ -121,6 +148,7 @@ public final class Memory {
 
     public synchronized void add(String entry) {
         journal.add(entry);
+        while (journal.size() > JOURNAL_HARD) journal.remove(0);
     }
 
     public synchronized void note(String note) {
@@ -142,7 +170,7 @@ public final class Memory {
         List<String> l = talks.remove(id);
         if (l == null) l = new ArrayList<>();
         l.add(line);
-        while (l.size() > TALK_LINES) l.remove(0);
+        while (l.size() > TALK_HARD) l.remove(0);
         talks.put(id, l);
         while (talks.size() > TALKS_NPCS) talks.remove(talks.keySet().iterator().next());
     }
@@ -178,9 +206,10 @@ public final class Memory {
         return h == null ? new ArrayList<>() : new ArrayList<>(h);
     }
 
-    /** Память жителя для его хода: что запомнил, что видел и слышал рядом и прежние беседы (с героем, Геральтом, другими). */
+    /** Память жителя для его хода: сжатая память, что запомнил, что видел и слышал рядом и прежние беседы (с героем, Геральтом, другими). */
     public synchronized String npcContext(String id) {
         StringBuilder sb = new StringBuilder();
+        appendSummary(sb, npcSummary.get(id));
         List<String> n = npcNotes.get(id);
         if (n != null && !n.isEmpty()) {
             sb.append("Ты запомнил:");
@@ -191,7 +220,7 @@ public final class Memory {
         List<String> t = talks.get(id);
         if (t != null && !t.isEmpty()) {
             sb.append("Недавние разговоры:");
-            for (String s : t) sb.append('\n').append(s);
+            for (String s : t.subList(Math.max(0, t.size() - TALK_LINES), t.size())) sb.append('\n').append(s);
         }
         return sb.toString().trim();
     }
@@ -204,26 +233,96 @@ public final class Memory {
         sb.append('\n');
     }
 
-    /** Нужно ли сжать журнал: старые записи — в сводку. */
-    public synchronized boolean needsSummary() {
-        return journal.size() > JOURNAL_MAX;
+    /**
+     * Что пора сжать: Геральт (журнал больше STEPS) или житель (бесед больше TALK_LINES); null — нечего. Вся память
+     * сжимаемого — снимком: модель переписывает её целиком, applyDigest заменяет ушедшее сжатым.
+     */
+    public synchronized Digest digestDue() {
+        if (journal.size() > JOURNAL_MAX) {
+            return new Digest(gen, GERALT, summary, notes, heardBy(GERALT),
+                journal.subList(0, journal.size() - JOURNAL_KEEP));
+        }
+        for (Map.Entry<String, List<String>> e : talks.entrySet()) {
+            List<String> t = e.getValue();
+            if (t.size() <= TALK_LINES) continue;
+            String id = e.getKey();
+            List<String> n = npcNotes.get(id);
+            return new Digest(gen, id, npcSummary.getOrDefault(id, ""), n == null ? new ArrayList<>() : n, heardBy(id),
+                t.subList(0, t.size() - TALK_KEEP));
+        }
+        return null;
     }
 
-    /** Старые записи для сжатия (все, кроме последних JOURNAL_KEEP). */
-    public synchronized List<String> oldEntries() {
-        int n = Math.max(0, journal.size() - JOURNAL_KEEP);
-        return new ArrayList<>(journal.subList(0, n));
+    /** Сжатая память вместо всего, что ушло модели (записи с начала журнала, заметки, слышанное); false — не применено. */
+    public synchronized boolean applyDigest(Digest d, String text) {
+        String s = cleanSummary(text);
+        // Нет раздела «ГЛАВНОЕ» - модель ответила не памятью (отказ, болтовня): прежняя память дороже
+        if (d.gen != gen || !s.toUpperCase(java.util.Locale.ROOT).contains("ГЛАВНОЕ")) return false;
+        if (d.geralt()) {
+            summary = s;
+            dropHead(journal, d.entries);
+            notes.removeAll(d.notes);
+        } else {
+            npcSummary.remove(d.id);
+            npcSummary.put(d.id, s);
+            while (npcSummary.size() > SUMMARY_NPCS) npcSummary.remove(npcSummary.keySet().iterator().next());
+            List<String> t = talks.get(d.id);
+            if (t != null) dropHead(t, d.entries);
+            List<String> n = npcNotes.get(d.id);
+            if (n != null) {
+                n.removeAll(d.notes);
+                if (n.isEmpty()) npcNotes.remove(d.id);
+            }
+        }
+        List<String> h = heard.get(d.id);
+        if (h != null) {
+            for (String line : d.heard) h.remove(line);
+            if (h.isEmpty()) heard.remove(d.id);
+        }
+        return true;
     }
 
-    public synchronized void applySummary(String newSummary, int dropped) {
-        summary = newSummary.trim();
-        for (int i = 0; i < dropped && !journal.isEmpty(); i++) journal.remove(0);
+    /** Снимает с начала списка сжатые записи; вытесненные за время сжатия (предел списка) пропускаются. */
+    private static void dropHead(List<String> list, List<String> done) {
+        for (int i = 0; i < done.size() && !list.isEmpty(); i++) {
+            if (list.get(0).equals(done.get(i))) list.remove(0);
+        }
     }
 
-    /** Память для модели: сводка, заметки, последние записи журнала. */
+    private static final Pattern THINK = Pattern.compile("(?is)<think>.*?(</think>|$)");
+
+    /** Ответ модели — в сжатую память: без рассуждений и разметки, пустые строки прочь, не длиннее SUMMARY_CHARS. */
+    static String cleanSummary(String text) {
+        if (text == null) return "";
+        String t = THINK.matcher(text).replaceAll("").replace("```", "").replace("**", "").replace("\r", "");
+        StringBuilder sb = new StringBuilder();
+        for (String line : t.split("\n")) {
+            String l = line.replaceAll("\\s+", " ").trim();
+            if (l.isEmpty()) continue;
+            if (sb.length() == 0) {
+                // одна строка длиннее предела (модель не делит на строки) - обрезается сама
+                sb.append(l, 0, Math.min(l.length(), SUMMARY_CHARS));
+                continue;
+            }
+            if (sb.length() + 1 + l.length() > SUMMARY_CHARS) break;
+            sb.append('\n').append(l);
+        }
+        return sb.toString();
+    }
+
+    private static void appendSummary(StringBuilder sb, String s) {
+        if (s == null || s.isEmpty()) return;
+        sb.append("Что ты помнишь (сжатая память: главное и мелочи):\n").append(s).append('\n');
+    }
+
+    /** Память для модели: сжатая память, заметки, слышанное, последние записи журнала (до STEPS). */
+    public synchronized String context() {
+        return context(STEPS);
+    }
+
     public synchronized String context(int lastEntries) {
         StringBuilder sb = new StringBuilder();
-        if (!summary.isEmpty()) sb.append("Что ты помнишь: ").append(summary).append('\n');
+        appendSummary(sb, summary);
         if (!notes.isEmpty()) {
             sb.append("Важное (ты запомнил):");
             for (String n : notes) sb.append("\n- ").append(n);
@@ -236,6 +335,48 @@ public final class Memory {
             for (int i = from; i < journal.size(); i++) sb.append('\n').append(journal.get(i));
         }
         return sb.toString().trim();
+    }
+
+    /** Снимок памяти для сжатия: всё, что модель перепишет заново. */
+    public static final class Digest {
+        final int gen;
+        /** Чья память: GERALT или id жителя. */
+        public final String id;
+        public final String summary;
+        public final List<String> notes;
+        public final List<String> heard;
+        /** Записи журнала (у жителя — реплики бесед), которые сожмутся. */
+        public final List<String> entries;
+
+        Digest(int gen, String id, String summary, List<String> notes, List<String> heard, List<String> entries) {
+            this.gen = gen;
+            this.id = id;
+            this.summary = summary;
+            this.notes = new ArrayList<>(notes);
+            this.heard = new ArrayList<>(heard);
+            this.entries = new ArrayList<>(entries);
+        }
+
+        public boolean geralt() {
+            return GERALT.equals(id);
+        }
+
+        /** Вся память одним текстом — для модели. */
+        public String text() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("Прежняя сжатая память:\n").append(summary.isEmpty() ? "нет" : summary);
+            if (!notes.isEmpty()) {
+                sb.append("\n\nЗаметки (запомнил сам, всё это — главное):");
+                for (String n : notes) sb.append("\n- ").append(n);
+            }
+            if (!heard.isEmpty()) {
+                sb.append("\n\nВидел и слышал рядом:");
+                for (String h : heard) sb.append("\n- ").append(h);
+            }
+            sb.append(geralt() ? "\n\nЗаписи событий (по порядку):" : "\n\nРазговоры и дела (по порядку):");
+            for (String e : entries) sb.append('\n').append(e);
+            return sb.toString();
+        }
     }
 
     File file(long story, long token) {
