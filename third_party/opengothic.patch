@@ -443,10 +443,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..39e2b8a
+index 0000000..8dfc195
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,3430 @@
+@@ -0,0 +1,3441 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -963,6 +963,13 @@ index 0000000..39e2b8a
 +  residents.push_back(Resident{&npc,0});
 +  }
 +
++bool AiNpc::returnForTimeSkip(Npc& npc) {
++  if(&npc==geralt || npc.isPlayer() || npc.isDead() || npc.handle().aivar[AivRoutine]==0 || owner.isPartyMember(npc))
++    return false;
++  goHome(npc);
++  return true;
++  }
++
 +void AiNpc::goHome(Npc& npc) {
 +  if(&npc==geralt) {
 +    // Геральт - обратно за стол в кабаке, пешком (распорядок сам ведёт к точке); из отряда - уходит
@@ -1339,6 +1346,10 @@ index 0000000..39e2b8a
 +    residents.clear();
 +    // Происшествия прежнего мира: указатели на его NPC
 +    incidents.clear();
++    // Сохранения, где сон унёс уведённого жителя к мёртвым (TOT, до 2026-10-29): обратно, к своему распорядку
++    const size_t revived = w->reviveInvalidNpc([this](Npc& n){ return &n!=geralt && n.handle().aivar[AivRoutine]!=0; });
++    if(revived>0)
++      Log::i("[g2m] ai: ",revived," resident(s) back from the dead point");
 +    for(uint32_t i=0; i<w->npcCount(); ++i) {
 +      Npc* n = w->npcById(i);
 +      if(n==nullptr || n->isPlayer() || n->isDead())
@@ -3879,10 +3890,10 @@ index 0000000..39e2b8a
 +  }
 diff --git a/common/game/ainpc.h b/common/game/ainpc.h
 new file mode 100644
-index 0000000..49e4381
+index 0000000..7bab911
 --- /dev/null
 +++ b/common/game/ainpc.h
-@@ -0,0 +1,364 @@
+@@ -0,0 +1,368 @@
 +#pragma once
 +
 +#include <Tempest/Painter>
@@ -3929,6 +3940,10 @@ index 0000000..49e4381
 +    // (GameScript::isHired); отпустить - к своим делам
 +    bool isAiFollower(Npc& npc) const;
 +    void releaseFollower(Npc& npc);
++    // Перевод времени (сон, Wld_SetTime - Npc::resetPositionToTA): житель, которого модель увела от распорядка
++    // (точка лагеря G2M_CAMP, чужая точка), не в отряде - возвращается к своему распорядку, как после загрузки.
++    // Иначе точки распорядка у него нет, и движок уносил его к мёртвым (точка TOT). true - распорядок вернули
++    bool returnForTimeSkip(Npc& npc);
 +    // Смена мира (GameScript::squadLeaveWorld/squadEnterWorld): Геральт ушёл с героем из мира или пришёл в мир.
 +    // На герое - метка «Геральт не в Хоринисе»: там он не появляется заново, пока не вернётся с героем
 +    void leaveWorld(Npc& npc, Npc& hero);
@@ -26468,7 +26483,7 @@ index b45a9bd..35a566d 100644
      bool                isCracked() const { return isLockCracked; }
      bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..1e0247c 100644
+index e015398..89c573b 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -3,11 +3,16 @@
@@ -26543,7 +26558,7 @@ index e015398..1e0247c 100644
    // post-alignment
    updateTransform();
    if(isUsingTorch)
-@@ -502,6 +523,16 @@ bool Npc::resetPositionToTA() {
+@@ -502,7 +523,31 @@ bool Npc::resetPositionToTA() {
    if(isPlayer())
      return true;
  
@@ -26557,10 +26572,25 @@ index e015398..1e0247c 100644
 +    return true;
 +    }
 +
++  // Gothic II Mobile: житель, которого живой NPC (модель) увёл от распорядка, - к своему распорядку. Не нашлась
++  // его точка - остаётся, где был: не к мёртвым (TOT), иначе пропадает из мира (уже там - как было)
++  bool aiResident = false;
++  if(!isDead && owner.script().aiNpc().returnForTimeSkip(*this)) {
++    aiResident = qDistTo(owner.deadPoint().position())>100.f*100.f;
++    clearAiQueue();
++    clearState(true);
++    }
++
    auto at = currentTaPoint();
++  if(at==nullptr && aiResident) {
++    invent.autoEquipWeapons(*this);
++    owner.script().invokeRefreshAtInsert(*this);
++    return true;
++    }
    if(at==nullptr)
      return false;
-@@ -593,10 +624,32 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
+ 
+@@ -593,10 +638,32 @@ bool Npc::checkHealth(bool onChange, bool allowUnconscious) {
    }
  
  void Npc::onNoHealth(bool death, HitSound sndMask) {
@@ -26595,7 +26625,7 @@ index e015398..1e0247c 100644
    visual.setToFightMode(WeaponState::NoWeapon);
    updateWeaponSkeleton();
  
-@@ -628,6 +681,9 @@ void Npc::onNoHealth(bool death, HitSound sndMask) {
+@@ -628,6 +695,9 @@ void Npc::onNoHealth(bool death, HitSound sndMask) {
    if(death)
      setAnim(lastHitType=='A' ? Anim::DeadA        : Anim::DeadB); else
      setAnim(lastHitType=='A' ? Anim::UnconsciousA : Anim::UnconsciousB);
@@ -26605,7 +26635,7 @@ index e015398..1e0247c 100644
    }
  
  bool Npc::hasAutoroll() const {
-@@ -882,6 +938,42 @@ void Npc::dropTorch(bool burnout) {
+@@ -882,6 +952,42 @@ void Npc::dropTorch(bool burnout) {
      }
    }
  
@@ -26648,7 +26678,7 @@ index e015398..1e0247c 100644
  Tempest::Vec3 Npc::animMoveSpeed(uint64_t dt) const {
    return visual.pose().animMoveSpeed(owner.tickCount(),dt);
    }
-@@ -889,6 +981,10 @@ Tempest::Vec3 Npc::animMoveSpeed(uint64_t dt) const {
+@@ -889,6 +995,10 @@ Tempest::Vec3 Npc::animMoveSpeed(uint64_t dt) const {
  void Npc::setVisual(const Skeleton* v) {
    if(visual.visualSkeleton()==v)
      return;
@@ -26659,7 +26689,7 @@ index e015398..1e0247c 100644
    visual.setVisual(v);
    visual.clearOverlays();
    invalidateTalentOverlays();
-@@ -1247,7 +1343,8 @@ void Npc::changeAttribute(Attribute a, int32_t val, bool allowUnconscious) {
+@@ -1247,7 +1357,8 @@ void Npc::changeAttribute(Attribute a, int32_t val, bool allowUnconscious) {
        return;
      if(isPlayer() && owner.currentCs()!=nullptr)
        return;
@@ -26669,7 +26699,7 @@ index e015398..1e0247c 100644
        return;
      }
  
-@@ -1555,7 +1652,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
+@@ -1555,7 +1666,7 @@ bool Npc::implGoTo(uint64_t dt, float destDist) {
    }
  
  bool Npc::implAttack(uint64_t dt) {
@@ -26678,7 +26708,7 @@ index e015398..1e0247c 100644
      return false;
  
    if(currentTarget->isDown()){
-@@ -1580,8 +1677,11 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1580,8 +1691,11 @@ bool Npc::implAttack(uint64_t dt) {
      return true;
      }
  
@@ -26692,7 +26722,7 @@ index e015398..1e0247c 100644
  
    if(bs==BS_LIE) {
      setAnim(Npc::Anim::Idle);
-@@ -1882,6 +1982,10 @@ bool Npc::implAttack(uint64_t dt) {
+@@ -1882,6 +1996,10 @@ bool Npc::implAttack(uint64_t dt) {
  bool Npc::implAiTick(uint64_t dt) {
    // Note AI-action queue takes priority, test case: Vatras pray at night
    if(aiQueue.size()==0) {
@@ -26703,7 +26733,7 @@ index e015398..1e0247c 100644
      tickRoutine();
      if(aiQueue.size()>0)
        nextAiAction(aiQueue,dt);
-@@ -2077,6 +2181,9 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2077,6 +2195,9 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
  
    if(!isSpell || splCat==SpellCategory::SPELL_BAD) {
      perceptionProcess(other,this,0,PERC_ASSESSDAMAGE);
@@ -26713,7 +26743,7 @@ index e015398..1e0247c 100644
      fghAlgo.onTakeHit();
      implFaiWait(0);
      }
-@@ -2085,6 +2192,39 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2085,6 +2206,39 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
    if(!isSpell && !isDown() && hitResult.hasHit)
      owner.addWeaponHitEffect(other,b,*this).play();
  
@@ -26753,7 +26783,7 @@ index e015398..1e0247c 100644
    if(isDown()) {
      onNoHealth(dontKill,HS_NoSound);
      return;
-@@ -2107,9 +2247,13 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2107,9 +2261,13 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
      }
  
    // throw enemy
@@ -26768,7 +26798,7 @@ index e015398..1e0247c 100644
  
    if(hitResult.value>0) {
      currentOther = &other;
-@@ -2130,6 +2274,22 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2130,6 +2288,22 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
          }
        }
      }
@@ -26791,7 +26821,7 @@ index e015398..1e0247c 100644
    }
  
  void Npc::takeFallDamage(const Vec3& fallSpeed) {
-@@ -2247,6 +2407,9 @@ void Npc::tickTimedEvt(Animation::EvCount& ev) {
+@@ -2247,6 +2421,9 @@ void Npc::tickTimedEvt(Animation::EvCount& ev) {
          if(auto it = invent.addItem(i.item,1,world())) {
            invent.putToSlot(*this,it->clsId(),i.slot[0]);
            }
@@ -26801,7 +26831,7 @@ index e015398..1e0247c 100644
          break;
          }
        case zenkit::MdsEventType::SET_FIGHT_MODE:
-@@ -2344,6 +2507,31 @@ void Npc::tick(uint64_t dt) {
+@@ -2344,6 +2521,31 @@ void Npc::tick(uint64_t dt) {
  
    tickAnimationTags();
  
@@ -26833,7 +26863,7 @@ index e015398..1e0247c 100644
    if(!visual.pose().hasAnim())
      setAnim(AnimationSolver::Idle);
  
-@@ -2380,7 +2568,8 @@ void Npc::tick(uint64_t dt) {
+@@ -2380,7 +2582,8 @@ void Npc::tick(uint64_t dt) {
      if(!isPlayer() && go2.flag!=GT_Flee && faiWaitTime<owner.tickCount() && currentTarget!=nullptr) {
        implTurnToFai(*currentTarget,dt);
        }
@@ -26843,7 +26873,7 @@ index e015398..1e0247c 100644
      return;
      }
  
-@@ -2398,7 +2587,9 @@ void Npc::tick(uint64_t dt) {
+@@ -2398,7 +2601,9 @@ void Npc::tick(uint64_t dt) {
        }
      }
  
@@ -26854,7 +26884,7 @@ index e015398..1e0247c 100644
    implAiTick(dt);
    }
  
-@@ -2529,6 +2720,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2529,6 +2734,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -26866,7 +26896,7 @@ index e015398..1e0247c 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -2579,7 +2775,13 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2579,7 +2789,13 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          break;
          }
        else if(bs==BS_UNCONSCIOUS || bs==BS_LIE) {
@@ -26881,7 +26911,7 @@ index e015398..1e0247c 100644
            queue.pushFront(std::move(act)); else
            implAniWait(visual.pose().animationTotalTime());
          }
-@@ -2593,14 +2795,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2593,14 +2809,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_EquipArmor:
        invent.equipArmor(act.i0,*this);
        break;
@@ -26904,7 +26934,7 @@ index e015398..1e0247c 100644
        break;
      case AI_UseMob: {
        if(act.i0<0) {
-@@ -2740,6 +2947,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2740,6 +2961,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_OutputSvm:
      case AI_OutputSvmOverlay:{
        if(performOutput(act)) {
@@ -26914,7 +26944,7 @@ index e015398..1e0247c 100644
          if(aiPolicy!=NpcProcessPolicy::AiFar2) {
            uint64_t msgTime = 0;
            if(act.act==AI_Output) {
-@@ -3504,6 +3714,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -3504,6 +3728,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -26923,7 +26953,7 @@ index e015398..1e0247c 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +4005,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +4019,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
@@ -26934,7 +26964,7 @@ index e015398..1e0247c 100644
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -3836,6 +4052,14 @@ bool Npc::finishingMove() {
+@@ -3836,6 +4066,14 @@ bool Npc::finishingMove() {
      return false;
  
    if(doAttack(Anim::AttackFinish,BS_HIT)) {
@@ -26949,7 +26979,7 @@ index e015398..1e0247c 100644
      currentTarget->hnpc->attribute[ATR_HITPOINTS] = 0;
      currentTarget->checkHealth(true,false);
      owner.sendPassivePerc(*this,*this,*currentTarget,PERC_ASSESSMURDER);
-@@ -4091,13 +4315,22 @@ bool Npc::shootBow(Interactive* focOverride) {
+@@ -4091,13 +4329,22 @@ bool Npc::shootBow(Interactive* focOverride) {
    if(itm==nullptr)
      return false;
  
@@ -26974,7 +27004,7 @@ index e015398..1e0247c 100644
    if(Gothic::inst().version().game==1) {
      b.setHitChance(float(hnpc->attribute[ATR_DEXTERITY])/100.f);
      if(rgn!=nullptr && rgn->isCrossbow())
-@@ -4158,10 +4391,77 @@ bool Npc::isPrehit() const {
+@@ -4158,10 +4405,77 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -27052,7 +27082,7 @@ index e015398..1e0247c 100644
  void Npc::setPerceptionTime(uint64_t time) {
    perceptionTime = time;
    }
-@@ -4238,6 +4538,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4552,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -27063,7 +27093,7 @@ index e015398..1e0247c 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4292,6 +4596,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
+@@ -4292,6 +4610,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
  void Npc::quitInteraction() {
    if(currentInteract==nullptr)
      return;
@@ -27073,7 +27103,7 @@ index e015398..1e0247c 100644
    if(invTorch)
      processDefInvTorch();
    setDirectionY(0);
-@@ -4356,6 +4663,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4677,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -27111,7 +27141,7 @@ index e015398..1e0247c 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4818,7 +5156,1305 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4818,7 +5170,1305 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
      durtyTranform = 0;
      }
  
@@ -28734,7 +28764,7 @@ index 915e49b..8a1732c 100644
    private:
      std::vector<const WayPoint*> dat;
 diff --git a/common/world/world.cpp b/common/world/world.cpp
-index 63a9d3f..cf9d968 100644
+index 63a9d3f..521cae2 100644
 --- a/common/world/world.cpp
 +++ b/common/world/world.cpp
 @@ -143,6 +143,12 @@ void World::insertPlayer(std::unique_ptr<Npc> &&npc, std::string_view waypoint)
@@ -28750,7 +28780,18 @@ index 63a9d3f..cf9d968 100644
  void World::setPlayer(Npc* npc) {
    if(npc==nullptr)
      return;
-@@ -596,6 +602,10 @@ bool World::isTargeted(Npc& npc) {
+@@ -297,6 +303,10 @@ void World::resetPositionToTA() {
+   wobj.resetPositionToTA();
+   }
+ 
++size_t World::reviveInvalidNpc(const std::function<bool(Npc&)>& pred) {
++  return wobj.reviveInvalidNpc(pred);
++  }
++
+ std::unique_ptr<Npc> World::takeHero() {
+   return wobj.takeNpc(npcPlayer);
+   }
+@@ -596,6 +606,10 @@ bool World::isTargeted(Npc& npc) {
    return wobj.isTargeted(npc);
    }
  
@@ -28761,7 +28802,7 @@ index 63a9d3f..cf9d968 100644
  Npc *World::addNpc(std::string_view name, std::string_view at) {
    size_t id = script().findSymbolIndex(name);
    if(id==size_t(-1))
-@@ -670,37 +680,12 @@ Bullet& World::shootSpell(const Item &itm, const Npc &npc, const Npc *target) {
+@@ -670,37 +684,12 @@ Bullet& World::shootSpell(const Item &itm, const Npc &npc, const Npc *target) {
    return b;
    }
  
@@ -28806,7 +28847,7 @@ index 63a9d3f..cf9d968 100644
    return b;
    }
 diff --git a/common/world/world.h b/common/world/world.h
-index ae2719e..1176398 100644
+index ae2719e..365c786 100644
 --- a/common/world/world.h
 +++ b/common/world/world.h
 @@ -37,6 +37,8 @@ class World final {
@@ -28818,7 +28859,17 @@ index ae2719e..1176398 100644
      void                 setPlayer(Npc* npc);
      void                 postInit();
      std::string_view     name() const { return wname; }
-@@ -151,6 +153,8 @@ class World final {
+@@ -106,6 +108,9 @@ class World final {
+ 
+     void                 updateAnimation(uint64_t dt);
+     void                 resetPositionToTA();
++    // Gothic II Mobile: вернуть в мир живых NPC, унесённых к мёртвым (TOT) прежним сном, - каждого, для кого
++    // pred - true (AiNpc: жители, уведённые живым NPC от распорядка); сколько вернули
++    size_t               reviveInvalidNpc(const std::function<bool(Npc&)>& pred);
+ 
+     auto                 takeHero() -> std::unique_ptr<Npc>;
+     Npc*                 player() const { return npcPlayer; }
+@@ -151,6 +156,8 @@ class World final {
      bool                 isInDialog() const;
  
      bool                 isTargeted (Npc& npc);
@@ -28827,7 +28878,7 @@ index ae2719e..1176398 100644
      Npc*                 addNpc     (std::string_view name, std::string_view     at);
      Npc*                 addNpc     (size_t npcInstance,    std::string_view     at);
      Npc*                 addNpc     (size_t npcInstance,    const Tempest::Vec3& at);
-@@ -164,7 +168,8 @@ class World final {
+@@ -164,7 +171,8 @@ class World final {
      void                 removeItem (Item& it);
      size_t               hasItems(std::string_view tag, size_t itemCls);
  
@@ -28838,7 +28889,7 @@ index ae2719e..1176398 100644
  
      void                 sendPassivePerc  (Npc& self, Npc& other, int32_t perc);
 diff --git a/common/world/worldobjects.cpp b/common/world/worldobjects.cpp
-index 4877c70..671428d 100644
+index 4877c70..824dfba 100644
 --- a/common/world/worldobjects.cpp
 +++ b/common/world/worldobjects.cpp
 @@ -14,6 +14,9 @@
@@ -28904,8 +28955,33 @@ index 4877c70..671428d 100644
  Npc *WorldObjects::findHero() {
    for(auto& i:npcArr){
      if(i->processPolicy()==NpcProcessPolicy::Player)
+@@ -1014,6 +1050,24 @@ void WorldObjects::resetPositionToTA() {
+     }
+   }
+ 
++size_t WorldObjects::reviveInvalidNpc(const std::function<bool(Npc&)>& pred) {
++  // Gothic II Mobile: Npc::resetPositionToTA ставит его к точке распорядка (или оставляет, где есть); не вышло -
++  // остаётся среди убранных
++  size_t cnt = 0;
++  for(size_t i=0; i<npcInvalid.size();) {
++    auto& n = *npcInvalid[i];
++    if(n.isDead() || !pred(n) || !n.resetPositionToTA()) {
++      ++i;
++      continue;
++      }
++    n.updateTransform();
++    npcArr.push_back(std::move(npcInvalid[i]));
++    npcInvalid.erase(npcInvalid.begin()+int(i));
++    ++cnt;
++    }
++  return cnt;
++  }
++
+ void WorldObjects::setMobState(std::string_view scheme, int32_t st) {
+   for(auto& i:rootVobs)
+     i->setMobState(scheme,st);
 diff --git a/common/world/worldobjects.h b/common/world/worldobjects.h
-index 59470b9..19098a2 100644
+index 59470b9..495e182 100644
 --- a/common/world/worldobjects.h
 +++ b/common/world/worldobjects.h
 @@ -61,6 +61,7 @@ class WorldObjects final {
@@ -28916,7 +28992,16 @@ index 59470b9..19098a2 100644
      Npc*           findHero();
      Npc*           findNpcByInstance(size_t instance, size_t n = 0);
      Item*          findItemByInstance(size_t instance, size_t n = 0);
-@@ -176,6 +177,7 @@ class WorldObjects final {
+@@ -136,6 +137,8 @@ class WorldObjects final {
+     void           sendImmediatePerc(Npc& self, Npc& other, Npc& victim, Item* itm, int32_t perc);
+ 
+     void           resetPositionToTA();
++    // Gothic II Mobile: World::reviveInvalidNpc
++    size_t         reviveInvalidNpc(const std::function<bool(Npc&)>& pred);
+ 
+   private:
+     struct MobRoutine {
+@@ -176,6 +179,7 @@ class WorldObjects final {
      std::vector<std::unique_ptr<Npc>>  npcInvalid; // dead or invalid TA
      std::vector<std::unique_ptr<Npc>>  npcRemoved; // removed, but may have a dangling references in game
      std::vector<Npc*>                  npcNear;
