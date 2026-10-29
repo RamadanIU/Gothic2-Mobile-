@@ -114,6 +114,11 @@ final class GeraltBrain {
     private final ExecutorService heroPool = Executors.newSingleThreadExecutor();
     private volatile Future<?> heroLine;
     private volatile long heroVoiceUntil;
+    /** Сжатие памяти — в своём потоке: модель переписывает всю память долго, ходы Геральта и жителей не ждут. */
+    private final ExecutorService memoryPool = Executors.newSingleThreadExecutor();
+    private volatile boolean digesting;
+    /** Сжатие не вышло (нет сети, ключа) — не раньше этого времени. */
+    private volatile long digestAfter;
     /** Герой говорит лично (выбрал адресата касанием): ответ тоже вполголоса — соседи не слышат. */
     private boolean whisper;
     /** Когда житель последний раз отвечал на происшествие (ключ жителя → время). */
@@ -158,6 +163,7 @@ final class GeraltBrain {
         if (worker != null) worker.interrupt();
         ttsPool.shutdownNow();
         heroPool.shutdownNow();
+        memoryPool.shutdownNow();
     }
 
     /** Событие движка или панели (из любого потока). */
@@ -182,6 +188,7 @@ final class GeraltBrain {
             try {
                 if (ev == null) idle();
                 else handle(ev);
+                if (ready) digest();
             } catch (Throwable e) {
                 // ошибка одного хода не останавливает мозг и не роняет приложение (необработанная ошибка
                 // в любом потоке Android завершает процесс)
@@ -497,9 +504,7 @@ final class GeraltBrain {
         if (t - lastActivity > gap && t - lastAuto > gap) {
             lastActivity = t;
             autoTurn("Какое-то время ничего не происходит. Можешь заняться делом, сказать что-нибудь герою или промолчать.", false);
-            return;
         }
-        if (memory.needsSummary()) summarize();
     }
 
     // ---------------- ход ----------------
@@ -525,7 +530,7 @@ final class GeraltBrain {
             Map<String, Object> snap = requestSnapshot();
             List<Map<String, Object>> msgs = new ArrayList<>();
             msgs.add(Json.of("role", "system", "content", Persona.system()));
-            String mem = memory.context(30);
+            String mem = memory.context();
             String who = heroAsked && !Json.obj(snap.get("hero")).isEmpty()
                 ? "\n\nКто с тобой говорит: " + Observation.speaker(Json.obj(snap.get("hero")), "Герой (безымянный странник)", "")
                 : "";
@@ -1225,19 +1230,36 @@ final class GeraltBrain {
         return null;
     }
 
-    private void summarize() {
-        List<String> old = memory.oldEntries();
-        if (old.isEmpty()) return;
-        try {
-            List<Map<String, Object>> msgs = new ArrayList<>();
-            msgs.add(Json.of("role", "system", "content", Persona.summarize()));
-            msgs.add(Json.of("role", "user", "content", "Прежняя память: " + (memory.summary.isEmpty() ? "нет" : memory.summary)
-                + "\n\nЗаписи:\n" + String.join("\n", old)));
-            String s = Speech.clean(act.chat(msgs, null, 800).text);
-            if (!s.isEmpty()) memory.applySummary(s, old.size());
-        } catch (IOException e) {
-            // в следующий раз
-        }
+    /**
+     * Память больше Memory.STEPS шагов (у Геральта — записей, у жителя — реплик) — вся она уходит модели и
+     * переписывается заново сжатой: поворотные события фразой, мелочи словом-двумя (Memory.Digest, Persona.digest).
+     * Сжимается одна память за раз, в своём потоке; пока модель пишет, новые записи копятся как обычно.
+     */
+    private void digest() {
+        if (digesting || now() < digestAfter || !settings.act().isSet()) return;
+        Memory.Digest d = memory.digestDue();
+        if (d == null) return;
+        digesting = true;
+        memoryPool.execute(() -> {
+            try {
+                List<Map<String, Object>> msgs = new ArrayList<>();
+                msgs.add(Json.of("role", "system", "content", Persona.digest(d.geralt() ? "Геральта из Ривии"
+                    : "жителя (id " + d.id + "; его реплики в записях — под его именем)")));
+                msgs.add(Json.of("role", "user", "content", d.text()));
+                String text = act.digest(msgs, 2500);
+                boolean ok = memory.applyDigest(d, text);
+                AiLog.i("memory digest " + d.id + (ok ? " ok: " : " skipped: ") + d.entries.size() + " entries → "
+                    + Memory.cleanSummary(text).length() + " chars");
+                if (!ok) digestAfter = now() + 60000;
+            } catch (IOException e) {
+                AiLog.i("memory digest " + d.id + " failed: " + LlmClient.describe(e));
+                digestAfter = now() + 60000;
+            } catch (RuntimeException e) {
+                digestAfter = now() + 60000;
+            } finally {
+                digesting = false;
+            }
+        });
     }
 
     private String stamp() {

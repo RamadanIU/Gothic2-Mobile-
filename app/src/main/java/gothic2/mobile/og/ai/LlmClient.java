@@ -67,6 +67,8 @@ public final class LlmClient {
      * отвечает быстрее, чем ждать дальше (журнал 2026-10-25: 16 и 34 с, затем таймауты по минуте).
      */
     static final int TIMEOUT_MS = 25000;
+    /** Сжатие памяти: длинный ответ по всей памяти, и его никто не ждёт — можно дольше. */
+    static final int DIGEST_TIMEOUT_MS = 120000;
 
     static HttpURLConnection open(String url) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
@@ -100,8 +102,18 @@ public final class LlmClient {
     /** wordsOnly — ответ только словами: инструменты описаны (история с их вызовами остаётся верной), но вызывать нельзя. */
     public Reply chat(List<Map<String, Object>> messages, List<Map<String, Object>> tools, int maxTokens, boolean wordsOnly)
         throws IOException {
+        return request(messages, tools, maxTokens, wordsOnly, 0.8, TIMEOUT_MS);
+    }
+
+    /** Сжатие памяти (Memory.Digest): без инструментов, точнее (ниже температура), ждёт дольше. */
+    public String digest(List<Map<String, Object>> messages, int maxTokens) throws IOException {
+        return request(messages, null, maxTokens, false, 0.3, DIGEST_TIMEOUT_MS).text;
+    }
+
+    private Reply request(List<Map<String, Object>> messages, List<Map<String, Object>> tools, int maxTokens,
+                          boolean wordsOnly, double temperature, int timeoutMs) throws IOException {
         Map<String, Object> req = Json.of("model", role.model, "messages", messages,
-            "max_tokens", maxTokens, "temperature", 0.8);
+            "max_tokens", maxTokens, "temperature", temperature);
         if (tools != null && !tools.isEmpty()) {
             req.put("tools", tools);
             if (wordsOnly) req.put("tool_choice", "none");
@@ -110,15 +122,15 @@ public final class LlmClient {
         String url = endpoint(role.url, "chat/completions");
         String resp;
         try {
-            resp = postOnce(url, role.key, body);
+            resp = postOnce(url, role.key, body, timeoutMs);
         } catch (LlmException e) {
             if (e.status != 429 && e.status < 500) throw e;
             // Лимит или сбой сервиса: запасной ключ, иначе пауза и повтор
             if (e.status == 429 && !role.spareKey.isEmpty()) {
-                resp = postOnce(url, role.spareKey, body);
+                resp = postOnce(url, role.spareKey, body, timeoutMs);
             } else {
                 sleep(e.status == 429 ? 6000 : 2000);
-                resp = postOnce(url, role.key, body);
+                resp = postOnce(url, role.key, body, timeoutMs);
             }
         }
         Reply r = parse(resp);
@@ -130,15 +142,15 @@ public final class LlmClient {
      * Один запрос с повтором при сбое связи: таймаут, обрыв («Software caused connection abort» — Android закрыл
      * старое соединение из пула), сброс. Ответ сервера с кодом ошибки — не сбой связи, его разбирает chat.
      */
-    private String postOnce(String url, String key, String body) throws IOException {
+    private String postOnce(String url, String key, String body, int timeoutMs) throws IOException {
         try {
-            return http.post(url, key, body, TIMEOUT_MS);
+            return http.post(url, key, body, timeoutMs);
         } catch (LlmException e) {
             throw e;
         } catch (IOException e) {
             if (Thread.currentThread().isInterrupted()) throw e;
             sleep(500);
-            return http.post(url, key, body, TIMEOUT_MS);
+            return http.post(url, key, body, timeoutMs);
         }
     }
 
