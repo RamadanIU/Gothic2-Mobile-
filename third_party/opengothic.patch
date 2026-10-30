@@ -313,10 +313,10 @@ index 0f6c113..7aa5f2c 100644
  
 diff --git a/common/game/ailink.cpp b/common/game/ailink.cpp
 new file mode 100644
-index 0000000..7df68b4
+index 0000000..b901609
 --- /dev/null
 +++ b/common/game/ailink.cpp
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,108 @@
 +#include "ailink.h"
 +
 +#include <atomic>
@@ -335,6 +335,7 @@ index 0000000..7df68b4
 +  std::mutex               mtx;
 +  std::vector<std::string> inbox;
 +  std::atomic<bool>        isOn{false};
++  std::atomic<bool>        isResidents{false};
 +  // Очередь не растёт без конца, если игра долго не тикает (загрузка, пауза)
 +  const size_t             MaxInbox = 512;
 +
@@ -360,6 +361,10 @@ index 0000000..7df68b4
 +
 +bool AiLink::enabled() {
 +  return isOn.load();
++  }
++
++bool AiLink::residents() {
++  return isOn.load() && isResidents.load();
 +  }
 +
 +void AiLink::poll(std::vector<std::string>& out) {
@@ -397,14 +402,15 @@ index 0000000..7df68b4
 +  }
 +
 +#ifdef __ANDROID__
-+extern "C" JNIEXPORT void JNICALL Java_gothic2_mobile_og_ai_AiBridge_nativeAttach(JNIEnv* env, jclass cls, jboolean enable) {
++extern "C" JNIEXPORT void JNICALL Java_gothic2_mobile_og_ai_AiBridge_nativeAttach(JNIEnv* env, jclass cls, jboolean enable, jboolean residents) {
 +  env->GetJavaVM(&jvm);
 +  if(jcls==nullptr)
 +    jcls = reinterpret_cast<jclass>(env->NewGlobalRef(cls));
 +  onEvent = env->GetStaticMethodID(jcls,"onEngineEvent","([B)V");
 +  if(onEvent==nullptr)
 +    env->ExceptionClear();
-+  isOn = (enable==JNI_TRUE);
++  isOn        = (enable==JNI_TRUE);
++  isResidents = (residents==JNI_TRUE);
 +  }
 +
 +extern "C" JNIEXPORT void JNICALL Java_gothic2_mobile_og_ai_AiBridge_nativeCommand(JNIEnv* env, jclass, jbyteArray cmd) {
@@ -421,10 +427,10 @@ index 0000000..7df68b4
 +#endif
 diff --git a/common/game/ailink.h b/common/game/ailink.h
 new file mode 100644
-index 0000000..29cac87
+index 0000000..1bded01
 --- /dev/null
 +++ b/common/game/ailink.h
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,18 @@
 +#pragma once
 +
 +#include <string>
@@ -436,6 +442,8 @@ index 0000000..29cac87
 +namespace AiLink {
 +  // Приложение подключилось и включило живого NPC в настройках
 +  bool enabled();
++  // Gothic II Mobile: живые жители (ИИ у обычных NPC) - отдельная галочка; без неё «Сказать» - только Геральту
++  bool residents();
 +  // Забрать накопившиеся команды
 +  void poll(std::vector<std::string>& out);
 +  // Событие приложению (из главного потока игры)
@@ -443,10 +451,10 @@ index 0000000..29cac87
 +  }
 diff --git a/common/game/ainpc.cpp b/common/game/ainpc.cpp
 new file mode 100644
-index 0000000..8dfc195
+index 0000000..52fb239
 --- /dev/null
 +++ b/common/game/ainpc.cpp
-@@ -0,0 +1,3441 @@
+@@ -0,0 +1,3443 @@
 +#include "ainpc.h"
 +
 +#include <Tempest/Log>
@@ -824,8 +832,10 @@ index 0000000..8dfc195
 +Npc* AiNpc::addressee(const Npc& player, Npc* candidate) const {
 +  if(!AiLink::enabled())
 +    return nullptr;
++  // Gothic II Mobile: живые жители выключены в настройках - «Сказать» только Геральту
++  const bool anyone = AiLink::residents();
 +  // Выбранный касанием или тот, на кого смотрит герой: человек в сознании рядом - живой житель
-+  if(candidate!=nullptr && candidate!=&player && !candidate->isMonster() && !candidate->isDead() &&
++  if(candidate!=nullptr && (anyone || candidate==geralt) && candidate!=&player && !candidate->isMonster() && !candidate->isDead() &&
 +     !candidate->isUnconscious() && player.qDistTo(*candidate)<SayDist*SayDist) {
 +    if(candidate!=geralt || !talking)
 +      return candidate;
@@ -838,7 +848,7 @@ index 0000000..8dfc195
 +  // Никого не выбрал и ни на кого не смотрит (или смотрит на зверя) - сказать вслух ближнему человеку (слышат все
 +  // рядом): «Сказать» есть везде, где есть люди, а не только у Геральта
 +  auto* w = Gothic::inst().world();
-+  if(w==nullptr)
++  if(w==nullptr || !anyone)
 +    return nullptr;
 +  Npc*  best  = nullptr;
 +  float bestD = SayDist*SayDist;

@@ -17,7 +17,7 @@ import java.util.function.Consumer;
 public final class AiBridge {
     private static final int REQ_MIC = 71;
 
-    private static native void nativeAttach(boolean enable);
+    private static native void nativeAttach(boolean enable, boolean residents);
 
     private static native void nativeCommand(byte[] utf8);
 
@@ -70,7 +70,7 @@ public final class AiBridge {
                 inst = b;
                 b.brain.start();
             }
-            nativeAttach(on);
+            nativeAttach(on, on && s.residents());
         } catch (UnsatisfiedLinkError e) {
             // движок не связан с приложением - игра идёт как обычно, но Геральта не будет: сказать об этом
             AiLog.i("start: no engine link - " + e);

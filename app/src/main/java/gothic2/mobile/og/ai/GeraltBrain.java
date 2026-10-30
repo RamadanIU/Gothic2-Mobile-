@@ -259,7 +259,9 @@ final class GeraltBrain {
                     : Hearing.names(near, target).isEmpty() ? ""
                     : "Герой сказал это вслух; рядом слышали: " + Hearing.names(near, target) + ".";
                 if (!target.isEmpty() && !"self".equals(target) && !talking) {
-                    residentTurn(target, name, text, priv, heard);
+                    // Живые жители выключены: движок и не шлёт им «Сказать» (AiNpc::addressee) - на случай гонки
+                    if (settings.residents()) residentTurn(target, name, text, priv, heard);
+                    else engine.send(Json.of("cmd", "think", "on", false));
                     break;
                 }
                 boolean free = Json.bool(ev, "free", false) && !talking;
@@ -433,7 +435,7 @@ final class GeraltBrain {
      * рядом. Прежде очнувшийся ничего не знал о том, что с ним случилось, и вёл себя, будто ничего не было.
      */
     private void residentReact(String ref, Map<String, Object> v, String trigger, String to) {
-        if (!ready || !settings.act().isSet()) return;
+        if (!ready || !settings.act().isSet() || !settings.residents()) return;
         String key = Json.str(v, "id");
         long t = now();
         Long last = reacted.get(key);
@@ -879,6 +881,11 @@ final class GeraltBrain {
             speak(speaker.ref, ref, said, speaker.tts(), false);
             String line = speaker.name + ": " + said;
             transcript.add(line);
+            if (!toGeralt && !settings.residents()) {
+                // Живые жители выключены в настройках: житель выслушал, но моделью не отвечает
+                transcript.add("(«" + name + "» выслушал и промолчал)");
+                break;
+            }
             String[] heard = listen(speaker, listener, toGeralt, who, ref, key, said, looks, transcript);
             if (heard == null) {
                 transcript.add("(«" + name + "» не ответил)");

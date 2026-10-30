@@ -115,6 +115,15 @@ public final class AiSettings {
         set("ai_enabled", on ? "1" : "0");
     }
 
+    /** Живые жители: «Сказать» к любому человеку, ответы и поступки жителей — моделью. Выключено — ИИ только у Геральта. */
+    public boolean residents() {
+        return !"0".equals(get("residents"));
+    }
+
+    public void setResidents(boolean on) {
+        set("residents", on ? "1" : "0");
+    }
+
     public Role chat() {
         return new Role(get("chat_url"), get("chat_key"), get("chat_key2"), get("chat_model"));
     }
@@ -179,6 +188,7 @@ public final class AiSettings {
             case "tts_openai_hero": return "alloy";
             case "stt_voice": return "1";
             case "hero_voice": return "1";
+            case "residents": return "1";
             case "autonomy": return "1";
             default: return "";
         }

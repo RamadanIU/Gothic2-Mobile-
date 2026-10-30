@@ -541,6 +541,10 @@ public class AiLogicTest {
     public void settingsDefaultsAndRoles() {
         AiSettings s = AiSettings.inMemory();
         assertFalse(s.enabled());
+        // живые жители - по умолчанию с Геральтом, выключаются отдельно
+        assertTrue(s.residents());
+        s.setResidents(false);
+        assertFalse(s.residents());
         assertEquals(AiSettings.DEFAULT_URL, s.chat().url);
         assertEquals(AiSettings.TTS_ANDROID, s.ttsProvider());
         // действия без своих полей - как разговор; со своим ключом - свой
