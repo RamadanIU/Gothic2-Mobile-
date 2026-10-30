@@ -83,13 +83,25 @@ public class AiSettingsActivity extends Activity {
         on.setTextColor(TEXT);
         on.setTextSize(17);
         on.setChecked(ai.enabled());
+        col.addView(on);
+
+        CheckBox residents = new CheckBox(this);
+        residents.setText("Живые жители — ИИ у всех людей");
+        residents.setTextColor(TEXT);
+        residents.setTextSize(17);
+        residents.setChecked(ai.residents());
+        residents.setEnabled(ai.enabled());
+        residents.setOnCheckedChangeListener((b, c) -> ai.setResidents(c));
         on.setOnCheckedChangeListener((b, c) -> {
             ai.setEnabled(c);
+            residents.setEnabled(c);
             if (c && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 1);
             }
         });
-        col.addView(on);
+        col.addView(residents);
+        col.addView(text("Выключено — языковая модель только у Геральта: «Сказать» обращается к нему одному, жители "
+            + "говорят родными диалогами игры и не отвечают ему моделью (меньше трат ключа). Нужен включённый Геральт.", 13, DIM));
 
         section(col, "Модель — разговор");
         col.addView(text("Любой адрес, совместимый с OpenAI (/v1/chat/completions) и умеющий вызывать инструменты: "

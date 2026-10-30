@@ -161,8 +161,9 @@ public class LauncherActivity extends Activity {
     }
 
     private void refresh() {
-        boolean aiOn = AiSettings.of(getSharedPreferences("ai", MODE_PRIVATE)).enabled();
-        aiNav.setText("Геральт и жители говорят сами: " + (aiOn ? "включено" : "выключено"));
+        AiSettings ai = AiSettings.of(getSharedPreferences("ai", MODE_PRIVATE));
+        aiNav.setText(!ai.enabled() ? "Геральт и жители говорят сами: выключено"
+            : ai.residents() ? "Геральт и жители говорят сами: включено" : "Геральт: включён, жители: выключены");
         graphicsNav.setText(graphics.summaryShort());
         String folder = gamePath != null ? gamePath : "не выбрана";
         folderNav.setText(folder);
