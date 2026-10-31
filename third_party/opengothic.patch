@@ -29484,7 +29484,7 @@ index b45a9bd..35a566d 100644
      bool                isCracked() const { return isLockCracked; }
      bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..96d297e 100644
+index e015398..c3e3544 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -3,11 +3,16 @@
@@ -29734,17 +29734,21 @@ index e015398..96d297e 100644
      tickRoutine();
      if(aiQueue.size()>0)
        nextAiAction(aiQueue,dt);
-@@ -2007,6 +2125,9 @@ bool Npc::setGoToLadder() {
+@@ -2007,6 +2125,13 @@ bool Npc::setGoToLadder() {
  void Npc::commitDamage() {
    if(currentTarget==nullptr)
      return;
 +  // Gothic II Mobile: бой телом - попадание засчитывает клинок куклы (tickBlade), а не кадр анимации
-+  if(isFightBody() && currentTarget->hasBodyLayout())
-+    return;
++  if(isFightBody() && currentTarget->hasBodyLayout()) {
++    Vec3  a, b;
++    float r = 0;
++    if(bladeSegment(a,b,r))
++      return;
++    }
    if(!fghAlgo.isInAttackRange(*this,*currentTarget,owner.script()))
      return;
    if(!fghAlgo.isInFocusAngle(*this,*currentTarget))
-@@ -2077,14 +2198,68 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2077,14 +2202,68 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
  
    if(!isSpell || splCat==SpellCategory::SPELL_BAD) {
      perceptionProcess(other,this,0,PERC_ASSESSDAMAGE);
@@ -29813,7 +29817,7 @@ index e015398..96d297e 100644
    if(isDown()) {
      onNoHealth(dontKill,HS_NoSound);
      return;
-@@ -2107,9 +2282,13 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2107,9 +2286,13 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
      }
  
    // throw enemy
@@ -29828,7 +29832,7 @@ index e015398..96d297e 100644
  
    if(hitResult.value>0) {
      currentOther = &other;
-@@ -2130,6 +2309,22 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
+@@ -2130,6 +2313,22 @@ void Npc::takeDamage(Npc& other, const Bullet* b, const CollideMask bMask, int32
          }
        }
      }
@@ -29851,7 +29855,7 @@ index e015398..96d297e 100644
    }
  
  void Npc::takeFallDamage(const Vec3& fallSpeed) {
-@@ -2247,6 +2442,9 @@ void Npc::tickTimedEvt(Animation::EvCount& ev) {
+@@ -2247,6 +2446,9 @@ void Npc::tickTimedEvt(Animation::EvCount& ev) {
          if(auto it = invent.addItem(i.item,1,world())) {
            invent.putToSlot(*this,it->clsId(),i.slot[0]);
            }
@@ -29861,7 +29865,7 @@ index e015398..96d297e 100644
          break;
          }
        case zenkit::MdsEventType::SET_FIGHT_MODE:
-@@ -2344,6 +2542,35 @@ void Npc::tick(uint64_t dt) {
+@@ -2344,6 +2546,35 @@ void Npc::tick(uint64_t dt) {
  
    tickAnimationTags();
  
@@ -29897,7 +29901,7 @@ index e015398..96d297e 100644
    if(!visual.pose().hasAnim())
      setAnim(AnimationSolver::Idle);
  
-@@ -2380,7 +2607,8 @@ void Npc::tick(uint64_t dt) {
+@@ -2380,7 +2611,8 @@ void Npc::tick(uint64_t dt) {
      if(!isPlayer() && go2.flag!=GT_Flee && faiWaitTime<owner.tickCount() && currentTarget!=nullptr) {
        implTurnToFai(*currentTarget,dt);
        }
@@ -29907,7 +29911,7 @@ index e015398..96d297e 100644
      return;
      }
  
-@@ -2398,7 +2626,9 @@ void Npc::tick(uint64_t dt) {
+@@ -2398,7 +2630,9 @@ void Npc::tick(uint64_t dt) {
        }
      }
  
@@ -29918,7 +29922,7 @@ index e015398..96d297e 100644
    implAiTick(dt);
    }
  
-@@ -2529,6 +2759,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2529,6 +2763,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -29930,7 +29934,7 @@ index e015398..96d297e 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -2579,7 +2814,13 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2579,7 +2818,13 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          break;
          }
        else if(bs==BS_UNCONSCIOUS || bs==BS_LIE) {
@@ -29945,7 +29949,7 @@ index e015398..96d297e 100644
            queue.pushFront(std::move(act)); else
            implAniWait(visual.pose().animationTotalTime());
          }
-@@ -2593,14 +2834,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2593,14 +2838,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_EquipArmor:
        invent.equipArmor(act.i0,*this);
        break;
@@ -29968,7 +29972,7 @@ index e015398..96d297e 100644
        break;
      case AI_UseMob: {
        if(act.i0<0) {
-@@ -2740,6 +2986,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2740,6 +2990,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_OutputSvm:
      case AI_OutputSvmOverlay:{
        if(performOutput(act)) {
@@ -29978,7 +29982,7 @@ index e015398..96d297e 100644
          if(aiPolicy!=NpcProcessPolicy::AiFar2) {
            uint64_t msgTime = 0;
            if(act.act==AI_Output) {
-@@ -3504,6 +3753,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -3504,6 +3757,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -29987,7 +29991,7 @@ index e015398..96d297e 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +4044,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +4048,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
@@ -29998,7 +30002,7 @@ index e015398..96d297e 100644
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -3836,6 +4091,14 @@ bool Npc::finishingMove() {
+@@ -3836,6 +4095,14 @@ bool Npc::finishingMove() {
      return false;
  
    if(doAttack(Anim::AttackFinish,BS_HIT)) {
@@ -30013,7 +30017,7 @@ index e015398..96d297e 100644
      currentTarget->hnpc->attribute[ATR_HITPOINTS] = 0;
      currentTarget->checkHealth(true,false);
      owner.sendPassivePerc(*this,*this,*currentTarget,PERC_ASSESSMURDER);
-@@ -4091,13 +4354,22 @@ bool Npc::shootBow(Interactive* focOverride) {
+@@ -4091,13 +4358,22 @@ bool Npc::shootBow(Interactive* focOverride) {
    if(itm==nullptr)
      return false;
  
@@ -30038,7 +30042,7 @@ index e015398..96d297e 100644
    if(Gothic::inst().version().game==1) {
      b.setHitChance(float(hnpc->attribute[ATR_DEXTERITY])/100.f);
      if(rgn!=nullptr && rgn->isCrossbow())
-@@ -4158,10 +4430,77 @@ bool Npc::isPrehit() const {
+@@ -4158,10 +4434,77 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -30116,7 +30120,7 @@ index e015398..96d297e 100644
  void Npc::setPerceptionTime(uint64_t time) {
    perceptionTime = time;
    }
-@@ -4238,6 +4577,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4581,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -30127,7 +30131,7 @@ index e015398..96d297e 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4292,6 +4635,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
+@@ -4292,6 +4639,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
  void Npc::quitInteraction() {
    if(currentInteract==nullptr)
      return;
@@ -30137,7 +30141,7 @@ index e015398..96d297e 100644
    if(invTorch)
      processDefInvTorch();
    setDirectionY(0);
-@@ -4356,6 +4702,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4706,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -30175,7 +30179,7 @@ index e015398..96d297e 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4818,7 +5195,1469 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4818,7 +5199,1469 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
      durtyTranform = 0;
      }
  
@@ -31999,10 +32003,10 @@ index 7309936..8a77d65 100644
      float                          angleY   = 0.f;
 diff --git a/common/world/objects/npcfight.cpp b/common/world/objects/npcfight.cpp
 new file mode 100644
-index 0000000..866a4cb
+index 0000000..bfb50f7
 --- /dev/null
 +++ b/common/world/objects/npcfight.cpp
-@@ -0,0 +1,591 @@
+@@ -0,0 +1,592 @@
 +#include "npc.h"
 +
 +#include <Tempest/Log>
@@ -32306,10 +32310,11 @@ index 0000000..866a4cb
 +  // камерой (как активный регдолл)
 +  if(!Gothic::options().ragdollCombat || isDown())
 +    return false;
++  // сначала дешёвое: далеко от героя и камеры - нет (так отсеиваются почти все NPC мира)
++  if(!ragdollActiveAllowed())
++    return false;
 +  auto sk = visual.visualSkeleton();
 +  if(sk==nullptr || BodyRig::of(*sk)==nullptr || !Ragdoll::hasLayout(*sk))
-+    return false;
-+  if(!ragdollActiveAllowed())
 +    return false;
 +  FightBody::Clock  c;
 +  FightBody::Weapon w      = FightBody::W_1H;

@@ -121,7 +121,11 @@ docs/AI_NPC.md, «Память»; ждёт проверки). Там же: **с�
 чужого тела, опора в своём теле — не опора (docs/PROGRESS.md; ждёт проверки). 2026-11-01: **NPC не стоят друг в друге**
 (`Npc::tickSeparate`: вошедшие расходятся сами — движок разрешал стоящему внутри другого ходить, лишь бы не глубже) и
 **рука не уходит за спину** (упор тканей плеча в `Ragdoll::driveMuscles`, «мельница» — не за спину; стенд `./ragtest
-limits`; docs/PROGRESS.md, последний раздел; ждут проверки).
+limits`; docs/PROGRESS.md, последний раздел; ждут проверки). Там же **бой телом и подъём телом — без записанных анимаций**: с мечом,
+двуручником, кулаками стойка, шаги, замах, удар, блок, доставание — кукла (мышцы к процедурной позе хода, анимации игры —
+только часы), попадает клинок (голова ×2, корпус ×1, руки ×0,5, ноги ×0,75, клинок о клинок — блок); оглушённый и сбитый
+встаёт телом (садится на руки или отжимается, на колено, встаёт); галочки «Бой телом», «Подъём телом» (docs/PROGRESS.md,
+последний раздел; docs/CONTROLS.md, «Бой телом»; ждут проверки).
 
 - **Приложение** (`app/`, Java, пакет `gothic2.mobile.og`): `LauncherActivity` — разрешение «Файлы», поиск
   папки игры (`GameFolder`), «Играть»; настройки — страницы разделов (`showPage`: «Графика», «Управление» — настройка
@@ -208,6 +212,15 @@ limits`; docs/PROGRESS.md, последний раздел; ждут прове�
     `AI_UseItemToState`) при падении, толчке, оглушении — на землю: `Npc::dropHandItem`, `Pose::cancelItemState`;
     галочки `ragdoll`, `ragdollFall`, `ragdollActive`, `ragdollKnockdown`, `ragdollThroes`, `ragdollShove`, `ragdollRise` в
     `g2m.ini` (экран запуска, «Графика» → «Дополнительно»);
+  - **бой телом** (`game/fightbody.*`, `world/objects/npcfight.cpp`, docs/CONTROLS.md, «Бой телом»): кукла боя — активный
+    регдолл в режиме боя (`Ragdoll::setCombat`, `Npc::startFightBody/tickFightBody`, `fightBodyWanted`), цель мышц —
+    процедурная поза хода (`FightBody` по часам анимации `Npc::fightClock`: стадия серии — `HIT_END`, удар — `OPTIMAL_FRAME`;
+    поза — `BodyRig`, `graphics/mesh/bodyrig.*`), Pose выводит её вместо анимации (`Pose::setProcPose`); руки с оружием —
+    `Ragdoll::driveGrip`; клинок — `Npc::bladeSegment/tickBlade` (касание клинка — `bladeClash`/`takeBladeBlock`, тела —
+    `takeBladeHit` → `takeDamage` с `bladeHit`: урон по месту, зона рук — `Ragdoll::Z_Arms`); `commitDamage` у бьющего телом
+    выключен; **подъём телом** — `Ragdoll::startRise/tickRise/driveRise` (фазы — позы `BodyRig`, опора о землю — центр масс
+    и точки опоры ступней и ладоней), `Npc::startRagdollRise/endRagdollRise` (`ragRising`: ИИ ждёт); галочки `ragdollCombat`,
+    `ragdollRise` в `g2m.ini`;
   - **лук и арбалет** (`common/game/rangedaim.h`, docs/CONTROLS.md, «Лук и арбалет: прицел»): прицел героя —
     `PlayerControl::tickRangedAim` (грудь цели в фокусе — `Npc::aimChest`, или луч камеры — `DynamicWorld::aimRay`),
     рисует `TouchInput::drawReticle` (кольцо — `TouchIcons::ring`); выстрел — `Npc::rangedLaunch` (разброс по умению
@@ -301,7 +314,9 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
     common/ui/touchicons.cpp common/ui/touchicons.h common/game/cooking.cpp \
     common/utils/applink.cpp common/utils/applink.h common/physics/ragdoll.cpp common/physics/ragdoll.h \
     common/game/aiteach.cpp common/game/rangedaim.h common/graphics/mesh/injury.cpp common/graphics/mesh/injury.h \
-    common/graphics/mesh/limbik.h common/game/killcam.cpp common/game/killcam.h
+    common/graphics/mesh/limbik.h common/game/killcam.cpp common/game/killcam.h \
+    common/graphics/mesh/bodyrig.cpp common/graphics/mesh/bodyrig.h common/game/fightbody.cpp common/game/fightbody.h \
+    common/world/objects/npcfight.cpp
     # и другие новые файлы (все: git ls-files --others --exclude-standard | grep -v ^build/); не -A: build/ не в .gitignore
   git diff --ignore-submodules=all > ../opengothic.patch && git reset -q
   git -C lib/Tempest diff > ../opengothic-tempest.patch
@@ -378,6 +393,16 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
   менять с оглядкой на `./ragtest sweep`: толще голень — тело устаивает после толчка (низ голени упирается в землю);
   инерция — по капсулам кости. Конус плеча (эллипс) симметричен, плечо человека — нет: «за спину» держит отдельный упор
   (`driveMuscles`), проверка — `./ragtest limits` (кисть за плоскостью спины, суставы за анатомией).
+- **Бой и подъём телом:** проверять стендом — `./ragtest fight` (дуэли: удары доходят, блок ловит, не падают) и
+  `./ragtest rise` (со спины и с живота, шаг мира 33 и 4 мс), глазами — `./ragtest vis duel|duel2h|duelfist|duelwalk|duelrun
+  out.txt` (клинки — светлые отрезки, метки: жёлтая — блок, красная — попадание; `FTRACE=1` — кисть и клинок против цели),
+  `rise_back`, `rise_belly` (`RISE_TARGET=1` — показать цель позы вместо тела). Поза `BodyRig` строится от позы привязки
+  каждый кадр: IK — строго по подсказке сгиба (нынешний сгиб в позе привязки случаен — колено уходило вниз), локоть и
+  колено — шарниры (плечо и бедро докручиваются под плоскость сгиба), кисть — в пределах запястья куклы (иначе мышцы
+  тянут туда, куда сустав не пускает, и клинок смотрит не туда); рукоять в кулаке — наискось. Быструю руку с оружием
+  мышцы не догоняют (отставание 30–40°) — её ведёт `driveGrip`. Встающему: ноги свой вес не держат (`Drive::hold` у ног — 0,
+  иначе сгиб бедра вскидывает ноги и опрокидывает таз), ступни и ладони на земле стоят (точка опоры), тело поднимает
+  центр масс, а не тяга части к кадру.
 - NPC ставить без проверки столкновений (`setPosition`) можно, но двое внутри друг друга сами не выйдут без
   `Npc::tickSeparate`: правило `implTryMove` пускает застрявшего двигаться, лишь бы не глубже.
 - **Лук и арбалет:** попадание стрелы — только по частям тела (`Ragdoll::rayTest`), не по габаритам NPC (они вдвое больше
