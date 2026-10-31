@@ -185,6 +185,19 @@ public class GraphicsSettingsTest {
     }
 
     @Test
+    public void combatIsOnByDefaultAndNeedsActiveRagdoll() {
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        // ключ ragdollCombat читает Gothic::Gothic: бой телом (game/fightbody.h)
+        assertTrue(g.iniText().contains("\nragdollCombat=1\n"));
+        assertTrue(g.isAvailable(GraphicsSettings.RAGDOLL_COMBAT));
+        g.setOn(GraphicsSettings.RAGDOLL_ACTIVE, false);
+        assertFalse(g.isAvailable(GraphicsSettings.RAGDOLL_COMBAT));
+        g.setOn(GraphicsSettings.RAGDOLL_ACTIVE, true);
+        g.setOn(GraphicsSettings.RAGDOLL_COMBAT, false);
+        assertTrue(g.iniText().contains("\nragdollCombat=0\n"));
+    }
+
+    @Test
     public void ragdollKeepsOldSetting() {
         // прежняя версия хранила тот же ключ с вариантами «по физике»/«анимацией игры» - значение не меняется
         MemoryPrefs prefs = new MemoryPrefs();

@@ -212,6 +212,10 @@ struct Actor {
   float                    getUpHold   = 0.68f; // анимация подъёма стоит на первом кадре (лёжа) столько, с
   bool                     getUpPhys = true;  // false - без физики: поза куклы сразу переходит в позу лёжа
   bool                     braceDemo = false; // стойка героя перед толчком: готов 0,4..0,6 с, удар в 0,8 с
+  // процедурная поза вместо «анимации» (бой телом, подъём телом): мировые матрицы всех костей
+  std::function<void(std::vector<Matrix4x4>&)> proc;
+  bool                     stepWorld = true;  // второй человек в сцене физику не шагает (её шагает первый)
+  int                      riseResult = 0;    // подъём телом: 1 - встал, -1 - не вышло
 
   Actor(DynamicWorld& dw, const Skeleton& sk, Vec3 at, float rotY=0):sk(sk), dw(dw), at(at), rotY(rotY) {
     rig = InjuryRig::of(sk);
@@ -223,6 +227,10 @@ struct Actor {
   Matrix4x4 obj() const { return objAt(at,rotY); }
 
   void mkAnim() {
+    if(proc) {
+      proc(anim);
+      return;
+      }
     auto local = walking ? walkPose(sk,time) : stancePose(sk);
     if(getUpAt>=0.f) {
       const float tu = time-getUpAt;
@@ -431,9 +439,24 @@ struct Actor {
         }
       }
     // цель - поза прошлого кадра со сдвигом NPC (как Npc::tickRagdollActive), затем физика, затем новый кадр
-    if(r && r->isSimulated())
+    if(r && r->isRising()) {
+      r->tickRise(dt);
+      if(r->riseDone() || r->riseFailed()) {
+        riseResult = r->riseDone() ? 1 : -1;
+        const Vec3 f = r->riseFacing(), p = r->riseFeet();
+        rotY = std::atan2(f.x,f.z)*180.f/float(M_PI);
+        at   = Vec3(p.x,0,p.z);
+        blendFrom = disp;
+        blendAt   = time;
+        blendTime = 0.25f;
+        recovered = true;
+        r.reset();
+        }
+      }
+    else if(r && r->isSimulated())
       r->setTarget(anim,dt);
-    dw.tick(dt);
+    if(stepWorld)
+      dw.tick(dt);
     mkAnim();
     display();
     }
@@ -441,6 +464,10 @@ struct Actor {
   // вывод - как Pose::implMkSkeletonActive / setRagdoll
   void display() {
     disp = anim;
+    if(std::getenv("RISE_TARGET") && r && r->risePose()) {
+      disp = *r->risePose();
+      return;
+      }
     if(!r) {
       if(blendAt>=0.f && time<blendAt+blendTime && blendFrom.size()==disp.size()) {
         float w = 1.f-(time-blendAt)/blendTime;
