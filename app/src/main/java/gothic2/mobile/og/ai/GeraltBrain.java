@@ -422,11 +422,16 @@ final class GeraltBrain {
         if (!isResident(v)) return;
         String note = Incidents.victimNote(kind, v, by, Json.str(ev, "weapon"));
         if (!note.isEmpty()) memory.npcNote(victimKey, st + " " + note);
-        if ("up".equals(kind) && Json.dbl(ev, "heroDist", 99) <= REACT_DIST && !talking) {
-            String byRef = Json.str(by, "ref");
-            residentReact(Json.str(v, "ref"), v, Incidents.wokeUp(v, by, Json.str(ev, "weapon"), Json.num(ev, "lay", 0)),
-                byRef.isEmpty() ? "hero" : byRef);
+        if (!"up".equals(kind)) return;
+        double heroDist = Json.dbl(ev, "heroDist", 99);
+        if (heroDist > REACT_DIST || talking) {
+            // Почему очнувшийся промолчал - в журнал: иначе со стороны кажется, что модель не вызывается
+            AiLog.i("react " + victimKey + ": skip - " + (talking ? "hero in dialog" : "hero " + Math.round(heroDist) + " m away"));
+            return;
         }
+        String byRef = Json.str(by, "ref");
+        residentReact(Json.str(v, "ref"), v, Incidents.wokeUp(v, by, Json.str(ev, "weapon"), Json.num(ev, "lay", 0)),
+            byRef.isEmpty() ? "hero" : byRef);
     }
 
     /**
@@ -435,16 +440,28 @@ final class GeraltBrain {
      * рядом. Прежде очнувшийся ничего не знал о том, что с ним случилось, и вёл себя, будто ничего не было.
      */
     private void residentReact(String ref, Map<String, Object> v, String trigger, String to) {
-        if (!ready || !settings.act().isSet() || !settings.residents()) return;
+        // Без ready (Геральта нет в этом мире: Долина рудников, Яркендар, ещё не появился) житель тоже отвечает - как
+        // на «Сказать» (residentTurn); прежде очнувшийся там молчал
         String key = Json.str(v, "id");
+        if (!settings.act().isSet() || !settings.residents()) {
+            AiLog.i("react " + key + ": skip - " + (settings.residents() ? "no model in settings" : "residents off"));
+            return;
+        }
         long t = now();
         Long last = reacted.get(key);
-        if (last != null && t - last < REACT_GAP) return;
-        reacted.put(key, t);
+        if (last != null && t - last < REACT_GAP) {
+            AiLog.i("react " + key + ": skip - reacted " + (t - last) / 1000 + " s ago");
+            return;
+        }
         AiLog.i("react " + key + ": " + AiLog.cut(trigger, 200));
         Map<String, Object> snap = requestSnapshot(ref);
         Map<String, Object> me = Json.obj(snap.get("self"));
-        if (me.isEmpty()) return;
+        if (me.isEmpty()) {
+            // Снимка нет - реакция не засчитывается: следующий подъём ответит
+            AiLog.i("react " + key + ": skip - no snapshot of " + ref);
+            return;
+        }
+        reacted.put(key, t);
         String name = Json.str(me, "name").isEmpty() ? Json.str(v, "name") : Json.str(me, "name");
         Actor a = new Actor(ref, key.isEmpty() ? name : key, name, Json.str(me, "guild"), Json.bool(me, "female", false),
             (int) Json.num(me, "voice", 1));
