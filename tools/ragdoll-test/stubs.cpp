@@ -26,7 +26,7 @@ Skeleton::Skeleton(const zenkit::ModelHierarchy&, const Animation* anim, std::st
 struct CollisionWorld::RagdollFilter : btOverlapFilterCallback {
   static bool touches(int cat) {
     return cat==DynamicWorld::C_Landscape || cat==DynamicWorld::C_Object ||
-           cat==DynamicWorld::C_Item      || cat==DynamicWorld::C_Ragdoll;
+           cat==DynamicWorld::C_Item      || cat==DynamicWorld::C_Ragdoll || cat==DynamicWorld::C_RagdollProxy;
     }
   bool needBroadphaseCollision(btBroadphaseProxy* a, btBroadphaseProxy* b) const override {
     if((a->m_collisionFilterGroup & b->m_collisionFilterMask)==0 ||
@@ -89,6 +89,16 @@ void CollisionWorld::addRagdollBody(btRigidBody* b) {
   ragBodies.push_back(b);
   }
 
+void CollisionWorld::addRagdollProxy(btRigidBody* b) {
+  // группа - своя, маска - только тела кукол: проверки движения NPC, лучи, предметы его не видят
+  this->addRigidBody(b, int(btBroadphaseProxy::CharacterFilter)<<2, int(btBroadphaseProxy::CharacterFilter)<<1);
+  this->updateSingleAabb(b);
+  }
+
+void CollisionWorld::removeRagdollProxy(btRigidBody* b) {
+  this->removeRigidBody(b);
+  }
+
 void CollisionWorld::removeRagdollBody(btRigidBody* b) {
   this->removeRigidBody(b);
   for(size_t i=0; i<ragBodies.size(); ++i)
@@ -129,6 +139,8 @@ DynamicWorld::DynamicWorld(World*, const zenkit::Mesh&) {
   world.reset(new CollisionWorld());
   ragdolls.reset(new RagdollList());
   world->setInternalTickCallback(&DynamicWorld::ragdollPreTick, this, true);
+  // Gothic II Mobile: куклы и тела людей для них (Ragdoll::Proxy) - что с чем сталкивается и «призраки»
+  static_cast<btCollisionDispatcher*>(world->getDispatcher())->setNearCallback(&Ragdoll::nearCallback);
 
   auto& groundMesh  = ragdolls->groundMesh;
   auto& groundShape = ragdolls->groundShape;

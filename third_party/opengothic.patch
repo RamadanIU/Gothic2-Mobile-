@@ -14527,7 +14527,7 @@ index 3fb2713..5743448 100644
 +#endif
    };
 diff --git a/common/physics/collisionworld.cpp b/common/physics/collisionworld.cpp
-index 3d6c5e2..9e1171d 100644
+index 3d6c5e2..a36e59b 100644
 --- a/common/physics/collisionworld.cpp
 +++ b/common/physics/collisionworld.cpp
 @@ -7,6 +7,9 @@
@@ -14540,15 +14540,16 @@ index 3d6c5e2..9e1171d 100644
  CollisionWorld::CollisionBody::CollisionBody(btRigidBody::btRigidBodyConstructionInfo& inf, CollisionWorld* owner)
    :btRigidBody(inf), owner(owner) {
    }
-@@ -77,6 +80,29 @@ struct CollisionWorld::Broadphase : btDbvtBroadphase {
+@@ -77,6 +80,30 @@ struct CollisionWorld::Broadphase : btDbvtBroadphase {
    btAlignedObjectArray<const btDbvtNode*> rayTestStk;
    };
  
-+// Gothic II Mobile: тела регдолла не задевают живых NPC, воду и зоны - только землю, объекты, предметы и друг друга
++// Gothic II Mobile: тела регдолла не задевают живых NPC, воду и зоны - только землю, объекты, предметы, друг друга и
++// тела людей для кукол (Ragdoll::Proxy)
 +struct CollisionWorld::RagdollFilter : btOverlapFilterCallback {
 +  static bool touches(int cat) {
 +    return cat==DynamicWorld::C_Landscape || cat==DynamicWorld::C_Object ||
-+           cat==DynamicWorld::C_Item      || cat==DynamicWorld::C_Ragdoll;
++           cat==DynamicWorld::C_Item      || cat==DynamicWorld::C_Ragdoll || cat==DynamicWorld::C_RagdollProxy;
 +    }
 +
 +  bool needBroadphaseCollision(btBroadphaseProxy* a, btBroadphaseProxy* b) const override {
@@ -14570,7 +14571,7 @@ index 3d6c5e2..9e1171d 100644
  struct CollisionWorld::ContructInfo {
    ContructInfo() {
      // collision configuration contains default setup for memory, collision setup
-@@ -120,9 +146,18 @@ CollisionWorld::CollisionWorld(ContructInfo ci)
+@@ -120,9 +147,18 @@ CollisionWorld::CollisionWorld(ContructInfo ci)
    setForceUpdateAllAabbs(false);
    gravity = btVector3(0,-DynamicWorld::gravityMS,0);
    setGravity(gravity);
@@ -14589,7 +14590,7 @@ index 3d6c5e2..9e1171d 100644
    if(aabbChanged>0) {
      btDiscreteDynamicsWorld::updateAabbs();
      aabbChanged = 0;
-@@ -241,6 +276,23 @@ std::unique_ptr<CollisionWorld::DynamicBody> CollisionWorld::addDynamicBody(btCo
+@@ -241,6 +277,33 @@ std::unique_ptr<CollisionWorld::DynamicBody> CollisionWorld::addDynamicBody(btCo
    return obj;
    }
  
@@ -14598,6 +14599,16 @@ index 3d6c5e2..9e1171d 100644
 +  this->addRigidBody(b, int(btBroadphaseProxy::CharacterFilter)<<1, int(btBroadphaseProxy::AllFilter));
 +  this->updateSingleAabb(b);
 +  ragBodies.push_back(b);
++  }
++
++void CollisionWorld::addRagdollProxy(btRigidBody* b) {
++  // группа - своя, маска - только тела кукол: проверки движения NPC, лучи, предметы его не видят
++  this->addRigidBody(b, int(btBroadphaseProxy::CharacterFilter)<<2, int(btBroadphaseProxy::CharacterFilter)<<1);
++  this->updateSingleAabb(b);
++  }
++
++void CollisionWorld::removeRagdollProxy(btRigidBody* b) {
++  this->removeRigidBody(b);
 +  }
 +
 +void CollisionWorld::removeRagdollBody(btRigidBody* b) {
@@ -14613,7 +14624,7 @@ index 3d6c5e2..9e1171d 100644
  void CollisionWorld::rayCast(const Tempest::Vec3& b, const Tempest::Vec3& e, btCollisionWorld::RayResultCallback& cb) {
    btVector3 s = toMeters(b), f = toMeters(e);
    if(s==f)
-@@ -306,6 +358,16 @@ void CollisionWorld::tick(uint64_t dt) {
+@@ -306,6 +369,16 @@ void CollisionWorld::tick(uint64_t dt) {
    const  float dtF     = float(dt);
  
    if(dynamic) {
@@ -14631,20 +14642,23 @@ index 3d6c5e2..9e1171d 100644
        this->stepSimulation(dtF/1000.f, 2);
  
 diff --git a/common/physics/collisionworld.h b/common/physics/collisionworld.h
-index fb084a3..5b3bf33 100644
+index fb084a3..85e24e3 100644
 --- a/common/physics/collisionworld.h
 +++ b/common/physics/collisionworld.h
-@@ -44,6 +44,9 @@ class CollisionWorld : public btDiscreteDynamicsWorld {
+@@ -44,6 +44,12 @@ class CollisionWorld : public btDiscreteDynamicsWorld {
  
      std::unique_ptr<CollisionBody> addCollisionBody(btCollisionShape& shape, const Tempest::Matrix4x4& tr, float friction);
      std::unique_ptr<DynamicBody>   addDynamicBody  (btCollisionShape& shape, const Tempest::Matrix4x4& tr, float friction, float mass);
 +    // Gothic II Mobile: тела регдолла (Ragdoll) - сталкиваются только с землёй, предметами и другими телами
 +    void addRagdollBody   (btRigidBody* b);
 +    void removeRagdollBody(btRigidBody* b);
++    // Gothic II Mobile: тело человека для кукол (Ragdoll::Proxy): своя группа - его видят только тела кукол
++    void addRagdollProxy   (btRigidBody* b);
++    void removeRagdollProxy(btRigidBody* b);
  
      void rayCast(const Tempest::Vec3& b, const Tempest::Vec3& e, RayResultCallback& cb);
      void raySweep(const Tempest::Vec3& b, const Tempest::Vec3& e, float radius, RayResultCallback& cb);
-@@ -68,6 +71,7 @@ class CollisionWorld : public btDiscreteDynamicsWorld {
+@@ -68,6 +74,7 @@ class CollisionWorld : public btDiscreteDynamicsWorld {
    private:
      struct Broadphase;
      struct ContructInfo;
@@ -14652,7 +14666,7 @@ index fb084a3..5b3bf33 100644
  
      CollisionWorld(std::unique_ptr<btCollisionConfiguration>&& conf);
      CollisionWorld(ContructInfo ci);
-@@ -84,6 +88,8 @@ class CollisionWorld : public btDiscreteDynamicsWorld {
+@@ -84,6 +91,8 @@ class CollisionWorld : public btDiscreteDynamicsWorld {
      std::function<void(Item& itm, zenkit::MaterialGroup mat, float impulse, float mass)>  hitItem;
  
      std::vector<btRigidBody*>                   rigid;
@@ -14662,7 +14676,7 @@ index fb084a3..5b3bf33 100644
      btVector3                                   bbox[2] = {btVector3(0,0,0), btVector3(0,0,0)};
  
 diff --git a/common/physics/dynamicworld.cpp b/common/physics/dynamicworld.cpp
-index 0683815..2edc59e 100644
+index 0683815..43411d1 100644
 --- a/common/physics/dynamicworld.cpp
 +++ b/common/physics/dynamicworld.cpp
 @@ -3,9 +3,12 @@
@@ -14767,16 +14781,18 @@ index 0683815..2edc59e 100644
  DynamicWorld::DynamicWorld(World* owner, const zenkit::Mesh& worldMesh) {
    world.reset(new CollisionWorld());
  
-@@ -617,6 +679,8 @@ DynamicWorld::DynamicWorld(World* owner, const zenkit::Mesh& worldMesh) {
+@@ -617,6 +679,10 @@ DynamicWorld::DynamicWorld(World* owner, const zenkit::Mesh& worldMesh) {
    npcList   .reset(new NpcBodyList(*this));
    bulletList.reset(new BulletsList(*this));
    bboxList  .reset(new BBoxList   (*this));
 +  ragdolls  .reset(new RagdollList());
 +  world->setInternalTickCallback(&DynamicWorld::ragdollPreTick, this, true);
++  // Gothic II Mobile: куклы и тела людей для них (Ragdoll::Proxy) - что с чем сталкивается и «призраки»
++  static_cast<btCollisionDispatcher*>(world->getDispatcher())->setNearCallback(&Ragdoll::nearCallback);
  
    if(owner!=nullptr) {
      world->setItemHitCallback([owner](::Item& itm, zenkit::MaterialGroup mat, float impulse, float mass) {
-@@ -807,6 +871,26 @@ DynamicWorld::RayQueryResult DynamicWorld::rayNpc(const Tempest::Vec3& from, con
+@@ -807,6 +873,26 @@ DynamicWorld::RayQueryResult DynamicWorld::rayNpc(const Tempest::Vec3& from, con
    return r;
    }
  
@@ -14803,7 +14819,7 @@ index 0683815..2edc59e 100644
  float DynamicWorld::soundOclusion(const Tempest::Vec3& from, const Tempest::Vec3& to) const {
    struct CallBack:btCollisionWorld::AllHitsRayResultCallback {
      using AllHitsRayResultCallback::AllHitsRayResultCallback;
-@@ -924,7 +1008,9 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
+@@ -924,7 +1010,9 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
    const bool  isSpell = b.isSpell();
  
    auto  pos = b.pos;
@@ -14814,7 +14830,7 @@ index 0683815..2edc59e 100644
  
    struct CallBack:btCollisionWorld::ClosestRayResultCallback {
      using ClosestRayResultCallback::ClosestRayResultCallback;
-@@ -964,6 +1050,31 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
+@@ -964,6 +1052,31 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
    world->rayCast(pos, to, callback);
  
    bool stopBullet = false;
@@ -14846,7 +14862,7 @@ index 0683815..2edc59e 100644
    if(callback.matId != zenkit::MaterialGroup::NONE) {
      if(isSpell){
        if(b.cb!=nullptr)
-@@ -1003,7 +1114,9 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
+@@ -1003,7 +1116,9 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
          }
        }
      } else {
@@ -14857,7 +14873,7 @@ index 0683815..2edc59e 100644
        if(b.cb!=nullptr)
          stopBullet |= b.cb->onCollide(*ptr->toNpc()); else
          stopBullet  = true;
-@@ -1026,7 +1139,46 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
+@@ -1026,7 +1141,46 @@ void DynamicWorld::moveBullet(BulletBody &b, const Tempest::Vec3& dir, uint64_t
  void DynamicWorld::tick(uint64_t dt) {
    npcList   ->tickAabbs();
    bulletList->tick(dt);
@@ -14905,7 +14921,7 @@ index 0683815..2edc59e 100644
  
  void DynamicWorld::deleteObj(BulletBody* obj) {
 diff --git a/common/physics/dynamicworld.h b/common/physics/dynamicworld.h
-index 02725e0..384dac6 100644
+index 02725e0..4c532d7 100644
 --- a/common/physics/dynamicworld.h
 +++ b/common/physics/dynamicworld.h
 @@ -26,6 +26,8 @@ class Interactive;
@@ -14931,15 +14947,16 @@ index 02725e0..384dac6 100644
      static constexpr float spellSpeed  = 1; // centimeters per milliseconds
  
      DynamicWorld(World *world, const zenkit::Mesh& mesh);
-@@ -52,6 +55,7 @@ class DynamicWorld final {
+@@ -52,6 +55,8 @@ class DynamicWorld final {
        C_Object    = 4,
        C_Ghost     = 5,
        C_Item      = 6,
 +      C_Ragdoll   = 7, // Gothic II Mobile: тело регдолла
++      C_RagdollProxy = 8, // Gothic II Mobile: тело человека без куклы - упор только для кукол (Ragdoll::Proxy)
        };
  
      enum PtrType {
-@@ -174,7 +178,16 @@ class DynamicWorld final {
+@@ -174,7 +179,16 @@ class DynamicWorld final {
        };
  
      struct RayQueryResult : RayLandResult {
@@ -14957,7 +14974,7 @@ index 02725e0..384dac6 100644
        };
  
      struct BulletCallback {
-@@ -183,6 +196,17 @@ class DynamicWorld final {
+@@ -183,6 +197,17 @@ class DynamicWorld final {
        virtual void onMove(){}
        virtual void onCollide(zenkit::MaterialGroup matId){(void)matId;}
        virtual bool onCollide(Npc& other){(void)other; return true; }
@@ -14975,7 +14992,7 @@ index 02725e0..384dac6 100644
        };
  
      struct BulletBody final {
-@@ -261,6 +285,8 @@ class DynamicWorld final {
+@@ -261,6 +286,8 @@ class DynamicWorld final {
      RayLandResult  ray          (const Tempest::Vec3& from, const Tempest::Vec3& to) const;
      RayLandResult  sweep        (const Tempest::Vec3& from, const Tempest::Vec3& to, float R) const;
      RayQueryResult rayNpc       (const Tempest::Vec3& from, const Tempest::Vec3& to, const Npc* except) const;
@@ -14984,7 +15001,7 @@ index 02725e0..384dac6 100644
      float          soundOclusion(const Tempest::Vec3& from, const Tempest::Vec3& to) const;
  
      NpcItem        addGhostObj  (const Skeleton* src);
-@@ -276,6 +302,9 @@ class DynamicWorld final {
+@@ -276,6 +303,9 @@ class DynamicWorld final {
  
      void           deleteObj(BulletBody* obj);
  
@@ -14994,7 +15011,7 @@ index 02725e0..384dac6 100644
      static float   materialFriction(zenkit::MaterialGroup mat);
      static float   materialDensity (zenkit::MaterialGroup mat);
  
-@@ -302,6 +331,11 @@ class DynamicWorld final {
+@@ -302,6 +332,11 @@ class DynamicWorld final {
      RayWaterResult implWaterRay(const Tempest::Vec3& from, const Tempest::Vec3& to, float stepHeight) const;
      bool           hasCollision(const NpcItem &it, CollisionTest& out);
  
@@ -15006,7 +15023,7 @@ index 02725e0..384dac6 100644
      std::unique_ptr<CollisionWorld>    world;
  
      std::vector<std::string>           sectors;
-@@ -318,6 +352,9 @@ class DynamicWorld final {
+@@ -318,6 +353,9 @@ class DynamicWorld final {
      std::unique_ptr<NpcBodyList>       npcList;
      std::unique_ptr<BulletsList>       bulletList;
      std::unique_ptr<BBoxList>          bboxList;
@@ -15031,10 +15048,10 @@ index daa4a7d..455d40d 100644
  #include <BulletCollision/CollisionShapes/btBoxShape.h>
 diff --git a/common/physics/ragdoll.cpp b/common/physics/ragdoll.cpp
 new file mode 100644
-index 0000000..f196f75
+index 0000000..0c4fb41
 --- /dev/null
 +++ b/common/physics/ragdoll.cpp
-@@ -0,0 +1,5402 @@
+@@ -0,0 +1,5852 @@
 +#include "ragdoll.h"
 +
 +#include <Tempest/Log>
@@ -15047,6 +15064,9 @@ index 0000000..f196f75
 +#endif
 +#include <BulletDynamics/ConstraintSolver/btPoint2PointConstraint.h>
 +#include <BulletDynamics/ConstraintSolver/btGeneric6DofSpring2Constraint.h>
++#include <BulletCollision/CollisionDispatch/btCollisionDispatcher.h>
++#include <BulletCollision/BroadphaseCollision/btCollisionAlgorithm.h>
++#include <BulletCollision/NarrowPhaseCollision/btPersistentManifold.h>
 +#ifdef __GNUC__
 +#pragma GCC diagnostic pop
 +#endif
@@ -15243,6 +15263,77 @@ index 0000000..f196f75
 +      }
 +    }
 +  return ((p1+d1*s)-(p2+d2*t)).length();
++  }
++
++// Ближайшие точки отрезков p1-q1 и p2-q2 (как segmentDistance), м
++void closestOnSegments(const btVector3& p1, const btVector3& q1, const btVector3& p2, const btVector3& q2,
++                       btVector3& c1, btVector3& c2) {
++  const btVector3 d1 = q1-p1, d2 = q2-p2, r = p1-p2;
++  const float a = float(d1.dot(d1)), e = float(d2.dot(d2)), f = float(d2.dot(r));
++  float s = 0, t = 0;
++  if(a<=1e-8f && e<=1e-8f) {
++    s = 0; t = 0;
++    }
++  else if(a<=1e-8f) {
++    t = std::clamp(f/e, 0.f, 1.f);
++    }
++  else {
++    const float c = float(d1.dot(r));
++    if(e<=1e-8f) {
++      s = std::clamp(-c/a, 0.f, 1.f);
++      } else {
++      const float b     = float(d1.dot(d2));
++      const float denom = a*e-b*b;
++      s = denom>1e-8f ? std::clamp((b*f-c*e)/denom, 0.f, 1.f) : 0.f;
++      t = (b*s+f)/e;
++      if(t<0.f) {
++        t = 0.f;
++        s = std::clamp(-c/a, 0.f, 1.f);
++        }
++      else if(t>1.f) {
++        t = 1.f;
++        s = std::clamp((b-c)/a, 0.f, 1.f);
++        }
++      }
++    }
++  c1 = p1+d1*s;
++  c2 = p2+d2*t;
++  }
++
++// Мягкий упор тела a в b (b == nullptr - в неподвижное, ведомое анимацией) в точке at, n - нормаль от b к a, depth -
++// насколько вошло, м. Как контакт решателя: скорость сближения гасится, вошедшее выталкивается не быстрее 0,8 м/с
++// (без рывка), трение гасит скольжение
++void softContact(btRigidBody& a, btRigidBody* b, const btVector3& at, const btVector3& n, float depth, float dt) {
++  const btVector3 ra = at - a.getCenterOfMassPosition();
++  btVector3       v  = a.getVelocityInLocalPoint(ra);
++  btVector3       rb = btVector3(0,0,0);
++  if(b!=nullptr) {
++    rb  = at - b->getCenterOfMassPosition();
++    v  -= b->getVelocityInLocalPoint(rb);
++    }
++  const float vn   = float(v.dot(n));
++  const float want = std::min(0.25f*depth/dt, 0.8f);
++  if(vn>=want)
++    return;
++  const float kn = float(a.computeImpulseDenominator(at,n)) + (b!=nullptr ? float(b->computeImpulseDenominator(at,n)) : 0.f);
++  if(kn<1e-6f)
++    return;
++  const float jn  = (want-vn)/kn;
++  btVector3   imp = n*jn;
++  btVector3   vt  = v - n*vn;
++  const float vtl = float(vt.length());
++  if(vtl>1e-4f) {
++    const btVector3 t  = vt/vtl;
++    const float     kt = float(a.computeImpulseDenominator(at,t)) + (b!=nullptr ? float(b->computeImpulseDenominator(at,t)) : 0.f);
++    if(kt>1e-6f)
++      imp -= t*std::min(vtl/kt, 0.5f*jn);
++    }
++  a.activate();
++  a.applyImpulse(imp, ra);
++  if(b!=nullptr) {
++    b->activate();
++    b->applyImpulse(-imp, rb);
++    }
 +  }
 +
 +// Итерации решателя на сустав: рядом - точнее (руки и ноги не «тянутся» при ударе о землю), вдали - дешевле
@@ -15488,6 +15579,7 @@ index 0000000..f196f75
 +    uint8_t   kind   = K_None;
 +
 +    float     radius  = 0;  // см
++    float     bare    = 0;  // радиус по кости, без одежды и доспехов, см (попадание стрелы - Ragdoll::rayTest)
 +    float     halfLen = 0;  // половина длины цилиндра капсулы, см
 +    float     segHalf = 0;  // половина длины кости (от сустава до конца), см
 +    float     mass    = 0;  // кг
@@ -15518,6 +15610,9 @@ index 0000000..f196f75
 +  std::vector<uint8_t>                        driven; // по номеру кости
 +  std::vector<uint8_t>                        activeMode; // BoneMode по номеру кости (Pose в активном режиме)
 +  std::vector<std::pair<uint16_t,uint16_t>>   noCollide;
++  // у людей на ногах (S_Active, свои части друг друга не толкают): предплечье и кисть - корпус и голова, мягкий
++  // упор (Ragdoll::pushOut), чтобы рука в отклике на удар не уходила в своё тело
++  std::vector<std::pair<uint16_t,uint16_t>>   armTrunk;
 +  size_t                                      chest      = 0;  // часть - грудь (куда смотрит тело)
 +  size_t                                      follower   = size_t(-1); // корень скелета над тазом: идёт за тазом
 +  Vec3                                        frontLocal = {}; // «вперёд» модели в системе кости груди
@@ -15692,6 +15787,8 @@ index 0000000..f196f75
 +  struct Hand final {
 +    int8_t    src    = -1;                // опора: -1 - нет, 0 - мир (стена, край), 1 - человек (Ragdoll::grips)
 +    uint32_t  id     = 0;                 // человек (Grip::id)
++    int       k      = -1;                // какая из его точек (по порядку точек этого человека в grips)
++    btVector3 off    = btVector3(0,0,0);  // держится: ладонь относительно этой точки, м
 +    btVector3 at     = btVector3(0,0,0);  // точка опоры, м
 +    btVector3 vel    = btVector3(0,0,0);  // её скорость, м/с
 +    float     reach  = 0;                 // 0..1 - рука тянется к опоре
@@ -16256,6 +16353,38 @@ index 0000000..f196f75
 +        p.segHalf  = 0.5f*len;
 +        p.bodyBind = bodyFrame(p.bone,a,b);
 +        }
++      // Gothic II Mobile: тело на экране - с одеждой и доспехами, капсула по кости тоньше его: руки проходили
++      // сквозь тела, тело ложилось «в землю». У людей капсулы - по видимому телу (одежда, доспехи, мышцы);
++      // плоский корпус шире не становится (ширина - от плеч и бёдер), только толще
++      p.bare = p.radius;
++      if(flat) {
++        float cloth = 0;
++        switch(Kind(p.kind)) {
++          case K_Pelvis:    cloth = 0.009f; break;
++          case K_Spine:     cloth = 0.009f; break;
++          case K_Neck:      cloth = 0.004f; break;
++          case K_Head:      cloth = 0.005f; break;
++          case K_UpperArm:  cloth = 0.009f; break;
++          case K_ForeArm:   cloth = 0.008f; break;
++          case K_Hand:      cloth = 0.002f; break;
++          case K_Thigh:     cloth = 0.007f; break;
++          // голень - без прибавки: по видимой ноге, а толще - её низ упирается в землю у щиколотки и подпирает шаг
++          // (тело после толчка не падает там, где должно)
++          default: break;
++          }
++        cloth *= S;
++        if(i==0 || p.kind==K_Spine) {
++          // поперёк тела: ширина та же, капсула толще
++          const float w = p.halfLen + p.radius;
++          p.radius  = p.radius + cloth;
++          p.halfLen = std::max(w - p.radius, 0.2f*p.radius);
++          } else {
++          // вдоль кости: длина та же (концы - полусферы)
++          const float l = p.halfLen + p.radius;
++          p.radius  = p.radius + cloth;
++          p.halfLen = std::max(l - p.radius, 0.15f*p.segHalf);
++          }
++        }
 +      p.bodyInBone = inverseOf(sk.tr[p.bone])*p.bodyBind;
 +      p.boneInBody = inverseOf(p.bodyInBone);
 +
@@ -16264,7 +16393,7 @@ index 0000000..f196f75
 +        density = 900.f;
 +      if(p.kind==K_Head)
 +        density = 1100.f;
-+      const float r = p.radius*0.01f, h = 2.f*p.halfLen*0.01f;
++      const float r = p.bare*0.01f, h = 2.f*(p.halfLen+p.radius-p.bare)*0.01f;
 +      const float pi = float(M_PI);
 +      p.mass = density*(pi*r*r*h + 4.f/3.f*pi*r*r*r);
 +      limitsOf(Kind(p.kind),humanoid,p);
@@ -16331,9 +16460,25 @@ index 0000000..f196f75
 +        const size_t app = ap<lay->parts.size() ? lay->parts[ap].parent : size_t(-1);
 +        const size_t bpp = bp<lay->parts.size() ? lay->parts[bp].parent : size_t(-1);
 +        const bool   near = (bp==i || ap==r || ap==bp || app==r || bpp==i);
++        // Gothic II Mobile: у людей предплечье и кисть упираются в корпус, голову и ноги (кроме своего сустава):
++        // через сустав «плечо» предплечье с грудью раньше не сталкивалось - руки проходили сквозь своё тело
++        if(flat && bp!=i && ap!=r) {
++          const auto arm   = [](uint8_t k) { return k==K_ForeArm || k==K_Hand; };
++          const auto trunk = [](uint8_t k) { return k==K_Pelvis || k==K_Spine || k==K_Neck || k==K_Head ||
++                                                    k==K_Thigh  || k==K_Calf; };
++          if((arm(a.kind) && trunk(b.kind)) || (arm(b.kind) && trunk(a.kind)))
++            continue;
++          }
 +        if(near || d<(a.radius+b.radius)*1.1f)
 +          lay->noCollide.push_back({uint16_t(i),uint16_t(r)});
 +        }
++    if(flat)
++      for(size_t i=0; i<lay->parts.size(); ++i)
++        for(size_t r=0; r<lay->parts.size(); ++r) {
++          const uint8_t a = lay->parts[i].kind, b = lay->parts[r].kind;
++          if((a==K_ForeArm || a==K_Hand) && (b==K_Pelvis || b==K_Spine || b==K_Neck || b==K_Head))
++            lay->armTrunk.push_back({uint16_t(i),uint16_t(r)});
++          }
 +
 +    // корень (BIP01) над тазом - за тазом: на него смотрит камера, к нему крепятся слоты
 +    {
@@ -16523,7 +16668,8 @@ index 0000000..f196f75
 +  if(len<1e-3f)
 +    return false;
 +  const Vec3 rd = ab/len;
-+  // капсулы куклы - по костям, без одежды и доспехов: попадание - чуть шире (2,5 см)
++  // по кости, без одежды и доспехов (bare): попадание - чуть шире (2,5 см). Капсулы физики у людей толще (по
++  // одежде) - круг прицела подобран под эти: попадания стрел не меняются
 +  const float pad  = 2.5f;
 +  float       best = len;
 +  size_t      part = size_t(-1);
@@ -16533,8 +16679,9 @@ index 0000000..f196f75
 +      continue;
 +    const Matrix4x4 m  = bones[p.bone]*p.bodyInBone;
 +    const Vec3      c  = originOf(m);
-+    const Vec3      ax = Vec3::normalize(axisOf(m,0))*p.halfLen;
-+    const float     t  = rayCapsule(a, rd, c-ax, c+ax, p.radius+pad);
++    const float     hl = p.halfLen + p.radius - p.bare;
++    const Vec3      ax = Vec3::normalize(axisOf(m,0))*hl;
++    const float     t  = rayCapsule(a, rd, c-ax, c+ax, p.bare+pad);
 +    if(t>=0.f && t<best) {
 +      best = t;
 +      part = i;
@@ -17660,6 +17807,285 @@ index 0000000..f196f75
 +  return 0;
 +  }
 +
++void Ragdoll::obstaclesOf(const Skeleton& sk, const Matrix4x4* bones, size_t count, uint32_t id, bool pinnedOnly,
++                          std::vector<Obstacle>& out) {
++  auto lay = layoutOf(sk);
++  if(lay==nullptr || bones==nullptr)
++    return;
++  for(auto& p:lay->parts) {
++    if(p.bone>=count || (pinnedOnly && !p.pinned))
++      continue;
++    const Matrix4x4 m  = bones[p.bone]*p.bodyInBone;
++    const Vec3      c  = originOf(m);
++    const Vec3      ax = Vec3::normalize(axisOf(m,0))*p.halfLen;
++    Obstacle o;
++    o.a  = c-ax;
++    o.b  = c+ax;
++    o.r    = p.radius;
++    o.id   = id;
++    o.bone = uint16_t(p.bone);
++    out.push_back(o);
++    }
++  }
++
++struct Ragdoll::Proxy::Part final {
++  size_t                            part = 0;
++  std::unique_ptr<btCollisionShape> shape;
++  std::unique_ptr<btRigidBody>      rb;
++  };
++
++Ragdoll::Proxy::~Proxy() {
++  if(owner==nullptr)
++    return;
++  for(auto& p:parts)
++    if(p.rb->getBroadphaseHandle()!=nullptr)
++      owner->world->removeRagdollProxy(p.rb.get());
++  }
++
++std::unique_ptr<Ragdoll::Proxy> Ragdoll::Proxy::create(DynamicWorld& owner, const Skeleton& sk, uint32_t id, bool pinnedOnly) {
++  auto lay = layoutOf(sk);
++  if(lay==nullptr)
++    return nullptr;
++  std::unique_ptr<Proxy> px(new Proxy());
++  px->owner  = &owner;
++  px->sk     = &sk;
++  px->lay    = lay;
++  px->pid    = id;
++  px->pinned = pinnedOnly;
++  for(size_t i=0; i<lay->parts.size(); ++i) {
++    auto& lp = lay->parts[i];
++    if(pinnedOnly && !lp.pinned)
++      continue;
++    Part p;
++    p.part = i;
++    p.shape.reset(new btCapsuleShapeX(lp.radius*0.01f, 2.f*lp.halfLen*0.01f));
++    btRigidBody::btRigidBodyConstructionInfo ci(0.f,nullptr,p.shape.get(),btVector3(0,0,0));
++    ci.m_friction    = 0.6f;
++    ci.m_restitution = 0.f;
++    p.rb.reset(new btRigidBody(ci));
++    p.rb->setCollisionFlags(p.rb->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
++    p.rb->setActivationState(DISABLE_DEACTIVATION);
++    p.rb->setUserIndex(DynamicWorld::C_RagdollProxy);
++    p.rb->setUserPointer(px.get());
++    px->parts.push_back(std::move(p));
++    }
++  return px;
++  }
++
++void Ragdoll::Proxy::update(const Matrix4x4* bones, size_t count) {
++  auto& cw = *owner->world;
++  for(auto& p:parts) {
++    auto& lp = lay->parts[p.part];
++    if(lp.bone>=count)
++      continue;
++    const btTransform t = toBt(bones[lp.bone]*lp.bodyInBone);
++    p.rb->setWorldTransform(t);
++    p.rb->setInterpolationWorldTransform(t);
++    if(p.rb->getBroadphaseHandle()==nullptr)
++      cw.addRagdollProxy(p.rb.get()); else
++      cw.updateSingleAabb(p.rb.get());
++    }
++  }
++
++bool Ragdoll::holdsWith(const btCollisionObject* part, uint32_t other) const {
++  // кисть, которая держится за этого человека или тянется к нему, в него не упирается: ладонь лежит на нём (точка
++  // хвата - на поверхности его тела), а он двигается - упор и сустав хвата спорили бы. Плечо и предплечье упираются
++  if(beh==nullptr || other==0)
++    return false;
++  for(int a=0; a<2; ++a) {
++    auto& hd = beh->bal.hand[a];
++    if(hd.src!=1 || hd.id!=other)
++      continue;
++    const size_t i = lay->hand[a]<body.size() ? lay->hand[a] : lay->fore[a];
++    if(i<body.size() && body[i].rb.get()==part)
++      return true;
++    }
++  return false;
++  }
++
++Ragdoll::ProxyContact& Ragdoll::contactOf(uint32_t other) {
++  for(auto& c:proxyContact)
++    if(c.id==other)
++      return c;
++  ProxyContact c;
++  c.id        = other;
++  c.firstStep = stepNo;
++  c.lastTouch = stepNo;
++  proxyContact.push_back(c);
++  return proxyContact.back();
++  }
++
++void Ragdoll::nearCallback(btBroadphasePair& pair, btCollisionDispatcher& disp, const btDispatcherInfo& info) {
++  auto a = static_cast<btCollisionObject*>(pair.m_pProxy0->m_clientObject);
++  auto b = static_cast<btCollisionObject*>(pair.m_pProxy1->m_clientObject);
++  if(a->getUserIndex()!=DynamicWorld::C_Ragdoll)
++    std::swap(a,b);
++  const int cb = b->getUserIndex();
++  if(a->getUserIndex()!=DynamicWorld::C_Ragdoll || (cb!=DynamicWorld::C_Ragdoll && cb!=DynamicWorld::C_RagdollProxy)) {
++    btCollisionDispatcher::defaultNearCallback(pair,disp,info);
++    return;
++    }
++  // пара не считается: и контакты, что уже были, - прочь (иначе решатель толкает по старым точкам)
++  auto skip = [&pair]() {
++    if(pair.m_algorithm==nullptr)
++      return;
++    btManifoldArray arr;
++    pair.m_algorithm->getAllContactManifolds(arr);
++    for(int i=0; i<arr.size(); ++i)
++      arr[i]->clearManifold();
++    };
++  auto r = static_cast<Ragdoll*>(a->getUserPointer());
++  if(cb==DynamicWorld::C_Ragdoll) {
++    // кукла с куклой: рука, которая держится за того человека, в него не упирается
++    auto r2 = static_cast<Ragdoll*>(b->getUserPointer());
++    if(r2!=r && (r->holdsWith(a,r2->rid) || r2->holdsWith(b,r->rid))) {
++      skip();
++      return;
++      }
++    btCollisionDispatcher::defaultNearCallback(pair,disp,info);
++    return;
++    }
++  const uint32_t other = static_cast<Proxy*>(b->getUserPointer())->id();
++  // своё тело (кукла только что ожила, Proxy ещё не убрана) - не упор
++  if((other!=0 && other==r->rid) || r->holdsWith(a,other)) {
++    skip();
++    return;
++    }
++  btCollisionDispatcher::defaultNearCallback(pair,disp,info);
++  // уже вошёл в куклу в первый шаг, как появился рядом (удар вплотную, толчок, ожившее тело на другом), -
++  // «призрак», пока не разойдутся на ~0,15 с: иначе решатель выталкивает куклу рывком
++  bool touching = false;
++  if(pair.m_algorithm!=nullptr) {
++    btManifoldArray arr;
++    pair.m_algorithm->getAllContactManifolds(arr);
++    for(int i=0; i<arr.size() && !touching; ++i)
++      for(int k=0; k<arr[i]->getNumContacts(); ++k)
++        if(arr[i]->getContactPoint(k).getDistance()<0.f) {
++          touching = true;
++          break;
++          }
++    }
++  auto& c = r->contactOf(other);
++  c.lastSeen = r->stepNo;
++  // рука упёрлась в человека, к которому тянется, - схватится там, где коснулась (tickGrab)
++  if(touching && !c.ghost)
++    for(int s=0; s<2; ++s)
++      for(size_t i:{r->lay->hand[s], r->lay->fore[s]})
++        if(i<r->body.size() && r->body[i].rb.get()==a) {
++          r->armTouch  [s] = other;
++          r->armTouchAt[s] = r->stepNo;
++          }
++  if(touching && c.firstStep+1>=r->stepNo)
++    c.ghost = true;
++  if(!c.ghost)
++    return;
++  if(touching)
++    c.lastTouch = r->stepNo; else
++  if(r->stepNo>c.lastTouch+9)
++    c.ghost = false;
++  if(c.ghost)
++    skip();
++  }
++
++void Ragdoll::gripPoints(const Skeleton& sk, const Matrix4x4* bones, size_t count, const Vec3& from, std::vector<Vec3>& out) {
++  // точка хвата - не кость (она внутри тела: рука тянулась бы в него), а поверхность части со стороны хватающего
++  auto lay = layoutOf(sk);
++  if(lay==nullptr || bones==nullptr)
++    return;
++  for(size_t i=0; i<lay->parts.size(); ++i) {
++    const auto& p = lay->parts[i];
++    const bool  arm = (i==lay->upper[0] || i==lay->upper[1] || i==lay->fore[0] || i==lay->fore[1]);
++    if((!arm && i!=lay->chest) || p.bone>=count)
++      continue;
++    const Matrix4x4 m  = bones[p.bone]*p.bodyInBone;
++    const Vec3      c  = originOf(m);
++    const Vec3      ax = Vec3::normalize(axisOf(m,0));
++    // на оси: середина руки, у груди - ближе к хватающему по ширине
++    float t = 0;
++    if(!arm)
++      t = std::clamp(Vec3::dotProduct(from-c,ax), -p.halfLen, p.halfLen);
++    const Vec3 q = c + ax*t;
++    Vec3       d = from-q;
++    d -= ax*Vec3::dotProduct(d,ax);
++    if(d.length()<1e-3f)
++      continue;
++    out.push_back(q + Vec3::normalize(d)*p.radius);
++    }
++  }
++
++bool Ragdoll::insideSelf(const btVector3& at, float margin) const {
++  // точка в своём теле (или ближе margin к нему), м
++  for(size_t i=0; i<body.size(); ++i) {
++    const btTransform& t  = body[i].rb->getWorldTransform();
++    const btVector3    ax = t.getBasis().getColumn(0)*(lay->parts[i].halfLen*0.01f);
++    const float        d  = pointSegmentDistance(cmv(at), cmv(t.getOrigin()-ax), cmv(t.getOrigin()+ax))*0.01f;
++    if(d<lay->parts[i].radius*0.01f+margin)
++      return true;
++    }
++  return false;
++  }
++
++bool Ragdoll::reachesThroughSelf(const btVector3& from, const btVector3& to) const {
++  // рука от плеча к точке прошла бы сквозь свой корпус или голову: туда не тянуться
++  const btVector3 a = from + (to-from)*0.2f;
++  for(size_t i=0; i<body.size(); ++i) {
++    const auto k = lay->parts[i].kind;
++    if(k!=K_Pelvis && k!=K_Spine && k!=K_Neck && k!=K_Head)
++      continue;
++    const btTransform& t  = body[i].rb->getWorldTransform();
++    const btVector3    ax = t.getBasis().getColumn(0)*(lay->parts[i].halfLen*0.01f);
++    btVector3 ca, cb;
++    closestOnSegments(a, to, t.getOrigin()-ax, t.getOrigin()+ax, ca, cb);
++    if(float((ca-cb).length())<lay->parts[i].radius*0.01f-0.01f)
++      return true;
++    }
++  return false;
++  }
++
++void Ragdoll::pushOut(float dt) {
++  // Мягкий упор (softContact) у людей на ногах (S_Active: свои части Bullet там не сталкивает): предплечья и кисти -
++  // в свой корпус и голову. Тела людей рядом - в физике сами (Proxy), в них упирается решатель
++  if(dt<=0.f || body.empty())
++    return;
++  auto capsule = [this](size_t i, btVector3& a, btVector3& b) {
++    const btTransform& t  = body[i].rb->getWorldTransform();
++    const btVector3    ax = t.getBasis().getColumn(0)*(lay->parts[i].halfLen*0.01f);
++    a = t.getOrigin()-ax;
++    b = t.getOrigin()+ax;
++    };
++
++  // на экране физика рук - только в отклике на удар (show): без него рука лишь догоняет анимацию, упор её зря тормозит
++  if(st==S_Active && hasTarget && show>0.f) {
++    for(auto& pr:lay->armTrunk) {
++      const size_t i  = pr.first, r = pr.second;
++      const auto&  pa = lay->parts[i];
++      const auto&  pb = lay->parts[r];
++      const float  R  = (pa.radius+pb.radius)*0.01f;
++      btVector3 a0, a1, b0, b1, ca, cb;
++      capsule(i,a0,a1);
++      capsule(r,b0,b1);
++      closestOnSegments(a0,a1,b0,b1,ca,cb);
++      btVector3   n = ca-cb;
++      const float d = float(n.length());
++      if(d>=R)
++        continue;
++      // анимация сама кладёт руку к телу (скрещены, на поясе) - упор только сверх того, на сколько входит она
++      const btTransform& ta = drive[i].target;
++      const btTransform& tb = drive[r].target;
++      const btVector3    xa = ta.getBasis().getColumn(0)*(pa.halfLen*0.01f);
++      const btVector3    xb = tb.getBasis().getColumn(0)*(pb.halfLen*0.01f);
++      btVector3 qa, qb;
++      closestOnSegments(ta.getOrigin()-xa, ta.getOrigin()+xa, tb.getOrigin()-xb, tb.getOrigin()+xb, qa, qb);
++      const float allowed = std::max(0.f, R-float((qa-qb).length()));
++      const float depth   = (R-d) - allowed - 0.005f;
++      if(depth<=0.f || d<1e-5f)
++        continue;
++      n /= d;
++      softContact(*body[i].rb, pb.pinned ? nullptr : body[r].rb.get(), cb + n*(pb.radius*0.01f), n, depth, dt);
++      }
++    }
++  }
++
 +bool Ragdoll::isGripping() const {
 +  if(beh==nullptr)
 +    return false;
@@ -18442,15 +18868,18 @@ index 0000000..f196f75
 +    if(hd.gripAt>=0.f) {
 +      // держится: опора-человек двигается - рука с ним; устоял - отпускает
 +      if(hd.src==1) {
++        // та же точка, за которую схватилась (k-я этого человека), и ладонь там же относительно неё: раньше рука
++        // тянулась к последней его точке в списке - к чужому предплечью, сквозь тело
 +        const Grip* g = nullptr;
++        int         n = 0;
 +        for(auto& gp:grips)
-+          if(gp.id==hd.id)
++          if(gp.id==hd.id && n++==hd.k)
 +            g = &gp;
 +        if(g==nullptr) {
 +          releaseGrip(a);
 +          continue;
 +          }
-+        btVector3 to = btv(g->at);
++        btVector3 to = btv(g->at) + hd.off;
 +        btVector3 d  = to-hd.at;
 +        if(d.length()>1.5f*dt)
 +          d = d.normalized()*(1.5f*dt);
@@ -18483,15 +18912,24 @@ index 0000000..f196f75
 +      float     best = 1e9f;
 +      int8_t    src  = -1;
 +      uint32_t  id   = 0;
++      int       kk   = -1;
++      uint32_t  pid  = 0;
++      int       pn   = 0;
 +      btVector3 at   = btVector3(0,0,0), vel = btVector3(0,0,0);
 +      // тело летит к опоре - рука тянется заранее (что окажется в пределах руки за 0,35 с)
 +      const float ahead = std::min(float(vh.length())*0.35f, 0.6f);
 +      const auto& other = bl.hand[1-a];
 +      for(auto& gp:grips) {
++        // порядковый номер точки у этого человека (точки одного человека - подряд)
++        if(gp.id!=pid) {
++          pid = gp.id;
++          pn  = 0;
++          }
++        const int       ord = pn++;
 +        const btVector3 p = btv(gp.at);
 +        const float     d = float((p-sh).length());
 +        // слишком близко к плечу (рука так не сложится) или за плечом (плечо назад почти не разгибается) - не достать
-+        if(d>reach*1.1f+ahead || d<0.4f*reach || float(((p-sh)/d).dot(b.fwd))<-0.35f)
++        if(d>reach*1.1f+ahead || d<0.3f*reach || float(((p-sh)/d).dot(b.fwd))<-0.35f)
 +          continue;
 +        // другая рука уже тянется сюда - эта берётся рядом (за другое плечо, за руку)
 +        if(other.src==1 && (other.at-p).length()<0.12f)
@@ -18501,11 +18939,16 @@ index 0000000..f196f75
 +        // не за спиной и со своей стороны тела
 +        if(float(rel.dot(b.fwd))<-0.12f || float(rel.dot(sideV))<-0.15f)
 +          continue;
++        // своё тело - не опора: точка в своём теле или рука дотянулась бы до неё только сквозь свой корпус -
++        // держаться было бы за самого себя (человек вплотную - можно: точка на его теле, у своего)
++        if(insideSelf(p, 0.f) || reachesThroughSelf(sh,p))
++          continue;
 +        const float score = d - 0.25f*std::max(0.f, float(((p-sh)/d).dot(bl.fall)));
 +        if(score<best) {
 +          best = score;
 +          src  = 1;
 +          id   = gp.id;
++          kk   = ord;
 +          at   = p;
 +          vel  = btv(gp.vel);
 +          }
@@ -18537,7 +18980,13 @@ index 0000000..f196f75
 +        if(std::abs(float(nrm.y()))<0.6f && float((p-chest).dot(b.fwd))<-0.05f) {
 +          p += sideV*(0.18f*k) - up*(0.42f*k);
 +          p.setY(std::max(float(p.y()), groundY+0.55f*k));
++          // у самой стены ладонь у бедра оказалась бы на своём теле - дальше в сторону, по стене
++          for(int n=0; n<3 && insideSelf(p, 0.05f*k); ++n)
++            p += sideV*(0.08f*k);
 +          }
++        // своё тело - не опора (стена вплотную к телу: точка на нём самом, или рука - сквозь корпус)
++        if(insideSelf(p, 0.05f*k) || reachesThroughSelf(sh,p))
++          continue;
 +        const float dd    = float((p-sh).length());
 +        const float score = dd + (d.y()<-0.3f ? 0.08f : 0.f);
 +        if(score<best) {
@@ -18550,6 +18999,7 @@ index 0000000..f196f75
 +        }
 +      hd.src = src;
 +      hd.id  = id;
++      hd.k   = kk;
 +      if(src>=0) {
 +        hd.at  = at;
 +        hd.vel = vel;
@@ -18580,7 +19030,9 @@ index 0000000..f196f75
 +                  double(hd.at.x()*100),double(hd.at.y()*100),double(hd.at.z()*100),double((hp-hd.at).length()*100),
 +                  double((sh-hd.at).length()*100),double(reach*100));
 +#endif
-+    if((hp-hd.at).length()<0.12f*k) {
++    // ладонь у опоры - или рука упёрлась в того человека у точки хвата (дальше его тело не пускает)
++    const bool touched = hd.src==1 && armTouch[a]==hd.id && armTouchAt[a]+3>=stepNo && (hp-hd.at).length()<0.32f*k;
++    if((hp-hd.at).length()<0.12f*k || touched) {
 +      const size_t hb = lay->hand[a]<body.size() ? lay->hand[a] : f;
 +      auto&        rb = *body[hb].rb;
 +      auto c = std::make_unique<btPoint2PointConstraint>(rb, rb.getWorldTransform().inverse()*hp);
@@ -18588,6 +19040,13 @@ index 0000000..f196f75
 +      c->setOverrideNumSolverIterations(solverIt);
 +      owner->world->addConstraint(c.get(),true);
 +      hd.c      = std::move(c);
++      hd.off    = btVector3(0,0,0);
++      if(hd.src==1) {
++        int n = 0;
++        for(auto& gp:grips)
++          if(gp.id==hd.id && n++==hd.k)
++            hd.off = hp-btv(gp.at);
++        }
 +      hd.at     = hp;
 +      hd.gripAt = b.now;
 +      Log::i("[g2m] ragdoll: grabs ",hd.src==1 ? "a person" : "a wall");
@@ -18902,8 +19361,9 @@ index 0000000..f196f75
 +
 +    const float r = p.radius*0.01f, h = 2.f*p.halfLen*0.01f;
 +    b.shape.reset(new btCapsuleShapeX(r,h));
++    // инерция - по капсуле кости (bare): одежда толщиной тело не тяжелит и не делает неповоротливым
 +    btVector3 inertia = {};
-+    b.shape->calculateLocalInertia(p.mass,inertia);
++    btCapsuleShapeX(p.bare*0.01f, 2.f*(p.halfLen+p.radius-p.bare)*0.01f).calculateLocalInertia(p.mass,inertia);
 +    btRigidBody::btRigidBodyConstructionInfo ci(p.mass,nullptr,b.shape.get(),inertia);
 +    ci.m_friction           = 0.8f;
 +    ci.m_rollingFriction    = 0.06f;
@@ -19370,6 +19830,11 @@ index 0000000..f196f75
 +void Ragdoll::preStep(float dt) {
 +  if(body.empty())
 +    return;
++  // шаги физики - время для «призраков» (nearCallback); люди, которых давно нет рядом, забываются
++  ++stepNo;
++  if(stepNo%64==0)
++    proxyContact.erase(std::remove_if(proxyContact.begin(), proxyContact.end(),
++                                      [this](const ProxyContact& c) { return stepNo>c.lastSeen+120; }), proxyContact.end());
 +  tickLimits(dt);
 +  if(st==S_Active) {
 +    if(!hasTarget)
@@ -19387,6 +19852,7 @@ index 0000000..f196f75
 +      }
 +    drivePins(dt);
 +    driveActive(dt);
++    pushOut(dt);
 +    targetAge += dt;
 +    return;
 +    }
@@ -19397,6 +19863,7 @@ index 0000000..f196f75
 +  // упавшее тело: мышцы с пределом силы и вязкость тканей (и без цели - тогда только ткани)
 +  driveMuscles(dt);
 +  limitVelocity();
++  pushOut(dt);
 +  if(hasTarget)
 +    targetAge += dt;
 +  // провал силы от удара проходит за ~0,2 с
@@ -20439,10 +20906,10 @@ index 0000000..f196f75
 +  }
 diff --git a/common/physics/ragdoll.h b/common/physics/ragdoll.h
 new file mode 100644
-index 0000000..cf97762
+index 0000000..fe53724
 --- /dev/null
 +++ b/common/physics/ragdoll.h
-@@ -0,0 +1,376 @@
+@@ -0,0 +1,447 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -20457,6 +20924,10 @@ index 0000000..cf97762
 +class btQuaternion;
 +class btCollisionShape;
 +class btTypedConstraint;
++class btCollisionObject;
++class btCollisionDispatcher;
++struct btBroadphasePair;
++struct btDispatcherInfo;
 +
 +class DynamicWorld;
 +class Skeleton;
@@ -20571,7 +21042,41 @@ index 0000000..cf97762
 +      uint32_t      id  = 0;
 +      };
 +
++    // Капсула части тела в позе кадра, см (obstaclesOf); id - чей (как Grip::id)
++    struct Obstacle final {
++      Tempest::Vec3 a  = {}, b = {};
++      float         r  = 0;
++      uint32_t      id = 0;
++      uint16_t      bone = 0;  // кость части (стенд, журнал)
++      };
++
 +    struct Layout;
++
++    // Тело человека без своей куклы в физике (живой в анимации, застывшее тело) - для кукол рядом: капсулы частей -
++    // тела Bullet без массы, их ставит поза кадра (кинематические, скорость им не считается: тело не отбрасывают, а
++    // не дают в себя войти). Падающая кукла, её руки упираются в них, а не проходят насквозь. Кроме кукол, их ничто
++    // не видит (лучи, перемещение NPC, предметы: своя группа столкновений)
++    class Proxy final {
++      public:
++        ~Proxy();
++        // pinnedOnly - только таз и ноги (у активной куклы прочие части - сами тела в физике)
++        static std::unique_ptr<Proxy> create(DynamicWorld& owner, const Skeleton& sk, uint32_t id, bool pinnedOnly);
++        // поза кадра: мировые матрицы всех костей
++        void                  update(const Tempest::Matrix4x4* bones, size_t count);
++        uint32_t              id() const { return pid; }
++        bool                  isPinnedOnly() const { return pinned; }
++        const Skeleton&       skeleton() const { return *sk; }
++
++      private:
++        Proxy() = default;
++        struct Part;
++        DynamicWorld*         owner  = nullptr;
++        const Skeleton*       sk     = nullptr;
++        const Layout*         lay    = nullptr;
++        std::vector<Part>     parts;
++        uint32_t              pid    = 0;
++        bool                  pinned = false;
++      };
 +
 +    ~Ragdoll();
 +
@@ -20643,6 +21148,21 @@ index 0000000..cf97762
 +    Tempest::Vec3         bodyFront() const;
 +    // Люди рядом, за которых можно схватиться (обновлять каждый кадр, пока тело ловит равновесие или падает)
 +    void                  setGrips(const std::vector<Grip>& g);
++    // Капсулы частей тела по позе кадра (bones - мировые матрицы всех костей; стенд - насколько тела входят друг в
++    // друга); pinnedOnly - только закреплённые за анимацией (таз и ноги)
++    static void           obstaclesOf(const Skeleton& sk, const Tempest::Matrix4x4* bones, size_t count, uint32_t id,
++                                      bool pinnedOnly, std::vector<Obstacle>& out);
++    // За что у человека можно схватиться (Npc::ragdollGrips): плечи, грудь, предплечья - точки на поверхности его тела
++    // (капсул частей) со стороны from (грудь того, кто хватается), см; bones - мировые матрицы всех костей
++    static void           gripPoints(const Skeleton& sk, const Tempest::Matrix4x4* bones, size_t count, const Tempest::Vec3& from,
++                                     std::vector<Tempest::Vec3>& out);
++    // Чей это NPC (как Grip::id): рука, которая держится за человека, в него не упирается; своя Proxy - не упор
++    void                  setId(uint32_t id) { rid = id; }
++    uint32_t              id() const { return rid; }
++    // Столкновения кукол (Bullet, btCollisionDispatcher::setNearCallback): Proxy и куклы друг друга - кроме руки,
++    // которая держится за этого человека, и своей Proxy; в кого кукла уже вошла, когда он появился рядом (удар
++    // вплотную, толчок), - не упор, пока не разойдутся
++    static void           nearCallback(btBroadphasePair& pair, btCollisionDispatcher& disp, const btDispatcherInfo& info);
 +    // За кого держится рука: id опоры (Grip::id) или 0 - ни за кого из людей
 +    uint32_t              grippedId() const;
 +    // Держится рукой за опору (стену, край, человека); сколько шагов сделал после толчка (журнал, стенд)
@@ -20765,6 +21285,9 @@ index 0000000..cf97762
 +    void                  driveGetUp(float dt);
 +    void                  tickGetUp(float dt);
 +    void                  tickGrab(float dt);
++    void                  pushOut(float dt);
++    bool                  insideSelf(const btVector3& at, float margin) const;
++    bool                  reachesThroughSelf(const btVector3& from, const btVector3& to) const;
 +    void                  releaseGrip(int arm);
 +    void                  setAnchor(int leg, const btVector3& at);
 +    void                  freeAnchor(int leg);
@@ -20816,6 +21339,21 @@ index 0000000..cf97762
 +    float                           show        = 0; // доля физики на экране в активном режиме
 +    bool                            inWater  = false;
 +    std::vector<Grip>               grips;           // люди рядом - опора для руки (setGrips)
++    uint32_t                        rid    = 0;      // чей NPC (setId)
++    uint32_t                        stepNo = 0;      // шагов физики (preStep): время для призраков
++    // люди рядом (Proxy) по id: вошёл в куклу в первый же шаг касания - «призрак», не упор, пока не разойдутся
++    struct ProxyContact final {
++      uint32_t id        = 0;
++      uint32_t firstStep = 0;
++      uint32_t lastTouch = 0;
++      uint32_t lastSeen  = 0;
++      bool     ghost     = false;
++      };
++    std::vector<ProxyContact>       proxyContact;
++    uint32_t                        armTouch[2]   = {};  // кисть или предплечье касается человека (Proxy::id) ...
++    uint32_t                        armTouchAt[2] = {};  // ... в этот шаг физики (stepNo)
++    bool                  holdsWith(const btCollisionObject* part, uint32_t other) const;
++    ProxyContact&         contactOf(uint32_t other);
 +
 +  friend class DynamicWorld;
 +  };
@@ -26493,7 +27031,7 @@ index b45a9bd..35a566d 100644
      bool                isCracked() const { return isLockCracked; }
      bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..89c573b 100644
+index e015398..5aca7b9 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -3,11 +3,16 @@
@@ -26841,7 +27379,7 @@ index e015398..89c573b 100644
          break;
          }
        case zenkit::MdsEventType::SET_FIGHT_MODE:
-@@ -2344,6 +2521,31 @@ void Npc::tick(uint64_t dt) {
+@@ -2344,6 +2521,32 @@ void Npc::tick(uint64_t dt) {
  
    tickAnimationTags();
  
@@ -26862,6 +27400,7 @@ index e015398..89c573b 100644
 +    ragAirTime = 0;
 +    }
 +  tickRagdoll();
++  tickRagdollProxy();
 +  if(isPlayer())
 +    tickShove();
 +  tickInjury();
@@ -26873,7 +27412,7 @@ index e015398..89c573b 100644
    if(!visual.pose().hasAnim())
      setAnim(AnimationSolver::Idle);
  
-@@ -2380,7 +2582,8 @@ void Npc::tick(uint64_t dt) {
+@@ -2380,7 +2583,8 @@ void Npc::tick(uint64_t dt) {
      if(!isPlayer() && go2.flag!=GT_Flee && faiWaitTime<owner.tickCount() && currentTarget!=nullptr) {
        implTurnToFai(*currentTarget,dt);
        }
@@ -26883,7 +27422,7 @@ index e015398..89c573b 100644
      return;
      }
  
-@@ -2398,7 +2601,9 @@ void Npc::tick(uint64_t dt) {
+@@ -2398,7 +2602,9 @@ void Npc::tick(uint64_t dt) {
        }
      }
  
@@ -26894,7 +27433,7 @@ index e015398..89c573b 100644
    implAiTick(dt);
    }
  
-@@ -2529,6 +2734,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2529,6 +2735,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -26906,7 +27445,7 @@ index e015398..89c573b 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -2579,7 +2789,13 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2579,7 +2790,13 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          break;
          }
        else if(bs==BS_UNCONSCIOUS || bs==BS_LIE) {
@@ -26921,7 +27460,7 @@ index e015398..89c573b 100644
            queue.pushFront(std::move(act)); else
            implAniWait(visual.pose().animationTotalTime());
          }
-@@ -2593,14 +2809,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2593,14 +2810,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_EquipArmor:
        invent.equipArmor(act.i0,*this);
        break;
@@ -26944,7 +27483,7 @@ index e015398..89c573b 100644
        break;
      case AI_UseMob: {
        if(act.i0<0) {
-@@ -2740,6 +2961,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2740,6 +2962,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_OutputSvm:
      case AI_OutputSvmOverlay:{
        if(performOutput(act)) {
@@ -26954,7 +27493,7 @@ index e015398..89c573b 100644
          if(aiPolicy!=NpcProcessPolicy::AiFar2) {
            uint64_t msgTime = 0;
            if(act.act==AI_Output) {
-@@ -3504,6 +3728,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -3504,6 +3729,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -26963,7 +27502,7 @@ index e015398..89c573b 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +4019,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +4020,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
@@ -26974,7 +27513,7 @@ index e015398..89c573b 100644
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -3836,6 +4066,14 @@ bool Npc::finishingMove() {
+@@ -3836,6 +4067,14 @@ bool Npc::finishingMove() {
      return false;
  
    if(doAttack(Anim::AttackFinish,BS_HIT)) {
@@ -26989,7 +27528,7 @@ index e015398..89c573b 100644
      currentTarget->hnpc->attribute[ATR_HITPOINTS] = 0;
      currentTarget->checkHealth(true,false);
      owner.sendPassivePerc(*this,*this,*currentTarget,PERC_ASSESSMURDER);
-@@ -4091,13 +4329,22 @@ bool Npc::shootBow(Interactive* focOverride) {
+@@ -4091,13 +4330,22 @@ bool Npc::shootBow(Interactive* focOverride) {
    if(itm==nullptr)
      return false;
  
@@ -27014,7 +27553,7 @@ index e015398..89c573b 100644
    if(Gothic::inst().version().game==1) {
      b.setHitChance(float(hnpc->attribute[ATR_DEXTERITY])/100.f);
      if(rgn!=nullptr && rgn->isCrossbow())
-@@ -4158,10 +4405,77 @@ bool Npc::isPrehit() const {
+@@ -4158,10 +4406,77 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -27092,7 +27631,7 @@ index e015398..89c573b 100644
  void Npc::setPerceptionTime(uint64_t time) {
    perceptionTime = time;
    }
-@@ -4238,6 +4552,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4553,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -27103,7 +27642,7 @@ index e015398..89c573b 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4292,6 +4610,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
+@@ -4292,6 +4611,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
  void Npc::quitInteraction() {
    if(currentInteract==nullptr)
      return;
@@ -27113,7 +27652,7 @@ index e015398..89c573b 100644
    if(invTorch)
      processDefInvTorch();
    setDirectionY(0);
-@@ -4356,6 +4677,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4678,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -27151,7 +27690,7 @@ index e015398..89c573b 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4818,7 +5170,1305 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4818,7 +5171,1340 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
      durtyTranform = 0;
      }
  
@@ -27891,6 +28430,15 @@ index e015398..89c573b 100644
 +    ragdollRise();
 +  if(ragdoll==nullptr)
 +    return;
++  ragdoll->setId(gripId());
++  // кукла в физике: люди рядом (живые, застывшие тела) нужны ей телами - упираться в них (Ragdoll::Proxy)
++  if(ragdoll->isSimulated()) {
++    const uint64_t now = owner.tickCount();
++    owner.detectNpc(position(), 350.f, [&](Npc& n) {
++      if(&n!=this)
++        n.ragProxyWant = now;
++      });
++    }
 +  if(ragBlendStart==0) {
 +    // дальние куклы считаются проще; ушли от тела далеко - оно застывает (но не посреди падения: замерло бы стоя)
 +    if(ragdoll->isSimulated()) {
@@ -27946,6 +28494,26 @@ index e015398..89c573b 100644
 +    ragBlendTime  = RagdollBlendTime;
 +    visual.clearRagdollPose();
 +    }
++  }
++
++void Npc::tickRagdollProxy() {
++  // Тело этого NPC для кукол рядом (Ragdoll::Proxy): капсулы частей тела в позе кадра. Только пока кукла рядом
++  // просит (ragProxyWant) и своей куклы в физике нет; у активной куклы (отклик на удар) - только таз и ноги (руки и
++  // корпус у неё сами в физике). Падающее тело и руки упираются в живых и в лежащих, а не проходят насквозь
++  const uint64_t now  = owner.tickCount();
++  const bool     act  = ragdoll!=nullptr && ragdoll->isSimulated() && ragdoll->state()==Ragdoll::S_Active;
++  const bool     own  = ragdoll!=nullptr && ragdoll->isSimulated() && !act;
++  auto           sk   = visual.visualSkeleton();
++  if(own || ragProxyWant==0 || now>ragProxyWant+300 || sk==nullptr || isInWater() || owner.physic()==nullptr) {
++    ragProxy.reset();
++    return;
++    }
++  if(ragProxy==nullptr || &ragProxy->skeleton()!=sk || ragProxy->isPinnedOnly()!=act || ragProxy->id()!=gripId())
++    ragProxy = Ragdoll::Proxy::create(*owner.physic(), *sk, gripId(), act);
++  if(ragProxy==nullptr)
++    return;
++  auto& pose = visual.pose();
++  ragProxy->update(pose.transform(), pose.boneCount());
 +  }
 +
 +void Npc::followRagdoll() {
@@ -28254,21 +28822,27 @@ index e015398..89c573b 100644
 +  }
 +
 +void Npc::ragdollGrips(std::vector<Ragdoll::Grip>& out) const {
-+  // За кого рядом можно схватиться: плечи, грудь, предплечья людей на ногах в 2,2 м (и героя)
++  // За кого рядом можно схватиться: плечи, грудь, предплечья людей на ногах в 2,2 м (и героя) - точки на поверхности
++  // их тела со стороны этого NPC (Ragdoll::gripPoints). Не за себя и не за того, кто сам держится за этого NPC:
++  // двое, держась друг за друга, держали бы сами себя
 +  out.clear();
++  const Vec3 from = aimChest();
++  std::vector<Vec3> pts;
 +  owner.detectNpc(position(), 220.f, [&](Npc& n) {
-+    if(&n==this || n.isDown() || out.size()>=15)
++    if(&n==this || n.gripId()==gripId() || n.isDown() || out.size()>=15)
++      return;
++    if(n.ragdoll!=nullptr && n.ragGripped==gripId())
 +      return;
 +    auto sk = n.visual.visualSkeleton();
 +    if(sk==nullptr || InjuryRig::of(*sk)==nullptr)
 +      return;
 +    const Vec3 vel = n.ragVelocity*1000.f; // см/мс -> см/с
-+    for(auto nm:{"BIP01 L UPPERARM","BIP01 R UPPERARM","BIP01 SPINE2","BIP01 L FOREARM","BIP01 R FOREARM"}) {
-+      const size_t id = sk->findNode(nm);
-+      if(id==size_t(-1))
-+        continue;
++    auto& pose = n.visual.pose();
++    pts.clear();
++    Ragdoll::gripPoints(*sk, pose.transform(), pose.boneCount(), from, pts);
++    for(auto& p:pts) {
 +      Ragdoll::Grip g;
-+      g.at  = n.visual.mapBone(id);
++      g.at  = p;
 +      g.vel = vel;
 +      g.id  = n.gripId();
 +      out.push_back(g);
@@ -28458,7 +29032,7 @@ index e015398..89c573b 100644
 +    ragBreath.start(Breathing::Steady, int64_t(owner.tickCount()), uint32_t(id)*2654435761u);
 +  }
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..0dcafe0 100644
+index 7309936..dd161f0 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
 @@ -10,6 +10,7 @@
@@ -28595,7 +29169,7 @@ index 7309936..0dcafe0 100644
  
        void             save(Serialize& fout) const;
        void             load(Serialize&  fin);
-@@ -514,6 +605,51 @@ class Npc final {
+@@ -514,6 +605,52 @@ class Npc final {
      Npc*      updateNearestBody();
      bool      checkHealth(bool onChange, bool forceKill);
      void      onNoHealth(bool death, HitSound sndMask);
@@ -28631,6 +29205,7 @@ index 7309936..0dcafe0 100644
 +    void      endRagdollGetUp();
 +    void      ragdollRise();
 +    void      ragdollGrips(std::vector<Ragdoll::Grip>& out) const;
++    void      tickRagdollProxy();
 +    uint32_t  gripId() const;
 +    // герой бежит на человека: плечо вперёд или руки - толкнуть (слой позы), врезался - толчок (ragdollShove)
 +    void      tickShove();
@@ -28647,7 +29222,7 @@ index 7309936..0dcafe0 100644
      bool      hasAutoroll() const;
      bool      prepareTurn();
      void      stopWalkAnimation();
-@@ -522,6 +658,9 @@ class Npc final {
+@@ -522,6 +659,9 @@ class Npc final {
      void      takeDrownDamage();
  
      void      dropTorch(bool burnout = false);
@@ -28657,7 +29232,7 @@ index 7309936..0dcafe0 100644
  
      void      saveAiState(Serialize& fout) const;
      void      loadAiState(Serialize& fin);
-@@ -555,10 +694,85 @@ class Npc final {
+@@ -555,10 +695,87 @@ class Npc final {
  
      // visual props (cache)
      uint8_t                        durtyTranform=0;
@@ -28694,6 +29269,8 @@ index 7309936..0dcafe0 100644
 +    uint64_t                       ragRiseAt     = 0; // с этого времени - анимация подъёма игры (0 - не ждёт)
 +    uint32_t                       ragGripped    = 0; // за кого держится рука (gripId) - его тянет
 +    std::vector<Ragdoll::Grip>     ragGrips;
++    std::unique_ptr<Ragdoll::Proxy> ragProxy;          // тело для кукол рядом (Ragdoll::Proxy), пока своей в физике нет
++    uint64_t                       ragProxyWant = 0;  // когда кукла рядом просила тело (tickRagdoll)
 +    uint32_t                       ragPushedVer  = 0;
 +    uint32_t                       ragFollowVer  = 0;
 +    Tempest::Matrix4x4             ragPushedPos;
@@ -28743,7 +29320,7 @@ index 7309936..0dcafe0 100644
      WalkBit                        wlkMode                 =WalkBit::WM_Run;
      int32_t                        trGuild                 =GIL_NONE;
      int32_t                        talentsSk[TALENT_MAX_G2]={};
-@@ -608,6 +822,8 @@ class Npc final {
+@@ -608,6 +825,8 @@ class Npc final {
      AiQueue                        aiQueue;
      AiQueue                        aiQueueOverlay;
      std::vector<Routine>           routines;
@@ -28752,7 +29329,7 @@ index 7309936..0dcafe0 100644
  
      Interactive*                   currentInteract=nullptr;
      Npc*                           currentOther   =nullptr;
-@@ -629,6 +845,7 @@ class Npc final {
+@@ -629,6 +848,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;

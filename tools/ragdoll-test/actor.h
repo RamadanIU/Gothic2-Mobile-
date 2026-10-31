@@ -194,6 +194,10 @@ struct Actor {
   Vec3                     killLocal  = {};
   // толчок (S_Balance): люди рядом - опора для руки (как Npc::ragdollGrips); устоял - поза куклы переходит в анимацию
   std::vector<Ragdoll::Grip> grips;
+  // тело для кукол рядом, пока своей куклы в физике нет (как Npc::tickRagdollProxy); id - как Npc::gripId
+  std::unique_ptr<Ragdoll::Proxy> proxy;
+  uint32_t                 id = 100;
+  bool                     wantProxy = false;
   std::vector<Matrix4x4>   blendFrom;
   float                    blendAt   = -1;
   float                    blendTime = 0.45f;
@@ -391,6 +395,8 @@ struct Actor {
       inj.local  = wound.cur.local; inj.normal = wound.cur.normal;
       }
     prevAnim = anim;
+    if(r)
+      r->setId(id);
     if(r && r->state()==Ragdoll::S_Active) {
       const Vec3 rm = r->takeRootMotion();
       at += Vec3(rm.x,0,rm.z);

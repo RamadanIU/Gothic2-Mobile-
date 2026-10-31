@@ -330,7 +330,31 @@ struct SceneResult {
   Vec3  pelvis      = {};
   double physMs     = 0;   // среднее время шага мира с куклой, мс
   int   physFrames  = 0;
+  float selfPen     = 0;   // кукла в физике: насколько предплечья и кисти входили в свой корпус и голову, см
+  float otherPen    = 0;   // насколько части тела входили в тело другого человека рядом, см
   };
+
+// Глубина, на которую капсулы a входят в капсулы b (наибольшая), см; pick - какие пары считать
+template<class F>
+static float capsulePen(const std::vector<Ragdoll::Obstacle>& a, const std::vector<Ragdoll::Obstacle>& b, F pick) {
+  float pen = 0;
+  for(auto& x:a)
+    for(auto& y:b) {
+      if(!pick(x,y))
+        continue;
+      // расстояние между отрезками - по точкам (проще, чем точная формула; шаг 1/16 длины)
+      float d = 1e9f;
+      for(int i=0;i<=16;++i) {
+        const Vec3 p = x.a + (x.b-x.a)*(float(i)/16.f);
+        const Vec3 ab = y.b-y.a;
+        const float l2 = Vec3::dotProduct(ab,ab);
+        const float t  = l2>1e-6f ? std::clamp(Vec3::dotProduct(p-y.a,ab)/l2,0.f,1.f) : 0.f;
+        d = std::min(d,(p-(y.a+ab*t)).length());
+        }
+      pen = std::max(pen, x.r+y.r-d);
+      }
+  return pen;
+  }
 
 static int visScene(const std::string& name, const char* out, Shake* shake = nullptr, float* peakT = nullptr,
                     SceneResult* res = nullptr) {
@@ -437,6 +461,8 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
       ev.push_back({0.3f,[&,pick]{ a.shove(chest(),Vec3(0,0,-1),pick(2.2f)); }});
     else if(name=="shove_npc")
       ev.push_back({0.3f,[&,pick]{ a.shove(chest()+Vec3(-8,0,0),Vec3(0.45f,0,-1),pick(2.f)); }});
+    else if(name=="shove_into")
+      ev.push_back({0.3f,[&,pick]{ a.shove(chest(),Vec3(0,0,-1),pick(2.2f)); }});
     else {
       if(f!=nullptr) std::fclose(f);
       std::printf("unknown scene %s\n",name.c_str());
@@ -472,6 +498,16 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
   // гибель и падения (тряпичная кукла): как в игре - убит стоя ударом спереди, сзади, сбоку, в голову, на бегу,
   // после ударов (активная кукла оседает), стрелой; оглушён; удар тролля; сбит с ног; падение с высоты
   else if(name=="die_front") {
+    len = 3.f;
+    ev.push_back({0.2f,[&]{ a.kill(chest(),Vec3(0,0,-1),3.2f); }});
+    }
+  else if(name=="die_armcross") {
+    // убит ударом по предплечью сбоку: рука летит поперёк груди - упирается в неё, а не проходит насквозь
+    len = 3.f;
+    ev.push_back({0.2f,[&]{ a.kill((bonePos(a,"BIP01 R FOREARM")+bonePos(a,"BIP01 R HAND"))*0.5f,Vec3(1.f,1.2f,0.3f),8.f); }});
+    }
+  else if(name=="die_npc") {
+    // убит ударом спереди, за спиной стоит человек: тело падает на него, а не сквозь
     len = 3.f;
     ev.push_back({0.2f,[&]{ a.kill(chest(),Vec3(0,0,-1),3.2f); }});
     }
@@ -569,6 +605,11 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
   std::unique_ptr<bench::Actor> other;
   if(name=="shove_npc")
     other = std::make_unique<bench::Actor>(dw,*hum,Vec3(62,0,-45),180.f);
+  // стоит за спиной (смотрит в спину): упор для тела, не опора (die_npc) и опора (shove_into)
+  if(name=="die_npc")
+    other = std::make_unique<bench::Actor>(dw,*hum,Vec3(8,0,-72),0.f);
+  if(name=="shove_into")
+    other = std::make_unique<bench::Actor>(dw,*hum,Vec3(6,0,-80),0.f);
   size_t next = 0;
   float  peakDev = 0;
   // DT - шаг времени мира за кадр, мс (как в слоумо: 3-8 мс вместо 33); кадры для render.py - по-прежнему раз в 33 мс
@@ -579,13 +620,21 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
     while(next<ev.size() && ev[next].first<=t) { ev[next].second(); ++next; }
     const auto tick0 = std::chrono::steady_clock::now();
     if(other) {
-      // за что можно схватиться: плечи и грудь другого (как Npc::ragdollGrips)
+      // за что можно схватиться: плечи, грудь, предплечья другого - на поверхности его тела (как Npc::ragdollGrips)
       a.grips.clear();
       uint32_t id = 1;
-      for(auto nm:{"BIP01 L UPPERARM","BIP01 R UPPERARM","BIP01 SPINE2","BIP01 L FOREARM","BIP01 R FOREARM"}) {
-        Ragdoll::Grip g; g.at = bonePos(*other,nm); g.id = id; a.grips.push_back(g);
+      std::vector<Vec3> pts;
+      Ragdoll::gripPoints(*hum, other->disp.data(), other->disp.size(), bonePos(a,"BIP01 SPINE2"), pts);
+      for(auto& p:pts) {
+        Ragdoll::Grip g; g.at = p; g.id = id; a.grips.push_back(g);
         }
       other->tick();
+      // тело другого - упор для куклы (как Npc::tickRagdollProxy)
+      if(!std::getenv("NOPROXY")) {
+        if(!other->proxy)
+          other->proxy = Ragdoll::Proxy::create(dw,*hum,id,false);
+        other->proxy->update(other->disp.data(),other->disp.size());
+        }
       }
     a.tick();
     if(res!=nullptr) {
@@ -599,6 +648,20 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
         }
       if(a.r && a.r->state()==Ragdoll::S_Fall && res->fellAt<0.f)
         res->fellAt = t;
+      if(a.r && a.r->isSimulated() && a.r->state()!=Ragdoll::S_Active) {
+        std::vector<Ragdoll::Obstacle> own;
+        Ragdoll::obstaclesOf(*hum, a.disp.data(), a.disp.size(), 0, false, own);
+        auto nm = [&](const Ragdoll::Obstacle& o) -> const std::string& { return a.sk.nodes[o.bone].name; };
+        auto arm   = [&](const Ragdoll::Obstacle& o) { return nm(o).find("FOREARM")!=std::string::npos || nm(o).find("HAND")!=std::string::npos; };
+        auto trunk = [&](const Ragdoll::Obstacle& o) { return nm(o).find("SPINE")!=std::string::npos || nm(o).find("PELVIS")!=std::string::npos ||
+                                                               nm(o).find("HEAD")!=std::string::npos  || nm(o).find("NECK")!=std::string::npos; };
+        res->selfPen = std::max(res->selfPen, capsulePen(own,own,[&](auto& x, auto& y){ return arm(x) && trunk(y); }));
+        if(other) {
+          std::vector<Ragdoll::Obstacle> oth;
+          Ragdoll::obstaclesOf(*hum, other->disp.data(), other->disp.size(), 1, false, oth);
+          res->otherPen = std::max(res->otherPen, capsulePen(own,oth,[](auto&,auto&){ return true; }));
+          }
+        }
       if(a.r && a.r->state()==Ragdoll::S_GetUp)
         res->getUpErr = std::max(res->getUpErr, a.r->getUpError());
       if(a.getUpAt>=0.f && a.time-a.getUpAt<a.getUpHold) {
@@ -1480,6 +1543,29 @@ static int perf() {
 
 // Толчок с разбега (S_Balance) и подъём телом (S_GetUp): устоял или упал - по направлению и силе толчка; стена и
 // человек рядом держат; встаёт, не отставая от кадра подъёма; то же при шаге мира 4 мс (слоумо)
+// Столкновения тела: руки не уходят в свой корпус (сквозь сустав «плечо» предплечье с грудью раньше не сталкивалось),
+// тело не проходит сквозь человека рядом (живые NPC в физике - не тела: упор Ragdoll::setObstacles)
+static int contactTests() {
+  int fail = 0;
+  struct L { const char* scene; float self, other; };
+  // пределы, см: капсулы - приближение, мягкий упор и решатель оставляют немного
+  const L list[] = {
+    {"die_front",4,0}, {"die_back",4,0}, {"die_side",4,0}, {"die_hits",4,0}, {"die_run",4,0}, {"ko",4,0},
+    {"fight",4,0}, {"throes",4,0}, {"throes_belly",4,0}, {"fallfwd",4,0}, {"shove_front",4,0}, {"shove_side",4,0},
+    {"die_npc",4,4}, {"shove_into",4,3}, {"shove_npc",4,3},
+    };
+  for(auto& l:list) {
+    SceneResult r;
+    visScene(l.scene,nullptr,nullptr,nullptr,&r);
+    const bool good = r.selfPen<=l.self && (l.other<=0.f || r.otherPen<=l.other);
+    std::printf("contact: %-13s arms into own body %4.1f cm, into the other person %4.1f cm%s\n",l.scene,double(r.selfPen),
+                double(r.otherPen),good ? "" : " ^^^ FAIL");
+    if(!good)
+      fail++;
+    }
+  return fail;
+  }
+
 static int balanceTests() {
   int fail = 0;
   auto scene = [](const char* name, float spd, int dt = 0, float steady = 1.f) {
@@ -1584,6 +1670,8 @@ int main(int argc, char** argv) {
     return throesTests();
   if(argc>1 && std::string(argv[1])=="balance")
     return balanceTests();
+  if(argc>1 && std::string(argv[1])=="contact")
+    return contactTests();
   if(argc>1 && std::string(argv[1])=="injury") {
     injuryJump("BIP01 HEAD",Vec3(0,8,10),true);
     injuryJump("BIP01 SPINE2",Vec3(0,0,12),true);
@@ -1739,6 +1827,7 @@ int main(int argc, char** argv) {
   fail += activeTests(dw,*hum,*wlf);
   fail += throesTests();
   fail += balanceTests();
+  fail += contactTests();
 
   std::printf(fail==0 ? "ALL OK\n" : "FAILED: %d\n",fail);
   return fail;
