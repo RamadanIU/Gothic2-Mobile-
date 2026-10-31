@@ -332,6 +332,10 @@ struct SceneResult {
   int   physFrames  = 0;
   float selfPen     = 0;   // кукла в физике: насколько предплечья и кисти входили в свой корпус и голову, см
   float otherPen    = 0;   // насколько части тела входили в тело другого человека рядом, см
+  float shoulderOver= 0;   // насколько плечо выходило за анатомический предел, град (кукла не на ногах)
+  float jointOver   = 0;   // то же - любой сустав
+  float behind      = 0;   // кисть за спиной: насколько дальше плоскости спины (грудь - 12 см назад), см
+  float behindT     = 0;   // когда
   };
 
 // Глубина, на которую капсулы a входят в капсулы b (наибольшая), см; pick - какие пары считать
@@ -649,6 +653,22 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
       if(a.r && a.r->state()==Ragdoll::S_Fall && res->fellAt<0.f)
         res->fellAt = t;
       if(a.r && a.r->isSimulated() && a.r->state()!=Ragdoll::S_Active) {
+        res->shoulderOver = std::max(res->shoulderOver, a.r->overLimit(true));
+        {
+        // спина - по корпусу: вверх от поясницы к шее, влево - от правого плеча к левому, вперёд - их произведение
+        const Vec3 lu = bonePos(a,"BIP01 L UPPERARM"), ru = bonePos(a,"BIP01 R UPPERARM");
+        const Vec3 up = Vec3::normalize(bonePos(a,"BIP01 NECK")-bonePos(a,"BIP01 SPINE"));
+        const Vec3 fw = Vec3::normalize(Vec3::crossProduct(lu-ru,up));
+        const Vec3 c  = bonePos(a,"BIP01 SPINE2");
+        for(auto nm:{"BIP01 L HAND","BIP01 R HAND"}) {
+          const float bh = -Vec3::dotProduct(bonePos(a,nm)-c,fw) - 12.f;
+          if(bh>res->behind) {
+            res->behind  = bh;
+            res->behindT = t;
+            }
+          }
+        }
+        res->jointOver    = std::max(res->jointOver,    a.r->overLimit(false));
         std::vector<Ragdoll::Obstacle> own;
         Ragdoll::obstaclesOf(*hum, a.disp.data(), a.disp.size(), 0, false, own);
         auto nm = [&](const Ragdoll::Obstacle& o) -> const std::string& { return a.sk.nodes[o.bone].name; };
@@ -1545,6 +1565,22 @@ static int perf() {
 // человек рядом держат; встаёт, не отставая от кадра подъёма; то же при шаге мира 4 мс (слоумо)
 // Столкновения тела: руки не уходят в свой корпус (сквозь сустав «плечо» предплечье с грудью раньше не сталкивалось),
 // тело не проходит сквозь человека рядом (живые NPC в физике - не тела: упор Ragdoll::setObstacles)
+// Суставы: насколько плечо и прочие выходят за анатомию в падениях, агонии, равновесии (без расширения пределов -
+// поза анимации на ногах может быть шире, но не упавшее тело)
+static int limitReport() {
+  const char* list[] = {"die_front","die_back","die_side","die_head","die_run","die_hits","die_arrow","ko","troll","drop",
+                        "fallfwd","throes","throes_belly","throes_ko","shove_front","shove_back","shove_side","shove_hard",
+                        "shove_wall","shove_npc","getup_back","getup_belly"};
+  int fail = 0;
+  for(auto nm:list) {
+    SceneResult r;
+    visScene(nm,nullptr,nullptr,nullptr,&r);
+    std::printf("limits: %-13s shoulder over the limit %5.1f deg, any joint %5.1f deg, hand behind the back %5.1f cm at %.2f s\n",
+                nm,double(r.shoulderOver),double(r.jointOver),double(r.behind),double(r.behindT));
+    }
+  return fail;
+  }
+
 static int contactTests() {
   int fail = 0;
   struct L { const char* scene; float self, other; };
@@ -1672,6 +1708,8 @@ int main(int argc, char** argv) {
     return balanceTests();
   if(argc>1 && std::string(argv[1])=="contact")
     return contactTests();
+  if(argc>1 && std::string(argv[1])=="limits")
+    return limitReport();
   if(argc>1 && std::string(argv[1])=="injury") {
     injuryJump("BIP01 HEAD",Vec3(0,8,10),true);
     injuryJump("BIP01 SPINE2",Vec3(0,0,12),true);

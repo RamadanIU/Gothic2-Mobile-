@@ -14676,7 +14676,7 @@ index fb084a3..85e24e3 100644
      btVector3                                   bbox[2] = {btVector3(0,0,0), btVector3(0,0,0)};
  
 diff --git a/common/physics/dynamicworld.cpp b/common/physics/dynamicworld.cpp
-index 0683815..43411d1 100644
+index 0683815..bdf20cb 100644
 --- a/common/physics/dynamicworld.cpp
 +++ b/common/physics/dynamicworld.cpp
 @@ -3,9 +3,12 @@
@@ -14920,8 +14920,21 @@ index 0683815..43411d1 100644
    }
  
  void DynamicWorld::deleteObj(BulletBody* obj) {
+@@ -1336,6 +1490,12 @@ DynamicWorld::MoveCode DynamicWorld::NpcItem::implTryMove(const Tempest::Vec3& t
+   return MoveCode::MC_OK;
+   }
+ 
++bool DynamicWorld::NpcItem::hasCollision(CollisionTest& out) const {
++  if(!obj)
++    return false;
++  return owner->hasCollision(*this,out);
++  }
++
+ bool DynamicWorld::NpcItem::hasCollision() const {
+   if(!obj)
+     return false;
 diff --git a/common/physics/dynamicworld.h b/common/physics/dynamicworld.h
-index 02725e0..4c532d7 100644
+index 02725e0..03e24e2 100644
 --- a/common/physics/dynamicworld.h
 +++ b/common/physics/dynamicworld.h
 @@ -26,6 +26,8 @@ class Interactive;
@@ -14956,7 +14969,16 @@ index 02725e0..4c532d7 100644
        };
  
      enum PtrType {
-@@ -174,7 +179,16 @@ class DynamicWorld final {
+@@ -115,6 +120,8 @@ class DynamicWorld final {
+         auto  tryMove (const Tempest::Vec3& to, CollisionTest& out) -> DynamicWorld::MoveCode;
+ 
+         bool  hasCollision() const;
++        // Gothic II Mobile: то же, с тем, во что упёрся (npc, npcCol - глубина)
++        bool  hasCollision(CollisionTest& out) const;
+ 
+       private:
+         DynamicWorld*       owner  = nullptr;
+@@ -174,7 +181,16 @@ class DynamicWorld final {
        };
  
      struct RayQueryResult : RayLandResult {
@@ -14974,7 +14996,7 @@ index 02725e0..4c532d7 100644
        };
  
      struct BulletCallback {
-@@ -183,6 +197,17 @@ class DynamicWorld final {
+@@ -183,6 +199,17 @@ class DynamicWorld final {
        virtual void onMove(){}
        virtual void onCollide(zenkit::MaterialGroup matId){(void)matId;}
        virtual bool onCollide(Npc& other){(void)other; return true; }
@@ -14992,7 +15014,7 @@ index 02725e0..4c532d7 100644
        };
  
      struct BulletBody final {
-@@ -261,6 +286,8 @@ class DynamicWorld final {
+@@ -261,6 +288,8 @@ class DynamicWorld final {
      RayLandResult  ray          (const Tempest::Vec3& from, const Tempest::Vec3& to) const;
      RayLandResult  sweep        (const Tempest::Vec3& from, const Tempest::Vec3& to, float R) const;
      RayQueryResult rayNpc       (const Tempest::Vec3& from, const Tempest::Vec3& to, const Npc* except) const;
@@ -15001,7 +15023,7 @@ index 02725e0..4c532d7 100644
      float          soundOclusion(const Tempest::Vec3& from, const Tempest::Vec3& to) const;
  
      NpcItem        addGhostObj  (const Skeleton* src);
-@@ -276,6 +303,9 @@ class DynamicWorld final {
+@@ -276,6 +305,9 @@ class DynamicWorld final {
  
      void           deleteObj(BulletBody* obj);
  
@@ -15011,7 +15033,7 @@ index 02725e0..4c532d7 100644
      static float   materialFriction(zenkit::MaterialGroup mat);
      static float   materialDensity (zenkit::MaterialGroup mat);
  
-@@ -302,6 +332,11 @@ class DynamicWorld final {
+@@ -302,6 +334,11 @@ class DynamicWorld final {
      RayWaterResult implWaterRay(const Tempest::Vec3& from, const Tempest::Vec3& to, float stepHeight) const;
      bool           hasCollision(const NpcItem &it, CollisionTest& out);
  
@@ -15023,7 +15045,7 @@ index 02725e0..4c532d7 100644
      std::unique_ptr<CollisionWorld>    world;
  
      std::vector<std::string>           sectors;
-@@ -318,6 +353,9 @@ class DynamicWorld final {
+@@ -318,6 +355,9 @@ class DynamicWorld final {
      std::unique_ptr<NpcBodyList>       npcList;
      std::unique_ptr<BulletsList>       bulletList;
      std::unique_ptr<BBoxList>          bboxList;
@@ -15048,10 +15070,10 @@ index daa4a7d..455d40d 100644
  #include <BulletCollision/CollisionShapes/btBoxShape.h>
 diff --git a/common/physics/ragdoll.cpp b/common/physics/ragdoll.cpp
 new file mode 100644
-index 0000000..0c4fb41
+index 0000000..9683a04
 --- /dev/null
 +++ b/common/physics/ragdoll.cpp
-@@ -0,0 +1,5852 @@
+@@ -0,0 +1,5938 @@
 +#include "ragdoll.h"
 +
 +#include <Tempest/Log>
@@ -17482,6 +17504,61 @@ index 0000000..0c4fb41
 +        }
 +      }
 +
++    // Gothic II Mobile: рука за спину не уходит. Конус плеча (эллипс) не повторяет плечо человека: свисающая рука
++    // проходила за спину к другой стороне, а предел, расширенный под позу падения, сходится медленно. Упор тканей,
++    // как у живого: плечо назад от плоскости тела не дальше ~30°, за спиной к другой стороне - нет (над головой -
++    // без упора: так руки поднимают, вставая и в агонии)
++    if(p.kind==K_UpperArm && j.parent==lay->chest) {
++      const btVector3 d = b.getCenterOfMassPosition()-pivot;
++      const Vec3      cf = chestFront(boneWorld[lay->chest]);
++      btVector3       F  = btVector3(cf.x,cf.y,cf.z);
++      btVector3       U = pivot-a.getCenterOfMassPosition();
++      const size_t    hp = lay->head<body.size() ? lay->head : (lay->neck<body.size() ? lay->neck : size_t(-1));
++      if(hp!=size_t(-1))
++        U = body[hp].rb->getWorldTransform()*pivotOf(hp) - a.getCenterOfMassPosition();
++      if(d.length()>1e-4f && F.length()>0.5f && U.length()>1e-4f) {
++        const btVector3 dn = d.normalized();
++        F.normalize();
++        U = (U - F*U.dot(F)).normalized();
++        btVector3 O = pivot-a.getCenterOfMassPosition();
++        O = O - F*O.dot(F) - U*O.dot(U);
++        if(O.length()>1e-4f) {
++          O.normalize();
++          float dF = float(dn.dot(F)), dO = float(dn.dot(O));
++          const float dU = float(dn.dot(U));
++          if(dU<0.5f) {
++            const float back = -0.5f; // sin 30°
++            bool fix = false;
++            if(dF<back) {
++              dF  = back;
++              fix = true;
++              }
++            if(dF<-0.1f && dO<0.f) {
++              dO  = 0.f;
++              fix = true;
++              }
++            if(fix) {
++              // направление в пределе: та же высота, назад и к середине - не дальше упора
++              const float     rest = std::sqrt(std::max(1.f-dU*dU, 0.f));
++              const float     hz   = std::sqrt(dF*dF+dO*dO);
++              const btVector3 want = (F*dF + O*dO)*(hz>1e-4f ? rest/hz : 0.f) + U*dU;
++              btVector3       n    = dn.cross(want);
++              const float     ex   = std::atan2(float(n.length()), float(dn.dot(want)));
++              if(ex>deg(1) && n.length()>1e-5f) {
++                n.normalize();
++                // упор жёсткий (не тканевая пружина): за 4 шага вернёт, дальше назад не пускает
++                const float cap = inertiaAlong(n)*ex/(4.f*dt);
++                L += n*std::min(2.f*p.torque*ex*dt+cap*0.5f, cap);
++                const float wn = float(wRel.dot(n));
++                if(wn<0.f)
++                  L -= Ieff*(n*wn);
++                }
++              }
++            }
++          }
++        }
++      }
++
 +    float m = muscleOf(j.child);
 +    if(d.hasOverride)
 +      m = std::max(d.overrideStr*(1.f-d.dip), m);
@@ -18835,6 +18912,10 @@ index 0000000..0c4fb41
 +    // вбок: эта рука - туда (ниже, к земле), другая - вверх противовесом
 +    wantU += up*(-0.35f*std::max(side,0.f) + 0.55f*std::max(-side,0.f))*urge;
 +    wantU = wantU.normalized() + (up*std::cos(ph) - fall*std::sin(ph))*(0.55f*mill);
++    // «мельница» внизу круга уводила руку назад за спину: не дальше ~20° назад от плоскости тела
++    wantU.normalize();
++    if(const float bk = float(wantU.dot(b.fwd)); bk<-0.35f)
++      wantU = (wantU + b.fwd*(-0.35f-bk)).normalized();
 +    btVector3 wantF = wantU.normalized()*0.6f + b.fwd*0.4f + up*0.1f;
 +    aimPart(u, wantU, 0.6f*bl.armsW, 8.f);
 +    aimPart(f, wantF, 0.5f*bl.armsW, 8.f);
@@ -19535,6 +19616,33 @@ index 0000000..0c4fb41
 +  const float mx = std::max(p.hi[1],p.hi[2]);
 +  if(r>1.f+j.ext[1][1])
 +    j.ext[1][1] = std::min(r-1.f+margin/mx, deg(170)/mx-1.f);
++  }
++
++float Ragdoll::overLimit(bool arms) const {
++  float ret = 0;
++  for(auto& j:joint) {
++    if(j.type!=J_Euler && j.type!=J_Swing)
++      continue;
++    const auto& p = lay->parts[j.child];
++    if(arms && p.kind!=K_UpperArm)
++      continue;
++    const btQuaternion rel = jointRel(j,body[j.parent].rb->getWorldTransform().getRotation(),
++                                        body[j.child ].rb->getWorldTransform().getRotation());
++    if(j.type==J_Euler) {
++      const btVector3 e = eulerOf(rel);
++      for(int k=0; k<3; ++k)
++        ret = std::max(ret, std::max(p.lo[k]-float(e[k]), float(e[k])-p.hi[k]));
++      continue;
++      }
++    const btVector3 sw = swingOf(rel);
++    ret = std::max(ret, std::abs(float(sw.x()))-p.hi[0]);
++    const float ry = float(sw.y())/p.hi[1], rz = float(sw.z())/p.hi[2];
++    const float r  = std::sqrt(ry*ry+rz*rz);
++    // за эллипсом: угол сверх предела в этом направлении
++    if(r>1.f)
++      ret = std::max(ret, float(std::sqrt(sw.y()*sw.y()+sw.z()*sw.z()))*(1.f-1.f/r));
++    }
++  return ret*180.f/float(M_PI);
 +  }
 +
 +void Ragdoll::applyLimits(Joint& j) {
@@ -20906,10 +21014,10 @@ index 0000000..0c4fb41
 +  }
 diff --git a/common/physics/ragdoll.h b/common/physics/ragdoll.h
 new file mode 100644
-index 0000000..fe53724
+index 0000000..62402e0
 --- /dev/null
 +++ b/common/physics/ragdoll.h
-@@ -0,0 +1,447 @@
+@@ -0,0 +1,449 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -21156,6 +21264,8 @@ index 0000000..fe53724
 +    // (капсул частей) со стороны from (грудь того, кто хватается), см; bones - мировые матрицы всех костей
 +    static void           gripPoints(const Skeleton& sk, const Tempest::Matrix4x4* bones, size_t count, const Tempest::Vec3& from,
 +                                     std::vector<Tempest::Vec3>& out);
++    // Насколько суставы сейчас за анатомическими пределами (без расширения), град: плечи (arms) или все (стенд)
++    float                 overLimit(bool arms) const;
 +    // Чей это NPC (как Grip::id): рука, которая держится за человека, в него не упирается; своя Proxy - не упор
 +    void                  setId(uint32_t id) { rid = id; }
 +    uint32_t              id() const { return rid; }
@@ -27031,7 +27141,7 @@ index b45a9bd..35a566d 100644
      bool                isCracked() const { return isLockCracked; }
      bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..5aca7b9 100644
+index e015398..932eb47 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -3,11 +3,16 @@
@@ -27379,7 +27489,7 @@ index e015398..5aca7b9 100644
          break;
          }
        case zenkit::MdsEventType::SET_FIGHT_MODE:
-@@ -2344,6 +2521,32 @@ void Npc::tick(uint64_t dt) {
+@@ -2344,6 +2521,33 @@ void Npc::tick(uint64_t dt) {
  
    tickAnimationTags();
  
@@ -27404,6 +27514,7 @@ index e015398..5aca7b9 100644
 +  if(isPlayer())
 +    tickShove();
 +  tickInjury();
++  tickSeparate(dt);
 +  visual.tickStuck(owner.tickCount());
 +  // живой лежит по физике: ни ИИ, ни перемещения, пока не встанет
 +  if(isRagdollFall() && ragdollHoldsBody())
@@ -27412,7 +27523,7 @@ index e015398..5aca7b9 100644
    if(!visual.pose().hasAnim())
      setAnim(AnimationSolver::Idle);
  
-@@ -2380,7 +2583,8 @@ void Npc::tick(uint64_t dt) {
+@@ -2380,7 +2584,8 @@ void Npc::tick(uint64_t dt) {
      if(!isPlayer() && go2.flag!=GT_Flee && faiWaitTime<owner.tickCount() && currentTarget!=nullptr) {
        implTurnToFai(*currentTarget,dt);
        }
@@ -27422,7 +27533,7 @@ index e015398..5aca7b9 100644
      return;
      }
  
-@@ -2398,7 +2602,9 @@ void Npc::tick(uint64_t dt) {
+@@ -2398,7 +2603,9 @@ void Npc::tick(uint64_t dt) {
        }
      }
  
@@ -27433,7 +27544,7 @@ index e015398..5aca7b9 100644
    implAiTick(dt);
    }
  
-@@ -2529,6 +2735,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2529,6 +2736,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -27445,7 +27556,7 @@ index e015398..5aca7b9 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -2579,7 +2790,13 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2579,7 +2791,13 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          break;
          }
        else if(bs==BS_UNCONSCIOUS || bs==BS_LIE) {
@@ -27460,7 +27571,7 @@ index e015398..5aca7b9 100644
            queue.pushFront(std::move(act)); else
            implAniWait(visual.pose().animationTotalTime());
          }
-@@ -2593,14 +2810,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2593,14 +2811,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_EquipArmor:
        invent.equipArmor(act.i0,*this);
        break;
@@ -27483,7 +27594,7 @@ index e015398..5aca7b9 100644
        break;
      case AI_UseMob: {
        if(act.i0<0) {
-@@ -2740,6 +2962,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2740,6 +2963,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_OutputSvm:
      case AI_OutputSvmOverlay:{
        if(performOutput(act)) {
@@ -27493,7 +27604,7 @@ index e015398..5aca7b9 100644
          if(aiPolicy!=NpcProcessPolicy::AiFar2) {
            uint64_t msgTime = 0;
            if(act.act==AI_Output) {
-@@ -3504,6 +3729,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -3504,6 +3730,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -27502,7 +27613,7 @@ index e015398..5aca7b9 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +4020,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +4021,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
@@ -27513,7 +27624,7 @@ index e015398..5aca7b9 100644
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -3836,6 +4067,14 @@ bool Npc::finishingMove() {
+@@ -3836,6 +4068,14 @@ bool Npc::finishingMove() {
      return false;
  
    if(doAttack(Anim::AttackFinish,BS_HIT)) {
@@ -27528,7 +27639,7 @@ index e015398..5aca7b9 100644
      currentTarget->hnpc->attribute[ATR_HITPOINTS] = 0;
      currentTarget->checkHealth(true,false);
      owner.sendPassivePerc(*this,*this,*currentTarget,PERC_ASSESSMURDER);
-@@ -4091,13 +4330,22 @@ bool Npc::shootBow(Interactive* focOverride) {
+@@ -4091,13 +4331,22 @@ bool Npc::shootBow(Interactive* focOverride) {
    if(itm==nullptr)
      return false;
  
@@ -27553,7 +27664,7 @@ index e015398..5aca7b9 100644
    if(Gothic::inst().version().game==1) {
      b.setHitChance(float(hnpc->attribute[ATR_DEXTERITY])/100.f);
      if(rgn!=nullptr && rgn->isCrossbow())
-@@ -4158,10 +4406,77 @@ bool Npc::isPrehit() const {
+@@ -4158,10 +4407,77 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -27631,7 +27742,7 @@ index e015398..5aca7b9 100644
  void Npc::setPerceptionTime(uint64_t time) {
    perceptionTime = time;
    }
-@@ -4238,6 +4553,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4554,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -27642,7 +27753,7 @@ index e015398..5aca7b9 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4292,6 +4611,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
+@@ -4292,6 +4612,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
  void Npc::quitInteraction() {
    if(currentInteract==nullptr)
      return;
@@ -27652,7 +27763,7 @@ index e015398..5aca7b9 100644
    if(invTorch)
      processDefInvTorch();
    setDirectionY(0);
-@@ -4356,6 +4678,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4679,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -27690,7 +27801,7 @@ index e015398..5aca7b9 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4818,7 +5171,1340 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4818,7 +5172,1366 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
      durtyTranform = 0;
      }
  
@@ -28496,6 +28607,32 @@ index e015398..5aca7b9 100644
 +    }
 +  }
 +
++void Npc::tickSeparate(uint64_t dt) {
++  // Gothic II Mobile: двое вошли друг в друга - их поставили без проверки столкновений (телепорт отставшего напарника,
++  // расстановка после «Пути», подъём после регдолла, скрипт). Движок разрешает стоящему внутри другого двигаться, лишь
++  // бы не глубже (DynamicWorld::NpcItem::implTryMove) - так они и ходили слипшись, напарник внутри героя. Вошедшие
++  // расходятся сами: каждый от другого, не быстрее 1 м/с; герой стоит - отходит NPC
++  if(dt==0 || isPlayer() || isDown() || interactive()!=nullptr || isInAir() || isSwim())
++    return;
++  if(ragdoll!=nullptr && ragdoll->isSimulated() && ragdoll->state()!=Ragdoll::S_Active)
++    return;
++  auto pl = owner.player();
++  if(pl!=nullptr && qDistTo(*pl)>4000.f*4000.f)
++    return;
++  DynamicWorld::CollisionTest out;
++  if(!physic.hasCollision(out) || out.npc==nullptr || out.npc==this || out.npcCol<0.5f)
++    return;
++  Vec3 dir = position()-out.npc->position();
++  dir.y = 0;
++  if(dir.length()<1.f) {
++    // стоят в одной точке - в разные стороны (у каждого свой угол)
++    const float a = float(reinterpret_cast<uintptr_t>(this)%360u)*float(M_PI)/180.f;
++    dir = Vec3(std::cos(a),0,std::sin(a));
++    }
++  const float step = std::min(2.f*out.npcCol, 100.f*float(dt)/1000.f);
++  tryMove(Vec3::normalize(dir)*step);
++  }
++
 +void Npc::tickRagdollProxy() {
 +  // Тело этого NPC для кукол рядом (Ragdoll::Proxy): капсулы частей тела в позе кадра. Только пока кукла рядом
 +  // просит (ragProxyWant) и своей куклы в физике нет; у активной куклы (отклик на удар) - только таз и ноги (руки и
@@ -29032,7 +29169,7 @@ index e015398..5aca7b9 100644
 +    ragBreath.start(Breathing::Steady, int64_t(owner.tickCount()), uint32_t(id)*2654435761u);
 +  }
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..dd161f0 100644
+index 7309936..c46bfad 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
 @@ -10,6 +10,7 @@
@@ -29169,7 +29306,7 @@ index 7309936..dd161f0 100644
  
        void             save(Serialize& fout) const;
        void             load(Serialize&  fin);
-@@ -514,6 +605,52 @@ class Npc final {
+@@ -514,6 +605,53 @@ class Npc final {
      Npc*      updateNearestBody();
      bool      checkHealth(bool onChange, bool forceKill);
      void      onNoHealth(bool death, HitSound sndMask);
@@ -29206,6 +29343,7 @@ index 7309936..dd161f0 100644
 +    void      ragdollRise();
 +    void      ragdollGrips(std::vector<Ragdoll::Grip>& out) const;
 +    void      tickRagdollProxy();
++    void      tickSeparate(uint64_t dt);
 +    uint32_t  gripId() const;
 +    // герой бежит на человека: плечо вперёд или руки - толкнуть (слой позы), врезался - толчок (ragdollShove)
 +    void      tickShove();
@@ -29222,7 +29360,7 @@ index 7309936..dd161f0 100644
      bool      hasAutoroll() const;
      bool      prepareTurn();
      void      stopWalkAnimation();
-@@ -522,6 +659,9 @@ class Npc final {
+@@ -522,6 +660,9 @@ class Npc final {
      void      takeDrownDamage();
  
      void      dropTorch(bool burnout = false);
@@ -29232,7 +29370,7 @@ index 7309936..dd161f0 100644
  
      void      saveAiState(Serialize& fout) const;
      void      loadAiState(Serialize& fin);
-@@ -555,10 +695,87 @@ class Npc final {
+@@ -555,10 +696,87 @@ class Npc final {
  
      // visual props (cache)
      uint8_t                        durtyTranform=0;
@@ -29320,7 +29458,7 @@ index 7309936..dd161f0 100644
      WalkBit                        wlkMode                 =WalkBit::WM_Run;
      int32_t                        trGuild                 =GIL_NONE;
      int32_t                        talentsSk[TALENT_MAX_G2]={};
-@@ -608,6 +825,8 @@ class Npc final {
+@@ -608,6 +826,8 @@ class Npc final {
      AiQueue                        aiQueue;
      AiQueue                        aiQueueOverlay;
      std::vector<Routine>           routines;
@@ -29329,7 +29467,7 @@ index 7309936..dd161f0 100644
  
      Interactive*                   currentInteract=nullptr;
      Npc*                           currentOther   =nullptr;
-@@ -629,6 +848,7 @@ class Npc final {
+@@ -629,6 +849,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;
