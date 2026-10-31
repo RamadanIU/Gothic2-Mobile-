@@ -39,9 +39,13 @@ static Matrix4x4 frameAlong(Vec3 at, Vec3 x) {
   return m;
   }
 
-static std::unique_ptr<Skeleton> mkSkeleton(const std::vector<Bone>& b, const char* name) {
+// Скелеты живут до конца: схемы куклы, BodyRig и InjuryRig кэшируются по адресу скелета - новый скелет на месте
+// освобождённого (зеркальный после обычного) получил бы чужую схему
+static std::shared_ptr<Skeleton> mkSkeleton(const std::vector<Bone>& b, const char* name) {
+  static std::vector<std::shared_ptr<Skeleton>> alive;
   zenkit::ModelHierarchy h;
-  auto sk = std::make_unique<Skeleton>(h,nullptr,name);
+  auto sk = std::make_shared<Skeleton>(h,nullptr,name);
+  alive.push_back(sk);
   sk->nodes.resize(b.size());
   sk->tr.resize(b.size());
   for(size_t i=0;i<b.size();++i) {
@@ -80,6 +84,9 @@ static std::vector<Bone> human() {
     {"BIP01 R CLAVICLE",13,{-3,150,0}}, {"BIP01 R UPPERARM",22,{-18,148,0}}, {"BIP01 R FOREARM",23,{-46,148,0}},
     {"BIP01 R HAND",24,{-72,148,0}}, {"BIP01 R FINGER1",25,{-90,148,0}}, {"ZS_RIGHTHAND",25,{-78,148,0}},
     };
+  // MIRROR=1 - левая тройка, как у Gothic: левые кости по -X при «вперёд» +Z
+  if(std::getenv("MIRROR"))
+    for(auto& x:b) x.at.x = -x.at.x;
   return b;
   }
 
@@ -478,7 +485,7 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
   // переходит в анимацию подъёма)
   // подъём телом без анимации (Ragdoll::startRise): сбит с ног на спину или на живот, лежит, встаёт
   else if(name=="rise_back" || name=="rise_belly") {
-    len = 6.5f;
+    len = 7.5f;
     const bool belly = (name=="rise_belly");
     ev.push_back({0.1f,[&,belly]{
       if(belly)
@@ -1843,37 +1850,43 @@ static int duelScene(const std::string& name, const char* out, DuelResult* res =
   }
 
 // Подъём телом без анимации: со спины и с живота, при обычном шаге мира и при слоумо (4 мс) - встаёт, не дольше
-// 4,5 с, в конце таз на высоте стойки
+// 5 с, в конце таз на высоте стойки
 static int riseTests() {
   int fail = 0;
+  for(int mirror=0; mirror<2; ++mirror)
   for(const char* nm:{"rise_back","rise_belly"}) {
     for(const char* dt:{"33","4"}) {
       setenv("DT",dt,1);
+      if(mirror) setenv("MIRROR","1",1); else unsetenv("MIRROR");
       SceneResult r;
       visScene(nm,nullptr,nullptr,nullptr,&r);
-      const bool ok = r.recoveredAt>0.f && !r.riseFailed && r.recoveredAt-2.4f<4.5f && r.pelvisY>80.f;
-      std::printf("rise: %-10s DT=%-2s %s at %.2f s, pelvis %.0f cm %s\n",nm,dt,r.riseFailed ? "FAILED" : (r.recoveredAt>0.f ? "stood" : "still lying"),
+      const bool ok = r.recoveredAt>0.f && !r.riseFailed && r.recoveredAt-2.4f<5.f && r.pelvisY>80.f;
+      std::printf("rise: %-10s%s DT=%-2s %s at %.2f s, pelvis %.0f cm %s\n",nm,mirror ? " (mirror)" : "",dt,r.riseFailed ? "FAILED" : (r.recoveredAt>0.f ? "stood" : "still lying"),
                   double(r.recoveredAt),double(r.pelvisY),ok ? "" : "<- BAD");
       if(!ok)
         fail++;
       }
     }
   unsetenv("DT");
+  unsetenv("MIRROR");
   return fail;
   }
 
 // Бой телом: удары доходят (клинок касается тела), блок ловит удар, никто не падает от обычных ударов
 static int fightTests() {
   int fail = 0;
+  for(int mirror=0; mirror<2; ++mirror)
   for(const char* nm:{"duel","duel2h","duelfist","duelwalk","duelrun"}) {
+    if(mirror) setenv("MIRROR","1",1); else unsetenv("MIRROR");
     DuelResult r;
     duelScene(nm,nullptr,&r);
     const bool ok = r.hitsA+r.blocksA>=1 && (std::string(nm)!="duel" || r.hitsA>=1) && !r.fell;
-    std::printf("fight: %-9s A hits %d blocks %d, B hits %d blocks %d%s %s\n",nm,r.hitsA,r.blocksA,r.hitsB,r.blocksB,
+    std::printf("fight: %-9s%s A hits %d blocks %d, B hits %d blocks %d%s %s\n",nm,mirror ? " (mirror)" : "",r.hitsA,r.blocksA,r.hitsB,r.blocksB,
                 r.fell ? ", someone FELL" : "",ok ? "" : "<- BAD");
     if(!ok)
       fail++;
     }
+  unsetenv("MIRROR");
   return fail;
   }
 

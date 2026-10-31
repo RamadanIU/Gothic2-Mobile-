@@ -7026,10 +7026,10 @@ index b1d951f..8d5f5cd 100644
    if(hitFlg) {
 diff --git a/common/game/fightbody.cpp b/common/game/fightbody.cpp
 new file mode 100644
-index 0000000..260c37f
+index 0000000..1353a1a
 --- /dev/null
 +++ b/common/game/fightbody.cpp
-@@ -0,0 +1,770 @@
+@@ -0,0 +1,772 @@
 +#include "fightbody.h"
 +
 +#include "graphics/mesh/limbik.h"
@@ -7556,7 +7556,7 @@ index 0000000..260c37f
 +  for(int s=0; s<2; ++s) {
 +    const Vec3 loc = Vec3(st[s].x, 0, st[s].z) + k.step[s];
 +    want[s] = fr.toWorld(loc);
-+    toe[s]  = rot(fr.F, fr.U, st[s].yaw + k.yaw*0.3f);
++    toe[s]  = rot(fr.F, fr.U, (st[s].yaw + k.yaw*0.3f)*fr.h);
 +    if(!foot[s].init) {
 +      foot[s].at   = want[s];
 +      foot[s].at.y = groundY(want[s]) + ankH;
@@ -7672,12 +7672,13 @@ index 0000000..260c37f
 +      }
 +  }
 +  // таз: поворот, наклон вперёд, крен
-+  Vec3 F = rot(fr.F, fr.U, k.yaw);
++  // повороты «влево» - со знаком тройки модели (fr.h); наклон вперёд - вокруг правой оси
++  Vec3 F = rot(fr.F, fr.U, k.yaw*fr.h);
 +  Vec3 L = Vec3::normalize(Vec3::crossProduct(fr.U,F));
 +  Vec3 U = fr.U;
 +  F = rot(F,L,k.pitch);
 +  U = rot(U,L,k.pitch);
-+  U = rot(U,F,-k.roll);
++  U = rot(U,F,-k.roll*fr.h);
 +  out.pelvis = pw;
 +  out.fwd    = F;
 +  out.up     = U;
@@ -7723,7 +7724,8 @@ index 0000000..260c37f
 +  if(fr.F.length()<0.5f)
 +    fr.F = Vec3(0,0,1);
 +  fr.U = Vec3(0,1,0);
-+  fr.L = Vec3::normalize(Vec3::crossProduct(fr.U,fr.F));
++  fr.h = rig.handedness();
++  fr.L = Vec3::normalize(Vec3::crossProduct(fr.U,fr.F))*fr.h;
 +  fr.O = in.root;
 +  fr.k = std::max(in.scale*rig.pelvisHeight()/PelH, 0.1f);
 +
@@ -7802,10 +7804,10 @@ index 0000000..260c37f
 +  }
 diff --git a/common/game/fightbody.h b/common/game/fightbody.h
 new file mode 100644
-index 0000000..e0154fc
+index 0000000..45bddaa
 --- /dev/null
 +++ b/common/game/fightbody.h
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,189 @@
 +#pragma once
 +
 +#include <Tempest/Vec>
@@ -7936,6 +7938,7 @@ index 0000000..e0154fc
 +    struct Frame final {
 +      Tempest::Vec3 F, L, U, O;    // оси персонажа и точка на земле
 +      float         k = 1;         // см стандартного человека -> мир
++      float         h = 1;         // тройка модели (BodyRig::handedness): L - туда, где левые кости
 +      Tempest::Vec3 toWorld(const Tempest::Vec3& v) const { return O + (L*v.x + U*v.y + F*v.z)*k; }
 +      Tempest::Vec3 dir(const Tempest::Vec3& v) const { return L*v.x + U*v.y + F*v.z; }
 +      Tempest::Vec3 toLocal(const Tempest::Vec3& w) const;
@@ -12539,14 +12542,16 @@ index dadfd6d..6afd8d0 100644
      bool                           hnpcFlagGhost = false;
 diff --git a/common/graphics/mesh/bodyrig.cpp b/common/graphics/mesh/bodyrig.cpp
 new file mode 100644
-index 0000000..3385b2b
+index 0000000..ac23791
 --- /dev/null
 +++ b/common/graphics/mesh/bodyrig.cpp
-@@ -0,0 +1,553 @@
+@@ -0,0 +1,570 @@
 +#include "bodyrig.h"
 +
 +#include "limbik.h"
 +#include "skeleton.h"
++
++#include <Tempest/Log>
 +
 +#include <algorithm>
 +#include <cctype>
@@ -12783,7 +12788,15 @@ index 0000000..3385b2b
 +  if(horizontal(f).length()<0.5f)
 +    f = Vec3(0,0,1);
 +  r->Fm = horizontal(f);
-+  r->Lm = Vec3::normalize(Vec3::crossProduct(Vec3(0,1,0),r->Fm));
++  // влево - туда, где левые кости. Система модели может быть левой (Gothic: левые кости по -X при «вперёд» +Z) -
++  // тогда «влево» не вверх x вперёд, а наоборот (hand = -1); все повороты «влево» ниже - с этим знаком
++  {
++  const Vec3 lr = Vec3::crossProduct(Vec3(0,1,0),r->Fm);
++  const Vec3 sideV = horizontal(origin(r->bind[r->thigh[0]])-origin(r->bind[r->thigh[1]]) +
++                                origin(r->bind[r->upper[0]])-origin(r->bind[r->upper[1]]));
++  r->hnd = (Vec3::dotProduct(sideV,lr)>=0.f) ? 1.f : -1.f;
++  r->Lm  = Vec3::normalize(lr)*r->hnd;
++  }
 +
 +  // размеры
 +  float ground = 1e9f;
@@ -12839,6 +12852,9 @@ index 0000000..3385b2b
 +    }
 +    r->flexLeg[s]   = dirToLocal(r->bind[r->thigh[s]], r->Fm*-1.f);
 +    }
++  // журнал: какая у модели тройка и размеры (бой и подъём телом строят позу по ним)
++  Tempest::Log::i("[g2m] body rig: \"",sk.name(),"\" ",r->hnd>0.f ? "right" : "left","-handed, forward (",r->Fm.x,",",r->Fm.z,
++                  "), pelvis ",int(r->pelH)," cm, arm ",int(r->armL)," cm, leg ",int(r->legL)," cm");
 +  cache[&sk] = std::move(r);
 +  return cache[&sk].get();
 +  }
@@ -12895,7 +12911,7 @@ index 0000000..3385b2b
 +  const std::vector<Matrix4x4> W0 = {W[u],W[f],W[h]};
 +  auto place = [&](const Vec3& wr, const Vec3& pole) {
 +    W[u] = W0[0]; W[f] = W0[1]; W[h] = W0[2];
-+    solvePole(W[u],W[f],W[h],wr,pole,flexArm[a]);
++    solvePole(W[u],W[f],W[h],wr,pole,s.hinge ? flexArm[a] : Vec3());
 +    rebuildArm();
 +    orientHand();
 +    };
@@ -12999,14 +13015,17 @@ index 0000000..3385b2b
 +  if(T.length()<0.5f)
 +    T = Fm;
 +  Vec3 U = Vec3(0,1,0);
-+  Vec3 L = Vec3::normalize(Vec3::crossProduct(U,T));
++  // Lr - ось наклона носка (правая тройка), L - влево модели (знак hnd)
++  const Vec3 Lr = Vec3::normalize(Vec3::crossProduct(U,T));
++  Vec3 L = Lr*hnd;
 +  if(std::abs(s.pitch)>1e-5f) {
 +    const float cs = std::cos(s.pitch), sn = std::sin(s.pitch);
-+    T = rotate(T,L,cs,sn);
-+    U = rotate(U,L,cs,sn);
++    T = rotate(T,Lr,cs,sn);
++    U = rotate(U,Lr,cs,sn);
++    L = Vec3::normalize(Vec3::crossProduct(U,T))*hnd;
 +    }
 +  if(std::abs(s.roll)>1e-5f) {
-+    const float r  = (k==0 ? 1.f : -1.f)*s.roll;
++    const float r  = (k==0 ? 1.f : -1.f)*s.roll*hnd;
 +    const float cs = std::cos(r), sn = std::sin(r);
 +    U = rotate(U,T,cs,sn);
 +    L = rotate(L,T,cs,sn);
@@ -13036,7 +13055,7 @@ index 0000000..3385b2b
 +    Fp = Vec3::crossProduct(Up, std::abs(Up.x)<0.9f ? Vec3(1,0,0) : Vec3(0,0,1));
 +    }
 +  Fp = Vec3::normalize(Fp);
-+  Vec3 Lp = Vec3::normalize(Vec3::crossProduct(Up,Fp));
++  Vec3 Lp = Vec3::normalize(Vec3::crossProduct(Up,Fp))*hnd;
 +  auto R = [&](const Vec3& v) {
 +    return Lp*Vec3::dotProduct(v,Lm) + Up*v.y + Fp*Vec3::dotProduct(v,Fm);
 +    };
@@ -13050,11 +13069,12 @@ index 0000000..3385b2b
 +    }
 +
 +  // корпус: поровну на позвонки выше бёдер - поворот, сгиб, наклон
-+  Vec3 Lc = Lp, Uc = Up, Fc = Fp;
++  // Lc - правая тройка (сгиб вперёд - поворот вокруг неё на +); «влево» в поворотах - со знаком hnd
++  Vec3 Lc = Lp*hnd, Uc = Up, Fc = Fp;
 +  const float nb = float(bendable.size());
 +  for(auto v:bendable) {
 +    const Vec3 at = origin(W[v]);
-+    const float tw = s.twist/nb, fl = s.flex/nb, sd = -s.side/nb;
++    const float tw = s.twist*hnd/nb, fl = s.flex/nb, sd = -s.side*hnd/nb;
 +    rotateTree(W,v,at,Uc,tw);
 +    Lc = rotate(Lc,Uc,std::cos(tw),std::sin(tw));
 +    Fc = rotate(Fc,Uc,std::cos(tw),std::sin(tw));
@@ -13087,7 +13107,7 @@ index 0000000..3385b2b
 +  for(int a=0; a<2; ++a) {
 +    if(clav[a]>=n || s.shrug[a]<=0.f)
 +      continue;
-+    const float ang = std::clamp(s.shrug[a],0.f,1.f)*0.35f*(a==0 ? 1.f : -1.f);
++    const float ang = std::clamp(s.shrug[a],0.f,1.f)*0.35f*(a==0 ? 1.f : -1.f)*hnd;
 +    rotateTree(W,clav[a],origin(W[clav[a]]),Fc,ang);
 +    }
 +
@@ -13098,10 +13118,10 @@ index 0000000..3385b2b
 +  }
 diff --git a/common/graphics/mesh/bodyrig.h b/common/graphics/mesh/bodyrig.h
 new file mode 100644
-index 0000000..cf3c6f1
+index 0000000..2480959
 --- /dev/null
 +++ b/common/graphics/mesh/bodyrig.h
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,121 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -13129,6 +13149,9 @@ index 0000000..cf3c6f1
 +      Tempest::Vec3 axis  = {};  // куда смотрит ось хвата - клинок (мир); 0 - кисть прямо по предплечью
 +      Tempest::Vec3 palm  = {};  // куда смотрит ладонь (мир); 0 - как выйдет с наименьшим поворотом кисти
 +      Tempest::Vec3 axisLocal = {}; // ось хвата в системе кости кисти (gripAxisInHand); 0 - defaultGripAxis
++      // локоть - шарнир (плечо докручивается под плоскость сгиба). Опора на руки лёжа (подъём) - без этого: локоть
++      // уводят назад, и шарнирное плечо перекрутилось бы за свои пределы
++      bool          hinge = true;
 +      };
 +    struct Leg final {
 +      Tempest::Vec3 ankle = {};  // начало кости стопы, мир
@@ -13179,6 +13202,9 @@ index 0000000..cf3c6f1
 +    // Оси модели (вперёд, влево) в позе привязки - для своих систем отсчёта
 +    Tempest::Vec3 modelForward() const { return Fm; }
 +    Tempest::Vec3 modelLeft()    const { return Lm; }
++    // Тройка модели: 1 - влево = вверх x вперёд (правая), -1 - левая (левые кости по другую сторону). Свои системы
++    // «влево» строить как (вверх x вперёд) * handedness()
++    float         handedness()   const { return hnd; }
 +
 +    // Ось хвата (клинка) в системе кости кисти, если оружие висит в слоте slotLocalAxis (в системе слота)
 +    Tempest::Vec3 gripAxisInHand(int a, const Tempest::Vec3& slotLocalAxis) const;
@@ -13208,6 +13234,7 @@ index 0000000..cf3c6f1
 +    size_t                thigh[2] = {size_t(-1),size_t(-1)}, calf[2] = {size_t(-1),size_t(-1)}, foot[2] = {size_t(-1),size_t(-1)};
 +
 +    Tempest::Vec3         Fm = {0,0,1}, Lm = {1,0,0};
++    float                 hnd = 1;
 +    Tempest::Vec3         palmLocal[2];      // нормаль ладони в системе кисти
 +    Tempest::Vec3         foreLocal[2];      // от локтя к запястью в системе кисти (кисть прямо)
 +    float                 foreLen[2] = {26,26};
@@ -16812,10 +16839,10 @@ index daa4a7d..455d40d 100644
  #include <BulletCollision/CollisionShapes/btBoxShape.h>
 diff --git a/common/physics/ragdoll.cpp b/common/physics/ragdoll.cpp
 new file mode 100644
-index 0000000..873da45
+index 0000000..0baa40a
 --- /dev/null
 +++ b/common/physics/ragdoll.cpp
-@@ -0,0 +1,6504 @@
+@@ -0,0 +1,6505 @@
 +#include "ragdoll.h"
 +
 +#include <Tempest/Log>
@@ -21521,7 +21548,7 @@ index 0000000..873da45
 +  const float    u = (i>0 && b.t>a.t) ? smooth((r.t-a.t)/(b.t-a.t)) : 1.f;
 +  const Vec3     F = Vec3(float(r.F.x()),0,float(r.F.z()));
 +  const Vec3     U = Vec3(0,1,0);
-+  const Vec3     L = Vec3::normalize(Vec3::crossProduct(U,F));
++  const Vec3     L = Vec3::normalize(Vec3::crossProduct(U,F))*rig->handedness(); // туда, где левые кости
 +  const Vec3     O = cmv(r.O);
 +  const float    k = r.scale*rig->pelvisHeight()/95.f;
 +  auto toW  = [&](const Vec3& v) { return O + (L*v.x + U*v.y + F*v.z)*k; };
@@ -21535,6 +21562,7 @@ index 0000000..873da45
 +  for(int s=0; s<2; ++s) {
 +    sp.arm[s].grip = toW(arcLerp(a.hand[s],b.hand[s],u));
 +    sp.arm[s].pole = dirW(nlerp3(a.hpole[s],b.hpole[s],u));
++    sp.arm[s].hinge = false;
 +    sp.leg[s].ankle = toW(arcLerp(a.ankle[s],b.ankle[s],u));
 +    sp.leg[s].pole  = dirW(nlerp3(a.kpole[s],b.kpole[s],u));
 +    sp.leg[s].toe   = dirW(nlerp3(a.toe[s],b.toe[s],u));
