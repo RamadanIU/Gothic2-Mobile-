@@ -26,7 +26,7 @@ EXTRA=""
 g++ -std=c++20 -O2 -g -Wall -Wconversion $EXTRA -I"$O/common" -I"$O/lib/bullet3/src" -I"$O/lib/Tempest/Engine/include" \
     -I"$O/lib/Tempest/Engine" -I"$O/lib/ZenKit/include" \
     "$HERE/test.cpp" "$HERE/stubs.cpp" "$O/common/physics/ragdoll.cpp" "$O/common/graphics/mesh/animmath.cpp" \
-    "$O/common/graphics/mesh/injury.cpp" \
+    "$O/common/graphics/mesh/injury.cpp" "$O/common/graphics/mesh/bodyrig.cpp" "$O/common/game/fightbody.cpp" \
     "$O/lib/Tempest/Engine/math/matrix.cpp" "$O/lib/Tempest/Engine/utility/log.cpp" \
     "$OUT/bullet/src/BulletDynamics/libBulletDynamics.a" "$OUT/bullet/src/BulletCollision/libBulletCollision.a" \
     "$OUT/bullet/src/LinearMath/libLinearMath.a" -o "$OUT/ragtest"

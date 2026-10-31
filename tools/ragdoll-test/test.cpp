@@ -1695,7 +1695,125 @@ static int balanceSweep() {
   return 0;
   }
 
+
+// ---- Бой телом (game/fightbody.h): два человека, ходы по «часам», клинок - касанием
+#include "fight.h"
+
+struct ClockSeg {
+  float             at;
+  FightBody::Move   move;
+  int               stages;
+  float             stageLen, strikeAt;
+  };
+
+static void driveClock(bench::Fighter& f, const std::vector<ClockSeg>& segs, float t) {
+  FightBody::Clock c;
+  for(size_t i=0; i<segs.size(); ++i) {
+    const auto& s = segs[i];
+    const float total = float(s.stages)*s.stageLen;
+    if(t<s.at || t>=s.at+total)
+      continue;
+    c.move  = s.move;
+    c.t     = t-s.at;
+    c.total = total;
+    c.stage = std::min(int(c.t/s.stageLen), s.stages-1);
+    c.stageFrom = float(c.stage)*s.stageLen;
+    c.stageTo   = c.stageFrom+s.stageLen;
+    c.strike    = s.strikeAt>0.f ? c.stageFrom+s.strikeAt : -1.f;
+    c.swap      = s.strikeAt;
+    c.id        = uint32_t(i*16+size_t(c.stage)+1);
+    }
+  f.clock = c;
+  }
+
+static int duelScene(const std::string& name, const char* out) {
+  zenkit::Mesh mesh;
+  benchBoxes.clear();
+  DynamicWorld dw(nullptr,mesh);
+  auto hum = mkSkeleton(human(),"HUMANS.MDH");
+  FILE* f = out!=nullptr ? std::fopen(out,"w") : nullptr;
+  float dist = 165;
+  bench::Fighter A(dw,*hum,Vec3(0,0,0),0.f);
+  bench::Fighter B(dw,*hum,Vec3(0,0,dist),180.f);
+  B.a.stepWorld = false;
+  B.a.id = 101;
+  A.foe = &B; B.foe = &A;
+  std::vector<ClockSeg> sa, sb;
+  float len = 5.5f;
+  if(name=="duel" || name=="duel2h" || name=="duelfist") {
+    FightBody::Weapon w = FightBody::W_1H;
+    float sl = 0.7f, st = 0.4f, bl = 90;
+    if(name=="duel2h")  { w = FightBody::W_2H;   sl = 0.95f; st = 0.55f; bl = 125; }
+    if(name=="duelfist"){ w = FightBody::W_Fist; sl = 0.5f;  st = 0.26f; bl = 0; dist = 110; B.a.at = Vec3(0,0,dist); }
+    A.weapon = B.weapon = w; A.bladeLen = B.bladeLen = bl;
+    sa = {{0.6f,FightBody::M_Attack,3,sl,st}, {3.4f+sl,FightBody::M_AttackL,1,sl+0.1f,st+0.05f}};
+    sb = {{0.6f+sl+0.05f,FightBody::M_Parade,1,0.65f,-1}, {3.0f,FightBody::M_AttackR,1,sl+0.1f,st+0.05f}};
+    }
+  else if(name=="duelwalk") {
+    dist = 330; B.a.at = Vec3(0,0,dist);
+    sa = {{1.3f,FightBody::M_Attack,2,0.7f,0.4f}};
+    }
+  else if(name=="duelrun") {
+    // разбег в бою: шаги ног, потом удар с разбега
+    dist = 600; B.a.at = Vec3(0,0,dist);
+    sa = {{1.25f,FightBody::M_AttackRun,1,0.8f,0.45f}};
+    }
+  else if(name=="draw") {
+    A.foe = nullptr; B.foe = nullptr;
+    B.a.at = Vec3(400,0,0);
+    sa = {{0.4f,FightBody::M_Draw,1,1.0f,0.45f}, {2.4f,FightBody::M_Sheath,1,1.0f,0.55f}};
+    len = 3.8f;
+    }
+  else {
+    std::printf("unknown scene %s\n",name.c_str());
+    return 1;
+    }
+  A.a.startActive(); A.a.r->setCombat(true);
+  B.a.startActive(); B.a.r->setCombat(true);
+  if(name=="draw") { A.fb.reset(); }
+  const uint64_t stepMs = std::getenv("DT") ? uint64_t(std::max(1,std::atoi(std::getenv("DT")))) : 33u;
+  A.a.dt = B.a.dt = stepMs;
+  int lastFrame = -1;
+  for(float t=0; t<len; t+=float(stepMs)/1000.f) {
+    driveClock(A,sa,t);
+    driveClock(B,sb,t);
+    if(name=="draw") {
+      // в руке после мига смены
+      }
+    if(name=="duelwalk")
+      A.vel = (t>0.3f && B.a.at.z-A.a.at.z>175.f) ? Vec3(0,0,140) : Vec3();
+    if(name=="duelrun")
+      A.vel = (t>0.2f && B.a.at.z-A.a.at.z>165.f) ? Vec3(0,0,std::min(380.f,(t-0.2f)*900.f)) : Vec3();
+    const float dts = float(stepMs)/1000.f;
+    A.advance(dts); B.advance(dts);
+    A.a.tick(); B.a.tick();
+    A.sweep(); B.sweep();
+    const int frame = int(t/0.033f+1e-4f);
+    if(frame==lastFrame || f==nullptr)
+      continue;
+    lastFrame = frame;
+    char label[96];
+    static const char* mv[] = {"guard","attack","attackL","attackR","run","finish","parade","jump","draw","sheath","hit"};
+    std::snprintf(label,sizeof(label),"%s A:%s%s B:%s%s",name.c_str(),mv[A.clock.move],A.fb.striking()?"*":"",
+                  mv[B.clock.move],B.fb.striking()?"*":"");
+    A.a.marks.clear();
+    for(auto& m:A.fx) A.a.marks.push_back(m);
+    for(auto& m:B.fx) A.a.marks.push_back(m);
+    A.a.dump(f,label);
+    B.a.dump(f,"",true);
+    A.dumpBlade(f,'s');
+    B.dumpBlade(f,'q');
+    }
+  if(f) std::fclose(f);
+  for(auto& l:A.log) std::printf("A %s\n",l.c_str());
+  for(auto& l:B.log) std::printf("B %s\n",l.c_str());
+  std::printf("%s: A hits %d blocks %d, B hits %d blocks %d\n",name.c_str(),A.hits,A.blocks,B.hits,B.blocks);
+  return 0;
+  }
+
 int main(int argc, char** argv) {
+  if(argc>3 && std::string(argv[1])=="vis" && (std::string(argv[2]).rfind("duel",0)==0 || std::string(argv[2])=="draw"))
+    return duelScene(argv[2],argv[3]);
   if(argc>3 && std::string(argv[1])=="vis")
     return visScene(argv[2],argv[3]);
   if(argc>1 && std::string(argv[1])=="sweep")

@@ -7024,6 +7024,976 @@ index b1d951f..8d5f5cd 100644
    auto  ws = npc.weaponState();
  
    if(hitFlg) {
+diff --git a/common/game/fightbody.cpp b/common/game/fightbody.cpp
+new file mode 100644
+index 0000000..260c37f
+--- /dev/null
++++ b/common/game/fightbody.cpp
+@@ -0,0 +1,770 @@
++#include "fightbody.h"
++
++#include "graphics/mesh/limbik.h"
++
++#include <algorithm>
++#include <cmath>
++
++using namespace Tempest;
++
++// Gothic II Mobile: бой телом - процедурные ходы (fightbody.h). Позы - в системе персонажа (x - влево, y - вверх,
++// z - вперёд) в сантиметрах человека с тазом на высоте 95 см; в мир - через Frame (масштаб по скелету)
++
++namespace {
++
++constexpr float PelH = 95.f;  // высота таза стандартного человека, см
++
++float smooth(float t) {
++  t = std::clamp(t,0.f,1.f);
++  return t*t*(3.f-2.f*t);
++  }
++
++Vec3 horizontal(Vec3 v) {
++  v.y = 0;
++  const float l = v.length();
++  return l>1e-4f ? v/l : Vec3();
++  }
++
++Vec3 nrm(const Vec3& v, const Vec3& def = Vec3()) {
++  const float l = v.length();
++  return l>1e-5f ? v/l : def;
++  }
++
++Vec3 rot(const Vec3& v, const Vec3& ax, float a) {
++  return LimbIk::rotate(v,ax,std::cos(a),std::sin(a));
++  }
++
++Vec3 lerp(const Vec3& a, const Vec3& b, float w) {
++  return a + (b-a)*w;
++  }
++
++Vec3 nlerp(const Vec3& a, const Vec3& b, float w) {
++  if(a.length()<1e-5f)
++    return b;
++  if(b.length()<1e-5f)
++    return a;
++  return nrm(a*(1.f-w) + b*w, b);
++  }
++
++float strikeDur(FightBody::Weapon w) {
++  switch(w) {
++    case FightBody::W_Fist: return 0.11f;
++    case FightBody::W_1H:   return 0.17f;
++    case FightBody::W_2H:   return 0.24f;
++    }
++  return 0.17f;
++  }
++
++// стойка ступней: левая впереди, правая сзади и развёрнута наружу (x, z - см; yaw носка - рад, + влево)
++struct FootStance { float x, z, yaw; };
++void stanceOf(FightBody::Weapon w, FootStance st[2]) {
++  st[0] = {14, 12, 0.15f};
++  st[1] = {-14,-15,-0.45f};
++  switch(w) {
++    case FightBody::W_Fist:
++      st[0] = {13, 11, 0.15f};
++      st[1] = {-12,-12,-0.40f};
++      break;
++    case FightBody::W_1H:
++      st[0] = {14, 12, 0.15f};
++      st[1] = {-14,-15,-0.45f};
++      break;
++    case FightBody::W_2H:
++      st[0] = {16, 15, 0.12f};
++      st[1] = {-16,-21,-0.55f};
++      break;
++    }
++  }
++
++// виды ударов: куда идёт кисть в миг удара (система персонажа)
++enum StrikeKind : uint8_t {
++  K_Over   = 0, // сверху вниз
++  K_DiagF  = 1, // справа сверху - влево вниз
++  K_DiagB  = 2, // слева сверху - вправо вниз
++  K_HorF   = 3, // справа налево
++  K_HorB   = 4, // слева направо
++  K_Thrust = 5, // прямой (укол, кулак)
++  K_Stab   = 6, // вниз в лежащего
++  };
++
++}
++
++Vec3 FightBody::Frame::toLocal(const Vec3& w) const {
++  const Vec3 d = (w-O)/k;
++  return Vec3(Vec3::dotProduct(d,L), Vec3::dotProduct(d,U), Vec3::dotProduct(d,F));
++  }
++
++Vec3 FightBody::Frame::dirLocal(const Vec3& w) const {
++  return Vec3(Vec3::dotProduct(w,L), Vec3::dotProduct(w,U), Vec3::dotProduct(w,F));
++  }
++
++void FightBody::reset() {
++  for(auto& f:foot)
++    f = Foot();
++  str      = Strike();
++  hasShown = false;
++  lastMove = M_Guard;
++  lastId   = 0;
++  blend    = 1;
++  arcNow   = -1;
++  strikeOn = false;
++  blockW   = 0;
++  pelInit  = false;
++  }
++
++void FightBody::plantFeet(const Vec3& l, const Vec3& r) {
++  foot[0].at = l; foot[0].u = -1; foot[0].init = true;
++  foot[1].at = r; foot[1].u = -1; foot[1].init = true;
++  }
++
++float FightBody::hitPower(Weapon w, float bladeSpeed) {
++  const float v = bladeSpeed/100.f;
++  float p = std::clamp(0.22f*v + 0.8f, 1.2f, 4.2f);
++  if(w==W_2H)
++    p *= 1.25f;
++  if(w==W_Fist)
++    p *= 0.75f;
++  return p;
++  }
++
++FightBody::Key FightBody::mix(const Key& a, const Key& b, float w) {
++  Key r;
++  r.pel   = lerp(a.pel,b.pel,w);
++  r.drop  = a.drop  + (b.drop -a.drop )*w;
++  r.yaw   = a.yaw   + (b.yaw  -a.yaw  )*w;
++  r.pitch = a.pitch + (b.pitch-a.pitch)*w;
++  r.roll  = a.roll  + (b.roll -a.roll )*w;
++  r.flex  = a.flex  + (b.flex -a.flex )*w;
++  r.side  = a.side  + (b.side -a.side )*w;
++  r.twist = a.twist + (b.twist-a.twist)*w;
++  for(int i=0; i<2; ++i) {
++    r.hand[i]  = lerp(a.hand[i],b.hand[i],w);
++    r.pole[i]  = nlerp(a.pole[i],b.pole[i],w);
++    r.axis[i]  = nlerp(a.axis[i],b.axis[i],w);
++    r.palm[i]  = nlerp(a.palm[i],b.palm[i],w);
++    r.shrug[i] = a.shrug[i] + (b.shrug[i]-a.shrug[i])*w;
++    r.step[i]  = lerp(a.step[i],b.step[i],w);
++    }
++  return r;
++  }
++
++FightBody::Key FightBody::guardKey(const Input& in) const {
++  Key k;
++  switch(in.weapon) {
++    case W_Fist:
++      k.drop  = 5;
++      k.yaw   = -0.25f;
++      k.twist = -0.08f;
++      k.flex  = 0.12f;
++      k.hand[1] = Vec3(-11,140,30); k.pole[1] = Vec3(-0.6f,-1,0);
++      k.hand[0] = Vec3( 12,145,36); k.pole[0] = Vec3( 0.6f,-1,0);
++      break;
++    case W_1H:
++      k.drop  = 6;
++      k.yaw   = -0.3f;
++      k.twist = -0.1f;
++      k.flex  = 0.08f;
++      k.hand[1] = Vec3(-16,112,34); k.pole[1] = Vec3(-1,-0.6f,0);
++      k.axis[1] = Vec3(0.12f,0.55f,0.83f);
++      k.hand[0] = Vec3( 17,106,18); k.pole[0] = Vec3( 1,-0.6f,-0.2f);
++      break;
++    case W_2H:
++      k.drop  = 8;
++      k.yaw   = -0.35f;
++      k.twist = -0.15f;
++      k.flex  = 0.1f;
++      k.hand[1] = Vec3(-6,110,36);  k.pole[1] = Vec3(-1,-0.7f,0);
++      k.axis[1] = Vec3(0.05f,0.6f,0.8f);
++      k.pole[0] = Vec3(1,-0.7f,0);
++      break;
++    }
++  if(!in.inHand && in.weapon!=W_Fist) {
++    // оружие ещё (уже) в ножнах: руки опущены
++    k.hand[1] = Vec3(-22,96,6);  k.pole[1] = Vec3(-0.3f,0,-1); k.axis[1] = Vec3();
++    k.hand[0] = Vec3( 22,96,6);  k.pole[0] = Vec3( 0.3f,0,-1);
++    }
++  return k;
++  }
++
++void FightBody::planStrike(const BodyRig& rig, const Input& in, const Frame& fr) {
++  // Удар этой стадии: вид (по ходу, номеру в серии, оружию); точку и дугу считает aimStrike - до замаха каждый кадр
++  const auto& ck  = in.clock;
++  const bool  fist = (in.weapon==W_Fist);
++  uint8_t kind = K_DiagF;
++  int8_t  hand = 1;
++  switch(ck.move) {
++    case M_Attack:
++      if(fist) {
++        static const uint8_t fk[3] = {K_Thrust, K_Thrust, K_HorF};
++        kind = fk[ck.stage%3];
++        hand = (ck.stage%3==0) ? 0 : 1;
++        } else {
++        static const uint8_t wk[4] = {K_DiagF, K_DiagB, K_Over, K_HorF};
++        kind = wk[ck.stage%4];
++        }
++      break;
++    case M_AttackL:
++      kind = K_HorF;
++      break;
++    case M_AttackR:
++      kind = K_HorB;
++      if(fist) hand = 0;
++      break;
++    case M_AttackRun:
++      kind = fist ? K_Thrust : K_Over;
++      break;
++    case M_Finish:
++      kind = K_Stab;
++      break;
++    default:
++      break;
++    }
++  Strike s;
++  s.id     = ck.id;
++  s.kind   = kind;
++  s.hand2  = hand;
++  s.thrust = (kind==K_Thrust || kind==K_Stab);
++  Vec3 v;
++  switch(kind) {
++    case K_Over:   v = Vec3(0,-1,0.25f);        s.wind = -2.0f; s.follow = 0.9f; break;
++    case K_DiagF:  v = Vec3(0.75f,-0.6f,0.1f);  s.wind = -1.9f; s.follow = 1.0f; break;
++    case K_DiagB:  v = Vec3(-0.75f,-0.55f,0.1f);s.wind = -1.8f; s.follow = 0.9f; break;
++    case K_HorF:   v = Vec3(1,-0.12f,0);        s.wind = fist ? -1.2f : -1.7f; s.follow = fist ? 0.6f : 1.0f; break;
++    case K_HorB:   v = Vec3(-1,-0.12f,0);       s.wind = fist ? -1.2f : -1.6f; s.follow = fist ? 0.6f : 0.9f; break;
++    case K_Thrust: v = Vec3(0,0,1);             s.wind = -1.f;  s.follow = 0.25f; break;
++    case K_Stab:   v = Vec3(0,-1,0);            s.wind = -1.f;  s.follow = 0.2f;  break;
++    }
++  if(in.weapon==W_2H && !s.thrust)
++    s.wind *= 1.1f;
++  s.v      = nrm(v);
++  s.twistK = (in.weapon==W_2H ? 0.55f : 0.45f)*s.v.x;
++  s.flexK  = 0.25f*std::max(-s.v.y,0.f);
++  str = s;
++  // замах - от позы, в которой застала стадия (стойка или конец прошлого удара серии)
++  stageKey = hasShown ? shown : guardKey(in);
++  aimStrike(rig,in,fr);
++  }
++
++void FightBody::aimStrike(const BodyRig& rig, const Input& in, const Frame& fr) {
++  // Куда бить (до разгона - каждый кадр: цель двигается): точка на цели, кисть в миг удара - на 0,7 клинка от неё
++  // (клинок проходит сквозь цель), не дальше руки от плеча; не дотянуться - выпад
++  auto&       s    = str;
++  const bool  fist = (in.weapon==W_Fist);
++  const float side = (s.hand2==0 ? 1.f : -1.f);
++  Vec3 S = Vec3(18.f*side, 148.f, 2.f);
++  Vec3 P = Vec3(0,128,140);
++  if(in.target) {
++    const Vec3 head  = fr.toLocal(in.tHead);
++    const Vec3 chest = fr.toLocal(in.tChest);
++    switch(s.kind) {
++      case K_Over:   P = head*0.6f + chest*0.4f + Vec3(0,6,0); break;
++      case K_DiagF:  P = (head+chest)*0.5f + Vec3(-10,0,0);    break;
++      case K_DiagB:  P = chest + Vec3(10,4,0);                  break;
++      case K_HorF:   P = chest + Vec3(-8,0,0);                  break;
++      case K_HorB:   P = chest + Vec3(8,0,0);                   break;
++      case K_Thrust: P = fist ? head*0.65f+chest*0.35f : chest; break;
++      case K_Stab:   P = chest;                                 break;
++      }
++    // у каждого удара чуть своё место
++    const uint32_t h = s.id*2654435761u;
++    P += Vec3(float(int(h%11u)-5), float(int((h>>8)%9u)-4), 0);
++    } else {
++    switch(s.kind) {
++      case K_Over:   P = Vec3(0,150,130);  break;
++      case K_Stab:   P = Vec3(0,20,80);    break;
++      default:       break;
++      }
++    }
++  const float reach = rig.armLength()*in.scale/fr.k;
++  const float bl    = fist ? 0.f : in.bladeLen/fr.k;
++  const float maxR  = 0.93f*reach, minR = 0.35f*reach;
++  float       bite  = fist ? 4.f : 0.72f*bl;
++  // далеко: клинок войдёт в цель неглубоко - концом
++  if(!fist)
++    bite = std::clamp((P-S).length()-maxR-45.f, bite, 0.92f*bl);
++  {
++  const float want = (P-S).length()-bite;
++  s.lunge = std::clamp(want-maxR, 0.f, 45.f);
++  S.z += 0.8f*s.lunge;
++  }
++  const Vec3  d   = P-S;
++  const float len = std::max(d.length(),1.f);
++  s.hand  = S + d*(std::clamp(len-bite, minR, maxR)/len);
++  s.blade = nrm(P-s.hand, Vec3(0,0,1));
++  s.axis  = nrm(Vec3::crossProduct(s.hand-S, s.v), Vec3(1,0,0));
++  if(s.kind==K_Stab) {
++    // добить: кисть над целью, клинок вниз, корпус склоняется
++    s.hand  = Vec3(P.x-4.f, std::max(P.y+40.f, 70.f), std::min(P.z, 60.f));
++    s.blade = Vec3(0,-1,0.15f);
++    }
++  s.shoulder = S;
++  s.aimW     = fr.toWorld(P);
++  s.vW       = fr.dir(s.v);
++  }
++
++bool FightBody::strikeAim(Vec3& at, Vec3& dir) const {
++  if(!str.active)
++    return false;
++  at  = str.aimW;
++  dir = str.vW;
++  return true;
++  }
++
++FightBody::Key FightBody::arcKey(const Input& in, const Key& g, float a) const {
++  // поза на дуге удара: a - угол (рад) от мига удара (<0 - замах, >0 - проводка); у прямого удара a - доля -1..1
++  Key  k = g;
++  const int  h = str.hand2;
++  const Vec3 S = str.shoulder;
++  Vec3 hand, blade;
++  if(str.thrust) {
++    // прямой: кисть оттянута к плечу, удар - по прямой и чуть дальше
++    const Vec3 r = str.hand-S;
++    const float u = std::clamp(a,-1.f,1.f);
++    if(u<0.f)
++      hand = S + r*(1.f+0.62f*u) + Vec3(0,-6,-6)*(-u); else
++      hand = S + r*(1.f+0.12f*u);
++    blade = str.blade;
++    if(in.clock.move==M_Finish && u<0.f) {
++      hand  = str.hand + Vec3(0,45,-8)*(-u);
++      blade = nlerp(str.blade, Vec3(0,-0.3f,1), -u);
++      }
++    k.twist += (h==1 ? 0.35f : -0.35f)*std::clamp(u,0.f,1.f) - (h==1 ? 0.2f : -0.2f)*std::max(-u,0.f);
++    k.flex  += 0.12f*std::max(u,0.f) + (in.clock.move==M_Finish ? 0.5f : 0.f);
++    } else {
++    hand  = S + rot(str.hand-S, str.axis, a);
++    blade = rot(str.blade, str.axis, 1.35f*a);
++    k.twist += str.twistK*a;
++    k.flex  += str.flexK*a;
++    k.yaw   += 0.3f*str.twistK*a;
++    }
++  k.hand[h] = hand;
++  if(in.weapon!=W_Fist)
++    k.axis[h] = blade;
++  // локоть - наружу и вниз от дуги
++  k.pole[h] = nrm(Vec3(h==1 ? -1.f : 1.f, -0.7f, -0.2f));
++  k.shrug[h] = std::clamp((hand.y-150.f)/30.f, 0.f, 1.f);
++  // свободная рука (одноручное) - для равновесия против хода корпуса
++  if(in.weapon==W_1H) {
++    k.hand[0] = g.hand[0] + Vec3(4.f, 0, -10.f)*std::clamp(-str.twistK*a*2.f, -1.f, 1.f);
++    }
++  // выпад: передняя нога шагает, таз и корпус - вперёд, пока идёт удар
++  if(str.lunge>0.f) {
++    const float w = smooth((a-str.wind)/std::max(0.3f-str.wind,0.1f));
++    k.step[0] += Vec3(0,0,str.lunge)*w;
++    k.pel.z   += 0.6f*str.lunge*w;
++    k.flex    += 0.1f*w;
++    }
++  return k;
++  }
++
++FightBody::Key FightBody::attackKey(const BodyRig& rig, const Input& in, const Frame& fr, float& arc) {
++  const auto& ck = in.clock;
++  if(ck.id!=str.id)
++    planStrike(rig,in,fr);
++  str.active = true;
++  const Key   g  = guardKey(in);
++  const float a0 = ck.stageFrom;
++  const float b  = std::max(ck.stageTo, a0+0.1f);
++  float       o  = ck.strike;
++  if(o<=a0 || o>=b)
++    o = a0 + 0.55f*(b-a0);
++  const float D  = strikeDur(in.weapon);
++  float       ws = std::max(o-D, a0+0.1f);
++  if(ws>=o)
++    ws = a0 + 0.5f*(o-a0);
++  const float t  = ck.t;
++  if(t<ws)
++    aimStrike(rig,in,fr);
++  const float hitEnd = o+0.05f;
++  const float fHit   = str.follow*0.35f;
++  float a = 0;
++  if(t<ws) {
++    // замах: от позы начала стадии к замаху (не по дуге - дуга проходила бы через цель)
++    a = str.wind;
++    strikePow = 0;
++    strikeOn  = false;
++    strikeNo  = str.id;
++    arc       = a;
++    return mix(stageKey, arcKey(in,g,a), smooth((t-a0)/std::max(ws-a0,0.05f)));
++    }
++  else if(t<hitEnd) {
++    const float u = std::clamp((t-ws)/std::max(hitEnd-ws,0.02f), 0.f, 1.f);
++    a = str.wind + (fHit-str.wind)*std::pow(u,1.5f);
++    strikePow = std::clamp(0.4f+0.6f*u, 0.f, 1.f);
++    }
++  else {
++    const float u = smooth((t-hitEnd)/std::max(b-hitEnd,0.05f));
++    a = fHit + (str.follow-fHit)*u;
++    strikePow = std::max(0.f, 1.f-u*1.5f);
++    }
++  // разит: с середины разгона до проводки (кукла отстаёт от позы на 0,05-0,15 с); попадание - ещё и по скорости
++  // клинка (Npc::tickBlade): медленный клинок не ранит
++  strikeOn = (t>=ws+0.3f*(o-ws) && t<=o+0.3f);
++  strikeNo = str.id;
++  arc = a;
++  return arcKey(in,g,a);
++  }
++
++FightBody::Key FightBody::paradeKey(const BodyRig& rig, const Input& in, const Frame& fr) const {
++  // Блок: клинок поперёк пути клинка противника перед телом; противник ещё не бьёт - высокий блок
++  Key k = guardKey(in);
++  k.drop += 3;
++  if(in.weapon==W_Fist) {
++    // кулаки к лицу, предплечья - щитом
++    k.hand[1] = Vec3(-9,150,26);  k.pole[1] = Vec3(-0.4f,-1,0.3f);
++    k.hand[0] = Vec3( 9,152,30);  k.pole[0] = Vec3( 0.4f,-1,0.3f);
++    k.flex   += 0.08f;
++    return k;
++    }
++  const float bl = in.bladeLen/fr.k;
++  Vec3 hand = Vec3(-20,150,36);
++  Vec3 ax   = nrm(Vec3(1,0.3f,0.15f));
++  if(in.threatAimed) {
++    // удар противника телом: знаем, куда он придётся и куда идёт клинок - клинок поперёк его пути, ближе к нему
++    const Vec3 chest = Vec3(0,135,0);
++    Vec3 P = fr.toLocal(in.threatAt);
++    P.y = std::clamp(P.y, 95.f, 180.f);
++    Vec3 toA = nrm(Vec3(P.x*0.5f, 0, std::max(P.z, 20.f)), Vec3(0,0,1));
++    Vec3 C   = P + toA*20.f;
++    // не ближе 30 см перед грудью
++    if(C.z<30.f)
++      C.z = 30.f;
++    (void)chest;
++    const Vec3 V  = nrm(fr.dirLocal(in.threatDir), Vec3(0,-1,0));
++    Vec3 Db = nrm(Vec3::crossProduct(V, Vec3(0,0,1)), Vec3(1,0,0));
++    if(std::abs(Db.y)>0.7f) {
++      if(Db.y<0.f) Db = Db*-1.f;
++      } else if(Db.x<0.f) {
++      Db = Db*-1.f;
++      }
++    // клинок блока - наискось, остриём чуть вверх: так удар соскальзывает, а не рубит кисть
++    Db = nrm(Db + Vec3(0,0.25f,0));
++    hand = C - Db*(0.3f*bl);
++    ax   = Db;
++    }
++  else if(in.threat) {
++    const Vec3 chest = Vec3(0,135,0);
++    const Vec3 M     = fr.toLocal((in.threatA+in.threatB)*0.5f + in.threatVel*0.08f);
++    Vec3       dirT  = nrm(M-chest, Vec3(0,0,1));
++    if(dirT.z<0.2f)
++      dirT = nrm(Vec3(dirT.x, dirT.y, 0.2f));
++    Vec3 C = chest + dirT*42.f;
++    C.y = std::clamp(C.y, 95.f, 175.f);
++    const Vec3 V  = fr.dirLocal(in.threatVel);
++    const Vec3 Tb = nrm(fr.dirLocal(in.threatB-in.threatA), Vec3(0,1,0));
++    Vec3 Db = (V.length()>100.f) ? Vec3::crossProduct(nrm(V),dirT) : Vec3::crossProduct(Tb,dirT);
++    Db = nrm(Db, Vec3(1,0,0));
++    // остриё - вверх или влево (держит правой, клинок поперёк)
++    if(std::abs(Db.y)>0.7f) {
++      if(Db.y<0.f) Db = Db*-1.f;
++      } else if(Db.x<0.f) {
++      Db = Db*-1.f;
++      }
++    hand = C - Db*(0.3f*bl);
++    ax   = Db;
++    }
++  // не дальше руки от плеча
++  {
++  const Vec3  S = Vec3(-18,148,2);
++  const float r = 0.92f*rig.armLength()*in.scale/fr.k;
++  Vec3 d = hand-S;
++  if(d.length()>r)
++    hand = S + d*(r/d.length());
++  if(hand.z<14.f)
++    hand.z = 14.f;
++  }
++  k.hand[1] = hand;
++  k.axis[1] = ax;
++  k.pole[1] = nrm(Vec3(-1,-0.5f,0));
++  k.shrug[1] = std::clamp((hand.y-150.f)/30.f, 0.f, 1.f);
++  k.twist   = 0.05f;
++  return k;
++  }
++
++FightBody::Key FightBody::drawKey(const Input& in, const Frame& fr, bool draw) const {
++  // Достать: правая к ножнам, в миг смены (swap) оружие в руке - к стойке. Убрать - наоборот, потом рука вниз
++  Input armed = in;   armed.inHand = true;
++  Input bare  = in;   bare.inHand  = false;
++  const Key   ready = guardKey(armed);
++  const Key   rest  = guardKey(bare);
++  const auto& ck    = in.clock;
++  const float T     = std::max(ck.total, 0.2f);
++  const float ts    = (ck.swap>0.f && ck.swap<T) ? ck.swap : T*0.45f;
++  Vec3 sh = in.hasSheath ? fr.toLocal(in.sheath) : Vec3(12,92,4);
++  Key at = rest;
++  at.hand[1] = sh + Vec3(-2,4,6);
++  at.pole[1] = Vec3(-1,-0.3f,0.2f);
++  at.axis[1] = nrm(Vec3(-0.2f,-0.4f,-0.9f));
++  at.twist   = sh.x>0.f ? 0.3f : -0.35f;
++  if(in.weapon==W_Fist)
++    return mix(rest,ready,smooth(ck.t/T));
++  const float t = ck.t;
++  if(draw) {
++    if(t<ts)
++      return mix(rest,at,smooth(t/ts));
++    return mix(at,ready,smooth((t-ts)/std::max(T-ts,0.1f)));
++    }
++  if(t<ts)
++    return mix(ready,at,smooth(t/ts));
++  return mix(at,rest,smooth((t-ts)/std::max(T-ts,0.1f)));
++  }
++
++void FightBody::tickFeet(const BodyRig& rig, const Input& in, const Frame& fr, const Key& k, float dt) {
++  // Шаги: ступня стоит, пока место для неё в стойке (с упреждением по скорости) не ушло дальше порога, - тогда шагает
++  // дугой туда; одна нога за раз (на бегу следующая отрывается, когда первая почти встала)
++  FootStance st[2];
++  stanceOf(in.weapon,st);
++  const Vec3  vel   = Vec3(in.vel.x,0,in.vel.z);
++  const float speed = vel.length();
++  const float ankH  = rig.ankleHeight()*in.scale;
++  auto groundY = [&](const Vec3& p) {
++    return in.ground ? in.ground(p) : in.root.y;
++    };
++  Vec3 want[2], toe[2];
++  for(int s=0; s<2; ++s) {
++    const Vec3 loc = Vec3(st[s].x, 0, st[s].z) + k.step[s];
++    want[s] = fr.toWorld(loc);
++    toe[s]  = rot(fr.F, fr.U, st[s].yaw + k.yaw*0.3f);
++    if(!foot[s].init) {
++      foot[s].at   = want[s];
++      foot[s].at.y = groundY(want[s]) + ankH;
++      foot[s].toe  = toe[s];
++      foot[s].init = true;
++      }
++    }
++  const float lead   = std::clamp(speed/300.f, 0.f, 1.f)*0.22f;
++  const float dur    = std::clamp(0.32f - 0.035f*speed/100.f, 0.17f, 0.32f);
++  const float thr    = speed>30.f ? 5.f*fr.k : 9.f*fr.k;
++  const bool  run    = speed>230.f;
++  for(int s=0; s<2; ++s) {
++    auto& f = foot[s];
++    if(f.u>=0.f) {
++      f.u += dt/f.dur;
++      // в шаге цель идёт за телом: NPC продолжает двигаться
++      f.to = want[s] + vel*(f.dur*(1.f-std::min(f.u,1.f))*0.5f + lead*0.5f);
++      f.to.y = f.from.y;
++      if(f.u>=1.f) {
++        f.u   = -1;
++        f.at  = f.to;
++        f.at.y = groundY(f.to) + ankH;
++        f.toe = f.toeTo;
++        } else {
++        const float w = smooth(f.u);
++        f.at  = lerp(f.from,f.to,w);
++        const float gy = groundY(f.at)+ankH;
++        f.at.y = std::max(f.from.y + (gy-f.from.y)*w, gy) + f.lift*fr.k*std::sin(float(M_PI)*f.u);
++        f.toe = nlerp(f.toeFrom,f.toeTo,w);
++        }
++      }
++    }
++  // какая нога шагает
++  auto err = [&](int s) {
++    const Vec3 tgt = want[s] + vel*lead;
++    Vec3 d = foot[s].at-tgt;
++    d.y = 0;
++    const float yawErr = 1.f - Vec3::dotProduct(horizontal(foot[s].toe), horizontal(toe[s]));
++    return d.length() + 40.f*fr.k*std::max(yawErr,0.f);
++    };
++  const bool swinging = foot[0].u>=0.f || foot[1].u>=0.f;
++  bool canStart = !swinging;
++  if(run && swinging) {
++    for(int s=0; s<2; ++s)
++      if(foot[s].u>=0.6f)
++        canStart = true;
++    }
++  if(canStart) {
++    int   best = -1;
++    float be   = thr;
++    for(int s=0; s<2; ++s) {
++      if(foot[s].u>=0.f)
++        continue;
++      float e = err(s);
++      // по очереди: та, что шагала прошлой, - во вторую очередь
++      if(s==lastStep)
++        e *= 0.8f;
++      if(e>be) {
++        be   = e;
++        best = s;
++        }
++      }
++    if(best>=0) {
++      auto& f   = foot[best];
++      f.from    = f.at;
++      f.toeFrom = f.toe;
++      f.toeTo   = toe[best];
++      f.to      = want[best] + vel*(lead+dur*0.5f);
++      f.dur     = dur*std::clamp(be/(30.f*fr.k), 0.75f, 1.f);
++      f.lift    = std::min(5.f + 2.5f*speed/100.f, 13.f);
++      f.u       = 0;
++      lastStep  = best;
++      }
++    }
++  // ступня далеко (телепорт, рывок) - сразу на место
++  for(int s=0; s<2; ++s) {
++    Vec3 d = foot[s].at-want[s];
++    d.y = 0;
++    if(d.length()>120.f*fr.k) {
++      foot[s].at   = want[s];
++      foot[s].at.y = groundY(want[s])+ankH;
++      foot[s].toe  = toe[s];
++      foot[s].u    = -1;
++      }
++    }
++  bob = 0;
++  for(int s=0; s<2; ++s)
++    if(foot[s].u>=0.f)
++      bob = std::max(bob, std::sin(float(M_PI)*foot[s].u));
++  }
++
++void FightBody::toSpec(const BodyRig& rig, const Input& in, const Frame& fr, const Key& k, BodyRig::Spec& out) const {
++  FootStance st[2];
++  stanceOf(in.weapon,st);
++  const float pelH = rig.pelvisHeight()*in.scale/fr.k;
++  const Vec3  nomMid = Vec3((st[0].x+st[1].x)*0.5f, 0, (st[0].z+st[1].z)*0.5f);
++  Vec3 pl = Vec3(nomMid.x*0.3f, pelH - k.drop + 1.6f*bob, nomMid.z*0.3f) + k.pel;
++  Vec3 pw = fr.toWorld(pl);
++  // вес - чуть к стоящим ступням (на шаге таз над опорной ногой)
++  {
++  Vec3 feet = (foot[0].at+foot[1].at)*0.5f;
++  Vec3 nom  = fr.toWorld(nomMid);
++  Vec3 d    = feet-nom;
++  d.y = 0;
++  if(d.length()<60.f*fr.k)
++    pw += d*0.35f;
++  for(int s=0; s<2; ++s)
++    if(foot[s].u>=0.f) {
++      const Vec3 other = foot[1-s].at;
++      Vec3 dd = other-pw;
++      dd.y = 0;
++      pw += dd*(0.12f*std::sin(float(M_PI)*foot[s].u));
++      }
++  }
++  // таз: поворот, наклон вперёд, крен
++  Vec3 F = rot(fr.F, fr.U, k.yaw);
++  Vec3 L = Vec3::normalize(Vec3::crossProduct(fr.U,F));
++  Vec3 U = fr.U;
++  F = rot(F,L,k.pitch);
++  U = rot(U,L,k.pitch);
++  U = rot(U,F,-k.roll);
++  out.pelvis = pw;
++  out.fwd    = F;
++  out.up     = U;
++  out.flex   = k.flex;
++  out.side   = k.side;
++  out.twist  = k.twist - k.yaw;   // корпус к противнику, таз развёрнут стойкой
++  if(in.target) {
++    out.look = in.tHead - fr.toWorld(Vec3(0,160,0));
++    } else {
++    out.look = fr.F;
++    }
++  out.shrug[0] = k.shrug[0];
++  out.shrug[1] = k.shrug[1];
++  for(int a=0; a<2; ++a) {
++    auto& o = out.arm[a];
++    o.grip = fr.toWorld(k.hand[a]);
++    o.pole = fr.dir(k.pole[a]);
++    o.axis = fr.dir(k.axis[a]);
++    o.palm = fr.dir(k.palm[a]);
++    o.axisLocal = Vec3();
++    }
++  if(in.weapon!=W_Fist && in.inHand)
++    out.arm[1].axisLocal = in.bladeLocal;
++  if(in.weapon==W_2H && in.inHand && out.arm[1].axis.length()>1e-3f) {
++    // двуручное: левая - на рукояти ниже правой
++    const Vec3 ax = Vec3::normalize(out.arm[1].axis);
++    out.arm[0].grip = out.arm[1].grip - ax*(9.f*fr.k);
++    out.arm[0].axis = ax;
++    out.arm[0].pole = fr.dir(Vec3(1,-0.7f,0));
++    }
++  for(int s=0; s<2; ++s) {
++    auto& o  = out.leg[s];
++    o.ankle  = foot[s].at;
++    o.toe    = foot[s].toe;
++    o.pole   = nrm(horizontal(foot[s].toe) + fr.U*0.1f);
++    o.pitch  = foot[s].u>=0.f ? 0.25f*std::sin(float(M_PI)*foot[s].u) : 0.f;
++    }
++  }
++
++void FightBody::tick(const BodyRig& rig, const Input& in, float dt, BodyRig::Spec& out) {
++  Frame fr;
++  fr.F = horizontal(in.fwd);
++  if(fr.F.length()<0.5f)
++    fr.F = Vec3(0,0,1);
++  fr.U = Vec3(0,1,0);
++  fr.L = Vec3::normalize(Vec3::crossProduct(fr.U,fr.F));
++  fr.O = in.root;
++  fr.k = std::max(in.scale*rig.pelvisHeight()/PelH, 0.1f);
++
++  // поза хода - чуть вперёд по времени: мышцы куклы отстают от цели, удар должен прийтись в миг удара игры
++  Input inL = in;
++  if(inL.clock.move!=M_Guard && inL.clock.move!=M_Hit)
++    inL.clock.t = std::min(inL.clock.t+in.lead, std::max(inL.clock.total, inL.clock.t));
++  const Input& inp = inL;
++  const auto&  ck  = inp.clock;
++  strikeOn   = false;
++  str.active = false;
++  Key   k;
++  float arc = -100.f;
++  switch(ck.move) {
++    case M_Attack:
++    case M_AttackL:
++    case M_AttackR:
++    case M_AttackRun:
++    case M_Finish:
++      k = attackKey(rig,inp,fr,arc);
++      break;
++    case M_Parade:
++      k = paradeKey(rig,inp,fr);
++      break;
++    case M_Draw:
++    case M_Sheath:
++      k = drawKey(inp,fr,ck.move==M_Draw);
++      break;
++    case M_JumpBack:
++      k = guardKey(inp);
++      k.flex  += 0.12f;
++      k.drop  += 4.f;
++      break;
++    case M_Guard:
++    case M_Hit:
++      k = guardKey(inp);
++      break;
++    }
++  blockW = (ck.move==M_Parade) ? std::min(1.f, blockW+dt/0.1f) : std::max(0.f, blockW-dt/0.15f);
++
++  // на ходу: корпус вперёд по скорости, таз ниже
++  {
++  const float vf = Vec3::dotProduct(Vec3(in.vel.x,0,in.vel.z), fr.F)/100.f;
++  const float sp = Vec3(in.vel.x,0,in.vel.z).length()/100.f;
++  k.flex += 0.06f*std::clamp(vf,-1.f,3.5f);
++  k.drop += 3.f*std::min(sp,3.5f)/3.5f;
++  }
++
++  // переход между ходами - плавно (кукла и так сгладит, но цель не должна прыгать)
++  const bool newMove = (ck.move!=lastMove) || (ck.id!=lastId && ck.move!=M_Attack);
++  if(hasShown && newMove) {
++    blendFrom = shown;
++    blend     = 0;
++    switch(ck.move) {
++      case M_Parade:   blendDur = 0.1f;  break;
++      case M_Attack:
++      case M_AttackL:
++      case M_AttackR:
++      case M_AttackRun:
++      case M_Finish:   blendDur = 0.12f; break;
++      default:         blendDur = 0.22f; break;
++      }
++    }
++  arcNow = arc;
++  lastMove = ck.move;
++  lastId   = ck.id;
++  if(blend<1.f) {
++    blend = std::min(1.f, blend+dt/blendDur);
++    k = mix(blendFrom,k,smooth(blend));
++    }
++  shown    = k;
++  hasShown = true;
++
++  tickFeet(rig,in,fr,k,dt);
++  toSpec(rig,in,fr,k,out);
++  }
+diff --git a/common/game/fightbody.h b/common/game/fightbody.h
+new file mode 100644
+index 0000000..e0154fc
+--- /dev/null
++++ b/common/game/fightbody.h
+@@ -0,0 +1,188 @@
++#pragma once
++
++#include <Tempest/Vec>
++
++#include <cstdint>
++#include <functional>
++
++#include "graphics/mesh/bodyrig.h"
++
++// Gothic II Mobile: бой телом (регдолл в бою). Ни одной записанной анимации на экране: стойка, шаги, замах, удар,
++// блок, доставание оружия - процедурная поза (BodyRig), к которой тянутся мышцы куклы (Ragdoll, S_Active в режиме
++// боя). Анимации игры остаются часами: ИИ, комбо, окна блока и перемещение NPC идут, как в Gothic, а на экран
++// идёт тело куклы. Что делает ход, решает его вид и время в анимации (Clock: стадия комбо, миг удара -
++// OPTIMAL_FRAME), куда бить - цель (грудь, голова), куда ставить блок - клинок противника.
++//
++// Удар - дуга кисти вокруг плеча: замах назад по дуге (корпус закручивается, вес назад), разгон через точку удара
++// (клинок проходит сквозь цель на 0,7 своей длины), проводка дальше; кисть доворачивает клинок быстрее руки (как
++// кистевой хлёст). Не дотянуться - выпад: передняя нога шагает, таз и корпус - вперёд. Блок - клинок поперёк
++// пути клинка противника перед телом (или высокий блок, если тот ещё не бьёт). Ноги - шаги: ступня стоит, пока
++// NPC не ушёл от неё дальше порога, потом шагает дугой туда, где будет нужна (с упреждением по скорости).
++//
++// Попадание считает не анимация, а клинок куклы (Npc::tickBlade): окно удара - striking().
++class FightBody final {
++  public:
++    enum Weapon : uint8_t {
++      W_Fist = 0,
++      W_1H   = 1,
++      W_2H   = 2,
++      };
++    enum Move : uint8_t {
++      M_Guard     = 0,  // стойка, ходьба и бег в бою, развороты
++      M_Attack    = 1,  // вперёд - серия (стадии комбо)
++      M_AttackL   = 2,  // слева
++      M_AttackR   = 3,  // справа
++      M_AttackRun = 4,  // с разбега
++      M_Finish    = 5,  // добить лежащего
++      M_Parade    = 6,  // блок
++      M_JumpBack  = 7,  // отскок назад
++      M_Draw      = 8,  // достать оружие
++      M_Sheath    = 9,  // убрать
++      M_Hit       = 10, // отшатнуться (анимация удара по себе - её делает физика)
++      };
++
++    // Часы анимации игры (Npc::fightClock): какой ход и где он сейчас, с
++    struct Clock final {
++      Move     move      = M_Guard;
++      float    t         = 0;   // с начала анимации
++      float    total     = 0;   // длина анимации
++      float    stageFrom = 0;   // стадия серии (у одиночного удара - вся анимация)
++      float    stageTo   = 0;
++      float    strike    = -1;  // миг удара (OPTIMAL_FRAME) в стадии; <0 - нет
++      int      stage     = 0;
++      uint32_t id        = 0;   // новый ход или новая стадия - новый номер
++      float    swap      = -1;  // доставание/убирание: миг, когда оружие переходит в руку или в ножны
++      };
++
++    struct Input final {
++      Weapon        weapon   = W_1H;
++      Clock         clock;
++      Tempest::Vec3 root     = {};      // NPC на земле (мир, см)
++      Tempest::Vec3 fwd      = {0,0,1}; // куда смотрит NPC
++      Tempest::Vec3 vel      = {};      // скорость NPC, см/с
++      float         scale    = 1;       // масштаб модели
++      // цель удара
++      bool          target   = false;
++      Tempest::Vec3 tChest   = {}, tHead = {}, tPelvis = {};
++      bool          tDown    = false;   // лежит (добить)
++      // угроза - клинок (или кулак) противника, мир; скорость его середины, см/с
++      bool          threat   = false;
++      Tempest::Vec3 threatA  = {}, threatB = {}, threatVel = {};
++      // противник бьёт телом (его FightBody): куда придётся удар и куда идёт клинок - блок ставится навстречу
++      bool          threatAimed = false;
++      Tempest::Vec3 threatAt = {}, threatDir = {};
++      // ножны - где висит оружие (доставание и убирание), мир; нет - у правого бедра
++      bool          hasSheath= false;
++      Tempest::Vec3 sheath   = {};
++      float         bladeLen = 90;      // см от хвата до острия
++      Tempest::Vec3 bladeLocal = {};    // ось клинка в системе кисти (BodyRig::gripAxisInHand); 0 - по умолчанию
++      bool          inHand   = true;    // оружие в руке (не в ножнах)
++      float         lead     = 0.07f;   // с: поза хода берётся на столько вперёд - кукла отстаёт от цели мышц
++      std::function<float(const Tempest::Vec3&)> ground; // высота земли под точкой (шаги); пусто - root.y
++      };
++
++    // Поза этого кадра (цель мышц): dt - с
++    void          tick(const BodyRig& rig, const Input& in, float dt, BodyRig::Spec& out);
++    // Клинок сейчас разит: попадание засчитывается одно на удар (strikeId)
++    bool          striking()  const { return strikeOn; }
++    uint32_t      strikeId()  const { return strikeNo; }
++    // Насколько удар сейчас разгонён (0..1): сила попадания и отдача
++    float         strikePower() const { return strikePow; }
++    // Куда придётся удар (мир) и куда идёт кисть в миг удара - для блока противника; false - не бьёт
++    bool          strikeAim(Tempest::Vec3& at, Tempest::Vec3& dir) const;
++    // Блок поставлен (клинок в блоке, а не в стойке)
++    bool          blocking()  const { return blockW>0.5f; }
++    void          reset();
++
++    // Поза «стоит в бою» из нынешней позы тела (для начала): ступни - там, где стоят
++    void          plantFeet(const Tempest::Vec3& left, const Tempest::Vec3& right);
++
++    // Сила удара для отклика тела задетого (Ragdoll::Hit::power, м/с) по скорости клинка, см/с
++    static float  hitPower(Weapon w, float bladeSpeed);
++
++    // Поза в системе персонажа (x - влево, y - вверх, z - вперёд; см стандартного человека, масштаб - потом)
++    struct Key final {
++      Tempest::Vec3 pel   = {0,0,0};  // сдвиг таза от его места в стойке
++      float         drop  = 0;        // таз ниже, см
++      float         yaw   = 0, pitch = 0, roll = 0; // таз, рад (pitch + - вперёд)
++      float         flex  = 0, side = 0, twist = 0; // корпус
++      Tempest::Vec3 hand[2]  = {};     // хват (слот)
++      Tempest::Vec3 pole[2]  = {};
++      Tempest::Vec3 axis[2]  = {};     // ось хвата (у правой с оружием - клинок)
++      Tempest::Vec3 palm[2]  = {};
++      float         shrug[2] = {0,0};
++      Tempest::Vec3 step[2]  = {};     // ступни от места в стойке (выпад), см
++      };
++
++  private:
++    struct Foot final {
++      Tempest::Vec3 at    = {};    // лодыжка на земле, мир
++      Tempest::Vec3 toe   = {};    // куда носок
++      Tempest::Vec3 from  = {}, to = {}, toeFrom = {}, toeTo = {};
++      float         u     = -1;    // <0 - стоит, иначе доля шага
++      float         dur   = 0.3f;
++      float         lift  = 6;
++      bool          init  = false;
++      };
++
++    struct Frame final {
++      Tempest::Vec3 F, L, U, O;    // оси персонажа и точка на земле
++      float         k = 1;         // см стандартного человека -> мир
++      Tempest::Vec3 toWorld(const Tempest::Vec3& v) const { return O + (L*v.x + U*v.y + F*v.z)*k; }
++      Tempest::Vec3 dir(const Tempest::Vec3& v) const { return L*v.x + U*v.y + F*v.z; }
++      Tempest::Vec3 toLocal(const Tempest::Vec3& w) const;
++      Tempest::Vec3 dirLocal(const Tempest::Vec3& w) const;
++      };
++
++    // удар этой стадии: точка удара, дуга
++    struct Strike final {
++      uint32_t      id     = 0;
++      Tempest::Vec3 aimW   = {};     // точка удара (мир)
++      Tempest::Vec3 vW     = {};     // куда идёт кисть в миг удара (мир)
++      bool          active = false;
++      uint8_t       kind   = 0;
++      Tempest::Vec3 v      = {};     // куда идёт кисть в миг удара (система персонажа)
++      bool          thrust = false;
++      Tempest::Vec3 shoulder = {};   // система персонажа
++      Tempest::Vec3 hand   = {};     // хват в миг удара
++      Tempest::Vec3 blade  = {};     // клинок в миг удара
++      Tempest::Vec3 axis   = {};     // ось дуги (единичная)
++      float         wind   = -1.9f;  // рад: замах
++      float         follow = 1.0f;   // проводка
++      float         twistK = 0.45f;  // корпус за дугой
++      float         flexK  = 0;
++      float         lunge  = 0;      // см: выпад
++      int8_t        hand2  = 1;      // 0 - левая (кулак), 1 - правая
++      };
++
++    Key           guardKey(const Input& in) const;
++    Key           attackKey(const BodyRig& rig, const Input& in, const Frame& fr, float& arc);
++    Key           paradeKey(const BodyRig& rig, const Input& in, const Frame& fr) const;
++    Key           drawKey(const Input& in, const Frame& fr, bool draw) const;
++    void          planStrike(const BodyRig& rig, const Input& in, const Frame& fr);
++    void          aimStrike(const BodyRig& rig, const Input& in, const Frame& fr);
++    Key           arcKey(const Input& in, const Key& guard, float a) const;
++    void          tickFeet(const BodyRig& rig, const Input& in, const Frame& fr, const Key& k, float dt);
++    void          toSpec(const BodyRig& rig, const Input& in, const Frame& fr, const Key& k, BodyRig::Spec& out) const;
++    static Key    mix(const Key& a, const Key& b, float w);
++
++    Foot          foot[2];
++    Strike        str;
++    Key           shown;            // поза прошлого кадра (переходы между ходами - плавно)
++    bool          hasShown  = false;
++    Move          lastMove  = M_Guard;
++    uint32_t      lastId    = 0;
++    float         blend     = 1;    // 0..1 - переход от прошлой позы к ходу
++    float         blendDur  = 0.2f;
++    Key           blendFrom;
++    Key           stageKey;         // поза в начале стадии удара: замах идёт от неё
++    float         arcNow    = -1;   // дуга сейчас (продолжение в следующей стадии)
++    bool          strikeOn  = false;
++    uint32_t      strikeNo  = 0;
++    float         strikePow = 0;
++    float         blockW    = 0;
++    float         bob       = 0;
++    int           lastStep  = 1;
++    Tempest::Vec3 pelSmooth = {};
++    bool          pelInit   = false;
++  };
 diff --git a/common/game/gamescript.cpp b/common/game/gamescript.cpp
 index 4b32af2..48ab356 100644
 --- a/common/game/gamescript.cpp
@@ -11540,6 +12510,538 @@ index dadfd6d..052774f 100644
  
      std::string                    hnpcVisualName;
      bool                           hnpcFlagGhost = false;
+diff --git a/common/graphics/mesh/bodyrig.cpp b/common/graphics/mesh/bodyrig.cpp
+new file mode 100644
+index 0000000..10de689
+--- /dev/null
++++ b/common/graphics/mesh/bodyrig.cpp
+@@ -0,0 +1,408 @@
++#include "bodyrig.h"
++
++#include "limbik.h"
++#include "skeleton.h"
++
++#include <algorithm>
++#include <cctype>
++#include <cmath>
++#include <map>
++#include <memory>
++#include <mutex>
++#include <string>
++
++using namespace Tempest;
++using namespace LimbIk;
++
++// Gothic II Mobile: поза человека без анимации (bodyrig.h)
++
++namespace {
++
++std::string upperName(std::string_view s) {
++  std::string n(s);
++  for(auto& c:n)
++    c = char(std::toupper(static_cast<unsigned char>(c)));
++  return n;
++  }
++
++bool has(const std::string& s, const char* what) {
++  return s.find(what)!=std::string::npos;
++  }
++
++Vec3 horizontal(Vec3 v) {
++  v.y = 0;
++  const float l = v.length();
++  return l>1e-4f ? v/l : Vec3();
++  }
++
++Vec3 unitAxis(const Matrix4x4& m, int c) {
++  const Vec3 v = axis(m,c);
++  const float l = v.length();
++  return l>1e-6f ? v/l : v;
++  }
++
++// направление из системы кости в мир и обратно (оси могут быть с масштабом)
++Vec3 dirToWorld(const Matrix4x4& m, const Vec3& v) {
++  return unitAxis(m,0)*v.x + unitAxis(m,1)*v.y + unitAxis(m,2)*v.z;
++  }
++
++Vec3 dirToLocal(const Matrix4x4& m, const Vec3& v) {
++  return Vec3(Vec3::dotProduct(v,unitAxis(m,0)), Vec3::dotProduct(v,unitAxis(m,1)), Vec3::dotProduct(v,unitAxis(m,2)));
++  }
++
++void setAxis(Matrix4x4& m, int c, const Vec3& v) {
++  m.set(c,0,v.x);
++  m.set(c,1,v.y);
++  m.set(c,2,v.z);
++  }
++
++float signedAngle(const Vec3& from, const Vec3& to, const Vec3& ax) {
++  const Vec3 c = Vec3::crossProduct(from,to);
++  return std::atan2(Vec3::dotProduct(c,ax), Vec3::dotProduct(from,to));
++  }
++
++}
++
++const BodyRig* BodyRig::of(const Skeleton& sk) {
++  static std::mutex                                         sync;
++  static std::map<const Skeleton*,std::unique_ptr<BodyRig>> cache;
++  static std::map<const Skeleton*,bool>                     known;
++  std::lock_guard<std::mutex> guard(sync);
++  if(known[&sk])
++    return cache[&sk].get();
++  known[&sk] = true;
++
++  const size_t n = std::min(sk.nodes.size(), sk.tr.size());
++  auto r = std::unique_ptr<BodyRig>(new BodyRig());
++  r->n = n;
++  r->parent.resize(n);
++  r->bind.assign(sk.tr.begin(), sk.tr.begin()+ptrdiff_t(n));
++  size_t toe[2] = {size_t(-1),size_t(-1)};
++  for(size_t i=0; i<n; ++i) {
++    r->parent[i] = sk.nodes[i].parent<n ? sk.nodes[i].parent : size_t(-1);
++    const std::string nm   = upperName(sk.nodes[i].name);
++    const int         side = has(nm," L ") ? 0 : (has(nm," R ") ? 1 : -1);
++    if(nm=="ZS_LEFTHAND")
++      r->slot[0] = i;
++    else if(nm=="ZS_RIGHTHAND")
++      r->slot[1] = i;
++    if(nm.rfind("ZS_",0)==0 || has(nm,"NUB") || has(nm,"FINGER"))
++      continue;
++    if(has(nm,"TOE")) {
++      if(side>=0 && toe[side]==size_t(-1))
++        toe[side] = i;
++      continue;
++      }
++    if(has(nm,"PELVIS"))
++      r->pelvis = i;
++    else if(has(nm,"SPINE"))
++      r->spine.push_back(i);
++    else if(has(nm,"NECK"))
++      r->neck = i;
++    else if(has(nm,"HEAD"))
++      r->head = i;
++    else if(side>=0 && has(nm,"CLAVICLE"))
++      r->clav[side] = i;
++    else if(side>=0 && has(nm,"UPPERARM"))
++      r->upper[side] = i;
++    else if(side>=0 && has(nm,"FOREARM"))
++      r->fore[side] = i;
++    else if(side>=0 && has(nm,"HAND"))
++      r->hand[side] = i;
++    else if(side>=0 && has(nm,"THIGH"))
++      r->thigh[side] = i;
++    else if(side>=0 && has(nm,"CALF"))
++      r->calf[side] = i;
++    else if(side>=0 && has(nm,"FOOT"))
++      r->foot[side] = i;
++    }
++  auto ok = [n](size_t i) { return i<n; };
++  bool human = ok(r->pelvis) && ok(r->head) && !r->spine.empty();
++  for(int s=0; s<2; ++s)
++    human &= ok(r->upper[s]) && ok(r->fore[s]) && ok(r->hand[s]) && ok(r->thigh[s]) && ok(r->calf[s]) && ok(r->foot[s]);
++  auto isAncestor = [&](size_t a, size_t b) {
++    for(size_t p=r->parent[b]; p<n; p=r->parent[p])
++      if(p==a)
++        return true;
++    return false;
++    };
++  if(human) {
++    for(int s=0; s<2; ++s)
++      human &= isAncestor(r->upper[s],r->fore[s]) && isAncestor(r->fore[s],r->hand[s]) &&
++               isAncestor(r->thigh[s],r->calf[s]) && isAncestor(r->calf[s],r->foot[s]);
++    const Vec3 up = origin(r->bind[r->head]) - origin(r->bind[r->pelvis]);
++    human &= up.y>0.6f*up.length() && up.length()>10.f;
++    }
++  if(!human)
++    return nullptr;
++  for(int s=0; s<2; ++s) {
++    if(r->slot[s]<n && !isAncestor(r->hand[s],r->slot[s]))
++      r->slot[s] = size_t(-1);
++    if(r->clav[s]<n && !isAncestor(r->clav[s],r->upper[s]))
++      r->clav[s] = size_t(-1);
++    }
++
++  // порядок: родитель раньше потомка; потомки каждой кости - в том же порядке
++  {
++  std::vector<size_t> stk(sk.rootNodes.rbegin(), sk.rootNodes.rend());
++  while(!stk.empty()) {
++    const size_t i = stk.back();
++    stk.pop_back();
++    if(i>=n)
++      continue;
++    r->order.push_back(uint16_t(i));
++    for(size_t c=n; c>0; --c)
++      if(r->parent[c-1]==i)
++        stk.push_back(c-1);
++    }
++  if(r->order.size()!=n)
++    return nullptr;
++  }
++  r->local.resize(n);
++  r->desc.resize(n);
++  for(auto i:r->order) {
++    const size_t p = r->parent[i];
++    if(p<n)
++      r->local[i] = relative(r->bind[p], r->bind[i]); else
++      r->local[i] = r->bind[i];
++    for(size_t a=p; a<n; a=r->parent[a])
++      r->desc[a].push_back(i);
++    }
++
++  // позвоночник от таза вверх; гнутся позвонки выше крепления бёдер
++  auto depth = [&](size_t i) { int d = 0; for(size_t p=r->parent[i]; p<n; p=r->parent[p]) ++d; return d; };
++  std::sort(r->spine.begin(),r->spine.end(),[&](size_t a, size_t b){ return depth(a)<depth(b); });
++  for(auto s:r->spine) {
++    bool legs = false;
++    for(int k=0; k<2; ++k)
++      legs |= isAncestor(s,r->thigh[k]);
++    if(!legs)
++      r->bendable.push_back(s);
++    }
++  if(r->bendable.empty())
++    r->bendable.push_back(r->spine.back());
++
++  // вперёд модели - по стопам (к носкам), влево - вверх x вперёд
++  Vec3 f = {};
++  for(int s=0; s<2; ++s) {
++    Vec3 tip = origin(r->bind[r->foot[s]]);
++    if(toe[s]<n)
++      tip = origin(r->bind[toe[s]]);
++    f += horizontal(tip-origin(r->bind[r->foot[s]]));
++    }
++  if(horizontal(f).length()<0.5f)
++    f = Vec3(0,0,1);
++  r->Fm = horizontal(f);
++  r->Lm = Vec3::normalize(Vec3::crossProduct(Vec3(0,1,0),r->Fm));
++
++  // размеры
++  float ground = 1e9f;
++  for(int s=0; s<2; ++s) {
++    const float fy = origin(r->bind[r->foot[s]]).y;
++    ground = std::min(ground, toe[s]<n ? std::min(origin(r->bind[toe[s]]).y, fy-4.f) : fy-8.f);
++    }
++  const Vec3 pel = origin(r->bind[r->pelvis]);
++  r->pelH  = pel.y-ground;
++  r->ankH  = std::max(origin(r->bind[r->foot[0]]).y-ground, 2.f);
++  r->legL  = (origin(r->bind[r->calf[0]])-origin(r->bind[r->thigh[0]])).length() +
++             (origin(r->bind[r->foot[0]])-origin(r->bind[r->calf[0]])).length();
++  r->armL  = (origin(r->bind[r->fore[1]])-origin(r->bind[r->upper[1]])).length() +
++             (origin(r->bind[r->hand[1]])-origin(r->bind[r->fore[1]])).length();
++  r->shH   = 0.5f*(origin(r->bind[r->upper[0]]).y+origin(r->bind[r->upper[1]]).y) - pel.y;
++  r->shW   = 0.5f*std::abs(Vec3::dotProduct(origin(r->bind[r->upper[0]])-origin(r->bind[r->upper[1]]),r->Lm));
++  r->hipW  = 0.5f*std::abs(Vec3::dotProduct(origin(r->bind[r->thigh[0]])-origin(r->bind[r->thigh[1]]),r->Lm));
++  r->gripL = r->slot[1]<n ? (origin(r->bind[r->slot[1]])-origin(r->bind[r->hand[1]])).length() : 0.f;
++  r->headH = origin(r->bind[r->head]).y-ground + 0.1f*(origin(r->bind[r->head]).y-pel.y);
++
++  // ладонь: в T-позе Biped - вниз; ось хвата - от кулака к большому пальцу, вперёд
++  for(int s=0; s<2; ++s) {
++    r->palmLocal[s] = dirToLocal(r->bind[r->hand[s]], Vec3(0,-1,0));
++    r->gripDef[s]   = dirToLocal(r->bind[r->hand[s]], r->Fm);
++    const Vec3 fa   = origin(r->bind[r->hand[s]])-origin(r->bind[r->fore[s]]);
++    r->foreLocal[s] = dirToLocal(r->bind[r->hand[s]], Vec3::normalize(fa));
++    r->foreLen[s]   = fa.length();
++    }
++  cache[&sk] = std::move(r);
++  return cache[&sk].get();
++  }
++
++Vec3 BodyRig::gripAxisInHand(int a, const Vec3& slotLocalAxis) const {
++  if(slot[a]>=n)
++    return gripDef[a];
++  const Vec3 w = dirToWorld(bind[slot[a]], slotLocalAxis);
++  return dirToLocal(bind[hand[a]], w);
++  }
++
++void BodyRig::rebuild(std::vector<Matrix4x4>& W, size_t b) const {
++  for(auto d:desc[b])
++    W[d] = W[parent[d]]*local[d];
++  }
++
++void BodyRig::rotateTree(std::vector<Matrix4x4>& W, size_t b, const Vec3& at, const Vec3& ax, float ang) const {
++  if(std::abs(ang)<1e-6f)
++    return;
++  rotateAround(W[b],at,ax,ang);
++  for(auto d:desc[b])
++    rotateAround(W[d],at,ax,ang);
++  }
++
++void BodyRig::solveArm(std::vector<Matrix4x4>& W, int a, const Arm& s) const {
++  const size_t u = upper[a], f = fore[a], h = hand[a];
++  const Vec3   axL = (s.axisLocal.length()>1e-4f) ? Vec3::normalize(s.axisLocal) : gripDef[a];
++  auto rebuildArm = [&]() {
++    // всё под плечом - от родителя, кроме самих предплечья и кисти (их поставил IK)
++    for(auto d:desc[u]) {
++      if(d==f || d==h)
++        continue;
++      W[d] = W[parent[d]]*local[d];
++      }
++    };
++  Vec3 off  = (slot[a]<n) ? origin(W[slot[a]])-origin(W[h]) : Vec3();
++  Vec3 pole = s.pole;
++  for(int it=0; it<2; ++it) {
++    if(s.axis.length()>1e-4f) {
++      // Ось хвата задана: предплечье - так, чтобы кисть была почти прямой. При прямой кисти предплечье лежит на конусе
++      // вокруг оси хвата (угол - как в позе привязки, кручение кисти свободно); из конуса - ближайшее к линии от плеча
++      // к кисти направление, локоть - позади запястья по нему, подсказка IK - к этому локтю
++      const Vec3  bd  = Vec3::normalize(s.axis);
++      const float cs  = std::clamp(Vec3::dotProduct(axL,foreLocal[a]), -1.f, 1.f);
++      const float sn  = std::sqrt(std::max(0.f,1.f-cs*cs));
++      const Vec3  wr  = s.grip-off;
++      Vec3        nat = Vec3::normalize(wr-origin(W[u]));
++      Vec3        pp  = nat - bd*Vec3::dotProduct(nat,bd);
++      if(pp.length()<1e-3f)
++        pp = s.pole - bd*Vec3::dotProduct(s.pole,bd);
++      if(pp.length()>1e-3f) {
++        const Vec3 fd    = bd*cs + Vec3::normalize(pp)*sn;
++        const Vec3 elbow = wr - fd*foreLen[a];
++        const Vec3 mid   = (origin(W[u])+wr)*0.5f;
++        const Vec3 pl    = elbow-mid;
++        if(pl.length()>1e-3f)
++          pole = Vec3::normalize(pl) + s.pole*0.15f;
++        }
++      }
++    LimbIk::solve(W[u],W[f],W[h],s.grip-off,pole);
++    rebuildArm();
++    if(s.axis.length()>1e-4f) {
++      const Vec3 want = Vec3::normalize(s.axis);
++      const Vec3 cur  = dirToWorld(W[h],axL);
++      rotateBasis(W[h],cur,want);
++      if(s.palm.length()>1e-4f) {
++        // поворот кисти вокруг оси хвата: ладонь - как можно ближе к нужной
++        const Vec3 pc = dirToWorld(W[h],palmLocal[a]);
++        Vec3 p0 = pc   - want*Vec3::dotProduct(pc,want);
++        Vec3 p1 = s.palm - want*Vec3::dotProduct(s.palm,want);
++        if(p0.length()>1e-3f && p1.length()>1e-3f)
++          rotateBasis(W[h],want,signedAngle(Vec3::normalize(p0),Vec3::normalize(p1),want));
++        }
++      rebuild(W,h);
++      }
++    off = (slot[a]<n) ? origin(W[slot[a]])-origin(W[h]) : Vec3();
++    }
++  }
++
++void BodyRig::solveLeg(std::vector<Matrix4x4>& W, int k, const Leg& s, const Vec3& pelFwd, float scale) const {
++  const size_t t = thigh[k], c = calf[k], f = foot[k];
++  LimbIk::solve(W[t],W[c],W[f],s.ankle,s.pole);
++  // стопа: носок по направлению, подошва - к земле (наклон носка и ребро - поверх)
++  Vec3 T = horizontal(s.toe.length()>1e-4f ? s.toe : pelFwd);
++  if(T.length()<0.5f)
++    T = Fm;
++  Vec3 U = Vec3(0,1,0);
++  Vec3 L = Vec3::normalize(Vec3::crossProduct(U,T));
++  if(std::abs(s.pitch)>1e-5f) {
++    const float cs = std::cos(s.pitch), sn = std::sin(s.pitch);
++    T = rotate(T,L,cs,sn);
++    U = rotate(U,L,cs,sn);
++    }
++  if(std::abs(s.roll)>1e-5f) {
++    const float r  = (k==0 ? 1.f : -1.f)*s.roll;
++    const float cs = std::cos(r), sn = std::sin(r);
++    U = rotate(U,T,cs,sn);
++    L = rotate(L,T,cs,sn);
++    }
++  auto R = [&](const Vec3& v) {
++    return L*Vec3::dotProduct(v,Lm) + U*v.y + T*Vec3::dotProduct(v,Fm);
++    };
++  for(int col=0; col<3; ++col)
++    setAxis(W[f],col,R(axis(bind[f],col))*scale);
++  for(auto d:desc[t]) {
++    if(d==c || d==f)
++      continue;
++    W[d] = W[parent[d]]*local[d];
++    }
++  }
++
++void BodyRig::build(const Spec& s, float scale, std::vector<Matrix4x4>& out) const {
++  std::vector<Matrix4x4>& W = out;
++  W.resize(n);
++  if(scale<=0.f)
++    scale = 1.f;
++
++  // таз: поворот, который переводит оси модели (влево, вверх, вперёд) в оси таза
++  Vec3 Up = s.up.length()>1e-4f ? Vec3::normalize(s.up) : Vec3(0,1,0);
++  Vec3 Fp = s.fwd - Up*Vec3::dotProduct(s.fwd,Up);
++  if(Fp.length()<1e-3f) {
++    Fp = Vec3::crossProduct(Up, std::abs(Up.x)<0.9f ? Vec3(1,0,0) : Vec3(0,0,1));
++    }
++  Fp = Vec3::normalize(Fp);
++  Vec3 Lp = Vec3::normalize(Vec3::crossProduct(Up,Fp));
++  auto R = [&](const Vec3& v) {
++    return Lp*Vec3::dotProduct(v,Lm) + Up*v.y + Fp*Vec3::dotProduct(v,Fm);
++    };
++  const Vec3 pel0 = origin(bind[pelvis]);
++  for(size_t i=0; i<n; ++i) {
++    Matrix4x4 m = bind[i];
++    for(int c=0; c<3; ++c)
++      setAxis(m,c,R(axis(bind[i],c))*scale);
++    setOrigin(m, s.pelvis + R(origin(bind[i])-pel0)*scale);
++    W[i] = m;
++    }
++
++  // корпус: поровну на позвонки выше бёдер - поворот, сгиб, наклон
++  Vec3 Lc = Lp, Uc = Up, Fc = Fp;
++  const float nb = float(bendable.size());
++  for(auto v:bendable) {
++    const Vec3 at = origin(W[v]);
++    const float tw = s.twist/nb, fl = s.flex/nb, sd = -s.side/nb;
++    rotateTree(W,v,at,Uc,tw);
++    Lc = rotate(Lc,Uc,std::cos(tw),std::sin(tw));
++    Fc = rotate(Fc,Uc,std::cos(tw),std::sin(tw));
++    rotateTree(W,v,at,Lc,fl);
++    Uc = rotate(Uc,Lc,std::cos(fl),std::sin(fl));
++    Fc = rotate(Fc,Lc,std::cos(fl),std::sin(fl));
++    rotateTree(W,v,at,Fc,sd);
++    Lc = rotate(Lc,Fc,std::cos(sd),std::sin(sd));
++    Uc = rotate(Uc,Fc,std::cos(sd),std::sin(sd));
++    }
++
++  // голова: к направлению взгляда, не больше 70° от корпуса; шея - 40 %, голова - остальное
++  if(s.look.length()>1e-4f) {
++    const Vec3 lk = Vec3::normalize(s.look);
++    Vec3 ax = Vec3::crossProduct(Fc,lk);
++    const float sn = ax.length();
++    if(sn>1e-4f) {
++      ax = ax/sn;
++      const float ang = std::min(std::atan2(sn,Vec3::dotProduct(Fc,lk)), 70.f*float(M_PI)/180.f);
++      if(neck<n) {
++        rotateTree(W,neck,origin(W[neck]),ax,ang*0.4f);
++        rotateTree(W,head,origin(W[head]),ax,ang*0.6f);
++        } else {
++        rotateTree(W,head,origin(W[head]),ax,ang);
++        }
++      }
++    }
++
++  // плечи вверх (замах над головой)
++  for(int a=0; a<2; ++a) {
++    if(clav[a]>=n || s.shrug[a]<=0.f)
++      continue;
++    const float ang = std::clamp(s.shrug[a],0.f,1.f)*0.35f*(a==0 ? 1.f : -1.f);
++    rotateTree(W,clav[a],origin(W[clav[a]]),Fc,ang);
++    }
++
++  for(int a=0; a<2; ++a)
++    solveArm(W,a,s.arm[a]);
++  for(int k=0; k<2; ++k)
++    solveLeg(W,k,s.leg[k],Fp,scale);
++  }
+diff --git a/common/graphics/mesh/bodyrig.h b/common/graphics/mesh/bodyrig.h
+new file mode 100644
+index 0000000..9eafcaf
+--- /dev/null
++++ b/common/graphics/mesh/bodyrig.h
+@@ -0,0 +1,112 @@
++#pragma once
++
++#include <Tempest/Matrix4x4>
++#include <Tempest/Vec>
++
++#include <cstdint>
++#include <vector>
++
++class Skeleton;
++
++// Gothic II Mobile: поза человека без анимации - из нескольких чисел (бой телом, подъём телом). Таз - точка и
++// ориентация, корпус - сгиб, наклон и поворот (поровну на позвонки выше бёдер), голова - куда смотреть, ключицы -
++// плечи вверх, руки - IK к точке хвата (кисть или слот оружия) с подсказкой локтя, кисть - так, чтобы ось хвата
++// (клинок) смотрела, куда надо, ноги - IK к лодыжкам, стопы - носком по направлению. Остальные кости (пальцы,
++// слоты, корень) - как в позе привязки относительно родителя. Всё - в мире, см.
++//
++// Такую позу не показывают как есть: это цель мышц куклы (Ragdoll::setTarget) - удар, блок, шаги, подъём делает
++// физика тела, а поза только говорит, куда тянуться. Скелет должен быть человеческим (кости Biped).
++class BodyRig final {
++  public:
++    // Рука: хват - начало кости слота (ZS_RIGHTHAND/ZS_LEFTHAND; нет слота - запястье) в мире
++    struct Arm final {
++      Tempest::Vec3 grip  = {};
++      Tempest::Vec3 pole  = {};  // куда смотрит локоть (мир)
++      Tempest::Vec3 axis  = {};  // куда смотрит ось хвата - клинок (мир); 0 - кисть прямо по предплечью
++      Tempest::Vec3 palm  = {};  // куда смотрит ладонь (мир); 0 - как выйдет с наименьшим поворотом кисти
++      Tempest::Vec3 axisLocal = {}; // ось хвата в системе кости кисти (gripAxisInHand); 0 - defaultGripAxis
++      };
++    struct Leg final {
++      Tempest::Vec3 ankle = {};  // начало кости стопы, мир
++      Tempest::Vec3 pole  = {};  // куда смотрит колено (мир)
++      Tempest::Vec3 toe   = {};  // куда носок (по горизонтали, мир); 0 - вперёд таза
++      float         pitch = 0;   // носок вниз (+) или вверх (-), рад
++      float         roll  = 0;   // стопа на ребро (+ - наружу), рад
++      };
++    struct Spec final {
++      Tempest::Vec3 pelvis = {};            // начало кости таза, мир
++      Tempest::Vec3 fwd    = {0,0,1};       // вперёд таза (мир)
++      Tempest::Vec3 up     = {0,1,0};       // вверх таза (мир)
++      float         flex   = 0;             // корпус вперёд (+), рад - всего по позвоночнику
++      float         side   = 0;             // корпус влево (+)
++      float         twist  = 0;             // корпус поворотом влево (+) - вокруг позвоночника
++      Tempest::Vec3 look   = {};            // куда смотрит голова (мир); 0 - как корпус
++      float         shrug[2] = {0,0};       // плечо вверх (0..1): левое, правое
++      Arm           arm[2];                 // 0 - левая, 1 - правая
++      Leg           leg[2];
++      };
++
++    // Схема скелета человека; nullptr - не человек
++    static const BodyRig* of(const Skeleton& sk);
++
++    // Поза: мировые матрицы всех костей скелета; scale - масштаб модели (Npc: размер), позиции в Spec - уже в мире
++    void build(const Spec& s, float scale, std::vector<Tempest::Matrix4x4>& out) const;
++
++    // Размеры в позе привязки (см, масштаб 1)
++    float         pelvisHeight() const { return pelH; }   // таз над землёй стоя (ноги прямые)
++    float         ankleHeight()  const { return ankH; }   // лодыжка над землёй
++    float         legLength()    const { return legL; }   // бедро + голень
++    float         armLength()    const { return armL; }   // плечо + предплечье (до запястья)
++    float         shoulderHeight() const { return shH; }  // плечо над тазом
++    float         shoulderWidth()  const { return shW; }  // от середины до плеча
++    float         hipWidth()       const { return hipW; } // от середины до бедра
++    float         gripReach()      const { return gripL; }// от запястья до слота
++    float         height()         const { return headH; }// макушка над землёй (примерно)
++
++    // Кости (номера в скелете)
++    size_t        pelvisBone() const { return pelvis; }
++    size_t        chestBone()  const { return spine.empty() ? pelvis : spine.back(); }
++    size_t        headBone()   const { return head; }
++    size_t        handBone(int a) const { return hand[a]; }
++    size_t        slotBone(int a) const { return slot[a]; }
++    size_t        footBone(int k) const { return foot[k]; }
++    size_t        upperArmBone(int a) const { return upper[a]; }
++
++    // Оси модели (вперёд, влево) в позе привязки - для своих систем отсчёта
++    Tempest::Vec3 modelForward() const { return Fm; }
++    Tempest::Vec3 modelLeft()    const { return Lm; }
++
++    // Ось хвата (клинка) в системе кости кисти, если оружие висит в слоте slotLocalAxis (в системе слота)
++    Tempest::Vec3 gripAxisInHand(int a, const Tempest::Vec3& slotLocalAxis) const;
++    // Ось хвата по умолчанию: от кулака в сторону большого пальца (в T-позе Biped - вперёд)
++    Tempest::Vec3 defaultGripAxis(int a) const { return gripDef[a]; }
++
++  private:
++    BodyRig() = default;
++
++    void   rebuild(std::vector<Tempest::Matrix4x4>& W, size_t b) const;
++    void   rotateTree(std::vector<Tempest::Matrix4x4>& W, size_t b, const Tempest::Vec3& at, const Tempest::Vec3& ax, float ang) const;
++    void   solveArm(std::vector<Tempest::Matrix4x4>& W, int a, const Arm& s) const;
++    void   solveLeg(std::vector<Tempest::Matrix4x4>& W, int k, const Leg& s, const Tempest::Vec3& pelFwd, float scale) const;
++
++    size_t                           n      = 0;
++    std::vector<size_t>              parent;
++    std::vector<Tempest::Matrix4x4>  bind;    // поза привязки, система модели
++    std::vector<Tempest::Matrix4x4>  local;   // относительно родителя (в позе привязки)
++    std::vector<std::vector<uint16_t>> desc;  // потомки (без самой кости), от родителя к потомку
++    std::vector<uint16_t>            order;
++
++    size_t                pelvis = size_t(-1), neck = size_t(-1), head = size_t(-1);
++    std::vector<size_t>   spine, bendable;
++    size_t                clav[2]  = {size_t(-1),size_t(-1)};
++    size_t                upper[2] = {size_t(-1),size_t(-1)}, fore[2] = {size_t(-1),size_t(-1)}, hand[2] = {size_t(-1),size_t(-1)};
++    size_t                slot[2]  = {size_t(-1),size_t(-1)};
++    size_t                thigh[2] = {size_t(-1),size_t(-1)}, calf[2] = {size_t(-1),size_t(-1)}, foot[2] = {size_t(-1),size_t(-1)};
++
++    Tempest::Vec3         Fm = {0,0,1}, Lm = {1,0,0};
++    Tempest::Vec3         palmLocal[2];      // нормаль ладони в системе кисти
++    Tempest::Vec3         foreLocal[2];      // от локтя к запястью в системе кисти (кисть прямо)
++    float                 foreLen[2] = {26,26};
++    Tempest::Vec3         gripDef[2];
++    float                 pelH = 95, ankH = 8, legL = 84, armL = 54, shH = 53, shW = 18, hipW = 10, gripL = 6, headH = 175;
++  };
 diff --git a/common/graphics/mesh/injury.cpp b/common/graphics/mesh/injury.cpp
 new file mode 100644
 index 0000000..f7a727a
@@ -15070,10 +16572,10 @@ index daa4a7d..455d40d 100644
  #include <BulletCollision/CollisionShapes/btBoxShape.h>
 diff --git a/common/physics/ragdoll.cpp b/common/physics/ragdoll.cpp
 new file mode 100644
-index 0000000..9683a04
+index 0000000..45d1e18
 --- /dev/null
 +++ b/common/physics/ragdoll.cpp
-@@ -0,0 +1,5938 @@
+@@ -0,0 +1,5979 @@
 +#include "ragdoll.h"
 +
 +#include <Tempest/Log>
@@ -16728,7 +18230,7 @@ index 0000000..9683a04
 +    case K_ForeArm:
 +    case K_Hand:
 +      // у людей и человекоподобных - руки, у зверей - передние лапы
-+      hit.zone = lay->humanoid ? Z_Body : Z_Legs;
++      hit.zone = lay->humanoid ? Z_Arms : Z_Legs;
 +      break;
 +    default:
 +      hit.zone = Z_Body;
@@ -16934,7 +18436,7 @@ index 0000000..9683a04
 +      auto&       rb   = *body[i].rb;
 +      const float tone = toneOf(i);
 +      const float ff   = std::clamp(tone, 0.35f, 1.f);
-+      const float vMax = 1.5f + 5.f*tone*tone*tone, wMax = 5.f + 15.f*tone*tone*tone;
++      const float vMax = (fight ? 3.f : 1.5f) + 5.f*tone*tone*tone, wMax = (fight ? 12.f : 5.f) + 15.f*tone*tone*tone;
 +      btVector3   dv   = (lin-d.tLin)*ff, dw = (ang-d.tAng)*ff;
 +      if(dv.length()>vMax)
 +        dv = dv.normalized()*vMax;
@@ -17367,7 +18869,11 @@ index 0000000..9683a04
 +    const btVector3    wRel  = b.getAngularVelocity()-a.getAngularVelocity();
 +
 +    const float tone = toneOf(j.child);
-+    const float wn   = ToneLowW + (ToneHighW-ToneLowW)*tone*tone;
++    // бой телом: руки бьют и ставят блок - мышцы рук собраннее (замах не отстаёт от позы хода)
++    const auto  kc   = Kind(lay->parts[j.child].kind);
++    const bool  armJ = (kc==K_UpperArm || kc==K_ForeArm || kc==K_Hand);
++    const float high = (fight && armJ) ? ToneHighW*1.4f : ToneHighW;
++    const float wn   = ToneLowW + (high-ToneLowW)*tone*tone;
 +    const float kp   = wn*wn, kd = 2.f*ToneZeta*wn;
 +    btVector3   wNew = (wRel + (err*kp + wRelT*kd)*dt)/(1.f + kd*dt + kp*dt*dt);
 +    // предел скорости отклонения от цели: удар и рывок не трясут часть быстрее, чем её держат вес и мышцы
@@ -17816,6 +19322,43 @@ index 0000000..9683a04
 +      b.fallOnStep = b.pushPeak>=StaggerFall; // толчок поверх толчка складывается (pushPeak от нынешней скорости)
 +      }
 +    }
++  }
++
++void Ragdoll::setCombat(bool on) {
++  fight = on;
++  }
++
++void Ragdoll::nudge(const Vec3& at, const Vec3& dv) {
++  // Клинок о клинок, отдача в кисть: задетая часть получает скорость, её родитель - 40 % (рука тяжелее кисти);
++  // не больше 6 м/с - иначе решатель дёрнет сустав
++  if(!isSimulated() || st==S_Dead)
++    return;
++  const size_t part = hitPart(at);
++  if(part>=body.size())
++    return;
++  btVector3 v = btVector3(dv.x,dv.y,dv.z);
++  if(v.length()>6.f)
++    v = v.normalized()*6.f;
++  auto& rb = *body[part].rb;
++  rb.setLinearVelocity(rb.getLinearVelocity()+v);
++  rb.activate(true);
++  const size_t pp = lay->parts[part].parent;
++  if(pp<body.size() && !lay->parts[pp].pinned) {
++    auto& rp = *body[pp].rb;
++    rp.setLinearVelocity(rp.getLinearVelocity()+v*0.4f);
++    rp.activate(true);
++    }
++  }
++
++Vec3 Ragdoll::velocityAt(const Vec3& at) const {
++  if(!isSimulated())
++    return Vec3();
++  const size_t part = hitPart(at);
++  if(part>=body.size())
++    return Vec3();
++  const auto&     rb = *body[part].rb;
++  const btVector3 v  = rb.getVelocityInLocalPoint(btv(at)-rb.getCenterOfMassPosition());
++  return Vec3(v.x(),v.y(),v.z());
 +  }
 +
 +bool Ragdoll::isStaggering() const {
@@ -19987,8 +21530,8 @@ index 0000000..9683a04
 +  updateBones();
 +  if(st==S_Active) {
 +    // На экране физика - только пока тело откликается на удар: появляется за 120 мс, уходит за 500 мс, когда мышцы
-+    // снова в силе и рефлексы прошли. Без ударов - чистая анимация игры
-+    const float want = (reaction()>0.05f) ? 1.f : 0.f;
++    // снова в силе и рефлексы прошли. Без ударов - чистая анимация игры. В бою телом - всегда физика
++    const float want = (fight || reaction()>0.05f) ? 1.f : 0.f;
 +    const float step = float(dt)/(want>show ? 120.f : 500.f);
 +    show = (want>show) ? std::min(want,show+step) : std::max(want,show-step);
 +    return;
@@ -21014,10 +22557,10 @@ index 0000000..9683a04
 +  }
 diff --git a/common/physics/ragdoll.h b/common/physics/ragdoll.h
 new file mode 100644
-index 0000000..62402e0
+index 0000000..04ed8b8
 --- /dev/null
 +++ b/common/physics/ragdoll.h
-@@ -0,0 +1,449 @@
+@@ -0,0 +1,460 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -21228,6 +22771,15 @@ index 0000000..62402e0
 +    bool                  lostBalance() const { return balanceLost; }
 +    // Насколько тело ещё не вернулось в анимацию после ударов: 0 - следует анимации
 +    float                 reaction() const;
++    // Бой телом (game/fightbody.h): цель мышц - процедурная поза хода, на экране - всегда физика (showWeight 1),
++    // кукла не уходит в анимацию, пока идёт бой
++    void                  setCombat(bool on);
++    bool                  isCombat() const { return fight; }
++    // Толчок части тела у точки at (клинок о клинок, отдача удара в кисть): скорость dv, м/с - части и меньше её
++    // родителю (рука тяжелее кисти)
++    void                  nudge(const Tempest::Vec3& at, const Tempest::Vec3& dv);
++    // Скорость части тела у точки at, м/с
++    Tempest::Vec3         velocityAt(const Tempest::Vec3& at) const;
 +    // Доля физики на экране (активный режим): 0 - чистая анимация, 1 - тело по физике; упавшее - всегда 1
 +    float                 showWeight() const;
 +    // Вывод позы в активном режиме: BoneMode по номеру кости скелета
@@ -21335,6 +22887,7 @@ index 0000000..62402e0
 +      Z_Body = 0,
 +      Z_Head = 1,
 +      Z_Legs = 2,
++      Z_Arms = 3, // руки человека (бой телом: урон вдвое меньше); для стрел - как тело
 +      };
 +    struct RayHit final {
 +      float         t    = 0;          // доля отрезка a-b до входа в тело
@@ -21443,6 +22996,7 @@ index 0000000..62402e0
 +    bool                            keep     = false;
 +    bool                            hasTarget = false;
 +    bool                            balanceLost = false;
++    bool                            fight       = false; // бой телом (setCombat)
 +    float                           targetAge   = 0; // с, с последней цели (setTarget): цель продолжается по скорости
 +    uint64_t                        airTime     = 0; // мс живой падает без опоры (машет руками)
 +    uint64_t                        groundTime  = 0; // мс живой лежит на земле после падения (корчится)
