@@ -242,6 +242,13 @@ limits`; docs/PROGRESS.md, последний раздел; ждут прове�
   - **плавная смена цели** у лука (`[CONTROLS] aimSmooth`): `PlayerControl::tickRangedAim` (`AimGlide`: задержка на
     сражённом `RangedAim::LingerMs`, переход `GlideMs` по дуге `slerpDir/glide`; `aim.settling` — не стрелять в тело;
     стрела летит в саму цель, плавно — точка и поворот героя `turnTo(aim.at)`);
+  - **стратегия «Война за Хоринис»** (docs/RTS.md): ядро без движка `game/rts/rtsdefs|rtscore|rtsgen|rtsai|rtsdiplo|rtsio`
+    (стенд `tools/rts-test`), в игре — `game/rts/rtsgame.*` (`RtsGame` — член `GameScript`, `script().rts()`; тела бойцов —
+    `aivar[92]`, «бежит» — `aivar[91]`; отношения сторон — `wld_setguildattitude`; «живые» места — `liveSpots` в
+    `WorldObjects::tick`; герой-наблюдатель не тикает — `frozenNpc`; отдых бойцов — `Npc::isRtsIdle`; гибель — хуки в
+    `Npc::onNoHealth`; сохранение — `g2m/rts` в `GameSession`; камера — `MainWindow::tickCamera`, время ×0–4 —
+    `MainWindow::tick`), экран полководца — `ui/rtsui.*` (`TouchInput::Ui::Rts`); вариант `rts` — `CommandLine::isRts`,
+    сохранения `files/rts/`; экран запуска — `RtsSetup` (`files/rts_setup.txt`);
   - «Взять всё» (`InventoryMenu::takeAll`), путь к игре из `gothic_path.txt` (`InstallDetect`), имя сохранения
     по умолчанию — дата, кнопка «Назад» телефона = Esc (Tempest);
   - **живой NPC** (`common/game/ainpc.*`, JNI — `ailink.*`): Геральт = `Vlk_2000_Thorus` с другим именем и
@@ -263,8 +270,9 @@ limits`; docs/PROGRESS.md, последний раздел; ждут прове�
    подписаны; камера в пути, галочки), быстрое сохранение, нагрев и FPS после оптимизации — журнал со строками
    `[perf]` (docs/PROGRESS.md, разделы «Ожидается от пользователя»; docs/TEST_PLAN.md). По `[perf]` — следующая
    оптимизация: упор в видеокарту (`gpu-wait`) или в процессор (`logic`, `anim`).
-2. **Режим стратегии «Война за Хоринис»** — план в **docs/RTS.md** (2026-11-02): три стороны, вид сверху, вселение в
-   бойца, наблюдатель; начинать с этапа 0 (дамп меток и моделей с телефона, замер драки 30 на 30).
+2. **Режим стратегии «Война за Хоринис»** — **прототип готов** (2026-11-02, docs/RTS.md, «Прототип»): ждёт проверки на
+   телефоне (docs/TEST_PLAN.md, пункт 17); по журналу `[rts]`/`[perf]` и `files/rts_models.txt` — модели построек, баланс,
+   сводная симуляция дальних отрядов, упрощённые модели издалека.
 3. Дальше — docs/ROADMAP.md: надёжные сохранения, классика,
    слабые телефоны, OpenAL Soft (LGPL) перед выпуском.
 
@@ -318,7 +326,7 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
     common/game/aiteach.cpp common/game/rangedaim.h common/graphics/mesh/injury.cpp common/graphics/mesh/injury.h \
     common/graphics/mesh/limbik.h common/game/killcam.cpp common/game/killcam.h \
     common/graphics/mesh/bodyrig.cpp common/graphics/mesh/bodyrig.h common/game/fightbody.cpp common/game/fightbody.h \
-    common/world/objects/npcfight.cpp
+    common/world/objects/npcfight.cpp common/game/rts/*.cpp common/game/rts/*.h common/ui/rtsui.cpp common/ui/rtsui.h
     # и другие новые файлы (все: git ls-files --others --exclude-standard | grep -v ^build/); не -A: build/ не в .gitignore
   git diff --ignore-submodules=all > ../opengothic.patch && git reset -q
   git -C lib/Tempest diff > ../opengothic-tempest.patch
@@ -405,6 +413,12 @@ tools/fetch-opengothic.sh   # закреплённый OpenGothic с подмо�
   мышцы не догоняют (отставание 30–40°) — её ведёт `driveGrip`. Встающему: ноги свой вес не держат (`Drive::hold` у ног — 0,
   иначе сгиб бедра вскидывает ноги и опрокидывает таз), ступни и ладони на земле стоят (точка опоры), тело поднимает
   центр масс, а не тяга части к кадру.
+- **Стратегия:** решения сторон (стройка, найм, набеги, переговоры, баланс) проверять стендом `tools/rts-test`
+  (`rtstest` — «ALL OK», `rtstest sweep 20 60` — сводка партий ИИ против ИИ, `rtstest game SEED 40` — журнал одной партии),
+  а не на глаз: ядро `game/rts/` не знает движка (тела — через `rts::WorldApi`). Бой бойца — механика игры (гильдии,
+  перцепции, `B_Attack`): своего фехтования в ядре нет. Ссылки на отряды (`State::squads`) после `Game::command`/`garrison`
+  могут поплыть (вектор растёт) — сначала решить, потом создавать. Модели построек (`MeshObjects::Mesh`) — убрать до мира
+  (`RtsGame::dropVisuals`). Указатели на тела бойцов не хранить между кадрами: `RtsGame::rebindBodies` каждый такт по `aivar[92]`.
 - NPC ставить без проверки столкновений (`setPosition`) можно, но двое внутри друг друга сами не выйдут без
   `Npc::tickSeparate`: правило `implTryMove` пускает застрявшего двигаться, лишь бы не глубже.
 - **Лук и арбалет:** попадание стрелы — только по частям тела (`Ragdoll::rayTest`), не по габаритам NPC (они вдвое больше
