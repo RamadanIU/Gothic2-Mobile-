@@ -54,6 +54,8 @@ public class LauncherActivity extends Activity {
     static final String EXTRA_FROM_GAME = "from_game";
     static final String VARIANT_NOTR = "notr";
     static final String VARIANT_CLASSIC = "classic";
+    /** Режим стратегии «Война за Хоринис» (docs/RTS.md): скрипты «Ночи Ворона», свои сохранения. */
+    static final String VARIANT_RTS = "rts";
 
     private static final int REQ_PERMISSION = 1;
     private static final int REQ_FOLDER = 2;
@@ -72,6 +74,7 @@ public class LauncherActivity extends Activity {
     private static final int PAGE_CONTROLS = 2;
     private static final int PAGE_GAME = 3;
     private static final int PAGE_INFO = 4;
+    private static final int PAGE_RTS = 5;
 
     private ScrollView scroll;
     private LinearLayout mainPage;
@@ -84,6 +87,7 @@ public class LauncherActivity extends Activity {
     private Button resume;
     private Button playNotr;
     private Button playClassic;
+    private Button playRts;
     private Button permission;
     private boolean restarting;
     private String gamePath;
@@ -137,6 +141,8 @@ public class LauncherActivity extends Activity {
         mainPage.addView(playNotr);
         playClassic = button("", v -> play(VARIANT_CLASSIC));
         mainPage.addView(playClassic);
+        playRts = button("Война за Хоринис (стратегия) ›", v -> showPage(PAGE_RTS));
+        mainPage.addView(playRts);
 
         section(mainPage, "Настройки");
         graphicsNav = navRow(mainPage, "Графика", () -> showPage(PAGE_GRAPHICS));
@@ -208,11 +214,13 @@ public class LauncherActivity extends Activity {
         boolean classic = dir != null && GameFolder.hasClassic(dir);
         playNotr.setEnabled(dir != null);
         playClassic.setEnabled(classic);
+        playRts.setEnabled(dir != null);
         playClassic.setText(dir == null || classic ? "Играть: Gothic II без дополнения"
             : "Gothic II без дополнения: нет в этой копии");
         String last = prefs().getString(PREF_VARIANT, VARIANT_NOTR);
         playNotr.setTypeface(null, VARIANT_NOTR.equals(last) ? Typeface.BOLD : Typeface.NORMAL);
         playClassic.setTypeface(null, VARIANT_CLASSIC.equals(last) && classic ? Typeface.BOLD : Typeface.NORMAL);
+        playRts.setTypeface(null, VARIANT_RTS.equals(last) ? Typeface.BOLD : Typeface.NORMAL);
     }
 
     private void setGamePath(String path) {
@@ -236,6 +244,7 @@ public class LauncherActivity extends Activity {
             case PAGE_CONTROLS: scroll.addView(controlsPage()); break;
             case PAGE_GAME: scroll.addView(gamePage()); break;
             case PAGE_INFO: scroll.addView(infoPage()); break;
+            case PAGE_RTS: scroll.addView(rtsPage()); break;
             default: scroll.addView(mainPage); break;
         }
         scroll.scrollTo(0, 0);
@@ -264,6 +273,43 @@ public class LauncherActivity extends Activity {
         t.setTypeface(Typeface.SERIF, Typeface.BOLD);
         t.setPadding(0, pad / 2, 0, 0);
         col.addView(t);
+        return col;
+    }
+
+    /** «Война за Хоринис»: сторона, как играть, сложность - и «Начать». */
+    private LinearLayout rtsPage() {
+        LinearLayout col = pageOf("Война за Хоринис");
+        RtsSetup setup = new RtsSetup(prefs());
+        col.addView(note("Стратегия на карте Хориниса: паладины с ополчением, наёмники Онара и орки воюют за город, "
+            + "фермы и перевал. Персонажи — те же, что в игре, дерутся своим боевым ИИ. Стороны строят дома у своих "
+            + "ратуш, нанимают бойцов разных рангов, водят отряды строем, растят именных героев и договариваются о мире."));
+        section(col, "Партия");
+        Button faction = button(setup.factionLabel(), null);
+        faction.setOnClickListener(v -> { setup.cycleFaction(); faction.setText(setup.factionLabel()); });
+        col.addView(faction);
+        Button mode = button(setup.modeLabel(), null);
+        mode.setOnClickListener(v -> { setup.cycleMode(); mode.setText(setup.modeLabel()); });
+        col.addView(mode);
+        Button diff = button(setup.difficultyLabel(), null);
+        diff.setOnClickListener(v -> { setup.cycleDifficulty(); diff.setText(setup.difficultyLabel()); });
+        col.addView(diff);
+        Button llm = button(setup.llmLabel(), null);
+        llm.setOnClickListener(v -> { setup.toggleLlm(); llm.setText(setup.llmLabel()); });
+        col.addView(llm);
+        col.addView(note("Переговоры ведут правила: паладины с орками почти не мирятся, наёмники — за выгоду. "
+            + "Языковая модель для вождей — позже; без неё ИИ сторон работает полностью."));
+        Button start = button("Начать войну", v -> play(VARIANT_RTS));
+        start.setEnabled(gamePath != null && GameFolder.isGameDir(new File(gamePath)));
+        col.addView(start);
+        section(col, "Как играть");
+        col.addView(note("В главном меню игры — «Новая игра»: война начинается в Хоринисе. Сохранения войны — свои, "
+            + "в обычную игру не попадают.\n\n"
+            + "Сверху: палец по земле — сдвинуть камеру, двумя пальцами — ближе/дальше и поворот. Коснись бойца — "
+            + "выбрать (ещё раз — всех таких на экране), подержи и веди — рамка. С выбранными: коснись земли — идти "
+            + "строем, врага — напасть. Внизу: строй (линия, клин, колонна, круг), «Стоять», «Вселиться» — играть "
+            + "бойцом от третьего лица («К войску» — назад). «Строить» — дома у ратуши, второй город (долго и дорого), "
+            + "рынок; «Нанять» — бойцы по рангам; «Переговоры» — перемирие, союз, дар, война. Сверху — пауза и "
+            + "ускорение времени, мини-карта (коснись — камера туда), донесения (коснись — туда)."));
         return col;
     }
 
@@ -464,6 +510,7 @@ public class LauncherActivity extends Activity {
         restarting = true;
         playNotr.setEnabled(false);
         playClassic.setEnabled(false);
+        if (playRts != null) playRts.setEnabled(false);
         resume.setVisibility(View.GONE);
         status.setText("Перезапуск игры…");
         new Thread(() -> {
@@ -491,6 +538,7 @@ public class LauncherActivity extends Activity {
         try {
             writeFile("gothic_path.txt", gamePath);
             writeFile("game_variant.txt", variant);
+            if (VARIANT_RTS.equals(variant)) writeFile("rts_setup.txt", new RtsSetup(prefs()).fileText());
             graphics.write(getFilesDir());
         } catch (IOException e) {
             Toast.makeText(this, "Не удалось записать путь: " + e.getMessage(), Toast.LENGTH_LONG).show();
