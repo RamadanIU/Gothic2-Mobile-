@@ -11461,10 +11461,10 @@ index 0000000..dc6f980
 +  }
 diff --git a/common/game/rts/rtsai.cpp b/common/game/rts/rtsai.cpp
 new file mode 100644
-index 0000000..7752d2c
+index 0000000..a5f90e8
 --- /dev/null
 +++ b/common/game/rts/rtsai.cpp
-@@ -0,0 +1,557 @@
+@@ -0,0 +1,559 @@
 +#include "rtscore.h"
 +
 +#include <algorithm>
@@ -11641,7 +11641,9 @@ index 0000000..7752d2c
 +        continue;
 +      if(!g.canTrain(f,b,int16_t(i)))
 +        continue;
-+      if(fs.reserve>0 && fs.gold-float(d.gold)<fs.reserve*0.7f)
++      // Отложенное на постройку не тратить (прежде найм съедал до 30 % копилки - казна наёмников весь матч стояла ниже
++      // цены кузницы, и они не строили); войска почти нет - нанять всё равно
++      if(fs.reserve>0 && fs.gold-float(d.gold)<fs.reserve && total>=6)
 +        continue;
 +      float s = d.power/float(d.gold+d.food*2+20);
 +      const bool isRanged = (d.role==Role::Ranged || d.role==Role::Caster);
@@ -12024,10 +12026,10 @@ index 0000000..7752d2c
 +}
 diff --git a/common/game/rts/rtscore.cpp b/common/game/rts/rtscore.cpp
 new file mode 100644
-index 0000000..1929425
+index 0000000..e7e08b2
 --- /dev/null
 +++ b/common/game/rts/rtscore.cpp
-@@ -0,0 +1,1796 @@
+@@ -0,0 +1,1851 @@
 +#include "rtscore.h"
 +
 +#include <algorithm>
@@ -12360,6 +12362,7 @@ index 0000000..1929425
 +  if(!u.settled)
 +    return;
 +  u.settled = false;
++  u.guard   = false;
 +  u.sent    = false;
 +  u.movedAt = st.now;
 +  w.unsettle(u);
@@ -13006,6 +13009,7 @@ index 0000000..1929425
 +    s.owner = who;
 +    s.cap   = 0;
 +    s.capBy = F_None;
++    w.siteCaptured(int32_t(&s-st.sites.data()),who,was);
 +    if(was<F_Count) {
 +      auto& op = st.fac[was].rel[who].opinion;
 +      op = std::max(-100.f, op-6.f);
@@ -13199,6 +13203,19 @@ index 0000000..1929425
 +  return s.anchor + slotOffset(s,s.dir,i,n);
 +  }
 +
++const std::vector<V3>& Game::fitted(Squad& s, const V3& anchor, const V3& dir, size_t n) {
++  // Места строя у якоря, подогнанные к местности: раз на якорь и направление (лучи в мире не каждый такт)
++  if(s.slots.size()==n && qDistXZ(s.slotsAt,anchor)<1.f && qDistXZ(s.slotsDir,dir)<1e-4f)
++    return s.slots;
++  s.slots.resize(n);
++  for(size_t i=0; i<n; ++i)
++    s.slots[i] = anchor + slotOffset(s,dir,i,n);
++  w.fitSlots(anchor,dir,s.slots);
++  s.slotsAt  = anchor;
++  s.slotsDir = dir;
++  return s.slots;
++  }
++
 +const Unit* Game::nearestEnemy(Faction f, const V3& p, float r) const {
 +  const Unit* best = nullptr;
 +  float bd = r*r;
@@ -13311,6 +13328,7 @@ index 0000000..1929425
 +void Game::setFormation(uint32_t sq, Formation fm) {
 +  if(auto* s = st.squad(sq)) {
 +    s->form = fm;
++    s->slots.clear();
 +    // Новый строй: собраться в него на месте (на ходу - тоже), потом дальше
 +    if(s->phase!=Phase::None)
 +      s->phase = Phase::None;
@@ -13357,8 +13375,9 @@ index 0000000..1929425
 +  s.phase   = Phase::Form;
 +  s.phaseAt = st.now;
 +  float far = 0;
++  const auto& fit = fitted(s,s.anchor,s.dir,mem.size());
 +  for(size_t i=0; i<mem.size(); ++i) {
-+    const float d = distXZ(mem[i]->pos,slotPos(s,i,mem.size()));
++    const float d = distXZ(mem[i]->pos,fit[i]);
 +    if(d<FormReach)
 +      far = std::max(far,d);
 +    mem[i]->sent = false;
@@ -13380,24 +13399,28 @@ index 0000000..1929425
 +  }
 +
 +bool Game::formBroken(const Squad& s, const std::vector<Unit*>& mem, const V3& dir) const {
-+  // Где был бы якорь по каждому бойцу (позиция минус его место в строю) - среднее; отклонение каждого от своего места
++  // Где был бы якорь по каждому бойцу (позиция минус его место в строю) - среднее; отклонение каждого от своего места.
++  // Место - как строй стоит у конца плеча (на узкой тропе - колонной), иначе тропа всегда «рассыпала» бы строй
 +  if(mem.size()<2)
 +    return false;
++  const bool fit = s.slots.size()==mem.size();
++  auto off = [&](size_t i) { return fit ? s.slots[i]-s.slotsAt : slotOffset(s,dir,i,mem.size()); };
 +  V3 a;
 +  for(size_t i=0; i<mem.size(); ++i)
-+    a = a + (mem[i]->pos - slotOffset(s,dir,i,mem.size()));
++    a = a + (mem[i]->pos - off(i));
 +  a = a*(1.f/float(mem.size()));
 +  float maxD = 0, sum = 0;
 +  for(size_t i=0; i<mem.size(); ++i) {
-+    const float d = distXZ(mem[i]->pos,a+slotOffset(s,dir,i,mem.size()));
++    const float d = distXZ(mem[i]->pos,a+off(i));
 +    maxD = std::max(maxD,d);
 +    sum += d;
 +    }
 +  return maxD>BrokenMax || sum/float(mem.size())>BrokenMean;
 +  }
 +
-+void Game::settleSquad(Squad& s, const std::vector<Unit*>& mem) {
-+  // Пришли и тихо: разойтись по местам (костёр, скамья, беседа, стойка) - в пределах места, чтобы держать его
++void Game::settleSquad(Squad& s, const std::vector<Unit*>& mem, bool capturing) {
++  // Пришли и тихо: разойтись по местам (костёр, скамья, беседа, работа) - в пределах места, чтобы держать его.
++  // Часть - на страже по краю (дозор); берут место - все на страже по краю, лицом наружу, а не кучей посередине
 +  float radius = 1500.f;
 +  float bd = 4000.f*4000.f;
 +  for(auto& site:st.sites) {
@@ -13407,20 +13430,46 @@ index 0000000..1929425
 +      radius = std::min(siteDef(size_t(site.def)).radius*0.8f, 2500.f);
 +      }
 +    }
-+  std::vector<const Unit*> go;
-+  for(auto* u:mem) {
-+    if(u->settled || u->fighting || qDistXZ(u->pos,s.goal)>(radius+800.f)*(radius+800.f))
++  const size_t n = mem.size();
++  size_t quota = capturing ? n : (n>=3 ? std::max<size_t>(1,(n+2)/5) : 0);
++  // На страже: кто уже стоит, потом стрелки, потом прочие (герой - не на страже)
++  std::vector<Unit*> order(mem.begin(),mem.end());
++  std::stable_sort(order.begin(),order.end(),[](const Unit* a, const Unit* b){
++    auto key = [](const Unit* u) {
++      if(u->settled && u->guard)
++        return 0;
++      if(u->hero>=0)
++        return 3;
++      if(u->def>=0 && (unitDef(size_t(u->def)).role==Role::Ranged))
++        return 1;
++      return 2;
++      };
++    return key(a)<key(b);
++    });
++  std::vector<const Unit*> toGuard, toRest;
++  for(auto* u:order) {
++    const bool guard = quota>0;
++    if(quota>0)
++      --quota;
++    if(u->fighting || qDistXZ(u->pos,s.goal)>(radius+800.f)*(radius+800.f))
 +      continue;
-+    go.push_back(u);
++    if(u->settled && u->guard==guard)
++      continue;
++    (guard ? toGuard : toRest).push_back(u);
 +    }
-+  if(go.empty())
-+    return;
-+  w.settle(go,s.goal,radius);
-+  for(auto* u:go)
-+    if(auto* m = st.unit(u->id)) {
-+      m->settled = true;
-+      m->sent    = false;
-+      }
++  auto mark = [&](const std::vector<const Unit*>& v, bool guard) {
++    if(v.empty())
++      return;
++    w.settle(v,s.goal,radius,guard);
++    for(auto* u:v)
++      if(auto* m = st.unit(u->id)) {
++        m->settled = true;
++        m->guard   = guard;
++        m->sent    = false;
++        }
++    };
++  mark(toGuard,true);
++  mark(toRest,false);
 +  }
 +
 +void Game::tickSquad(Squad& s, float dtSec) {
@@ -13568,21 +13617,26 @@ index 0000000..1929425
 +    // Стоит: строй у цели, потом - по местам
 +    s.phase  = Phase::None;
 +    s.anchor = s.goal;
++    const auto& fit = fitted(s,s.goal,s.dir,mem.size());
 +    for(size_t i=0; i<mem.size(); ++i) {
 +      auto* u = mem[i];
 +      if(u->fighting || u->settled)
 +        continue;
-+      const V3 to = slotPos(s,i,mem.size());
-+      sendUnit(*u,to,qDistXZ(u->pos,to)>800.f*800.f,false);
++      sendUnit(*u,fit[i],qDistXZ(u->pos,fit[i])>800.f*800.f,false);
 +      }
-+    // Расселиться: дом и защита места - всегда; отряд игрока - на своём занятом месте; идущий на штурм - нет
-+    bool rest = (s.task==Task::Garrison || s.task==Task::Defend);
-+    if(s.task==Task::Player)
-+      for(auto& site:st.sites)
-+        if(site.owner==s.f && distXZ(site.pos,s.goal)<siteDef(size_t(site.def)).radius)
-+          rest = true;
-+    if(rest && st.now>=s.calmAt+SettleDelay && distXZ(c,s.goal)<2500.f)
-+      settleSquad(s,mem);
++    // Расселиться: дом и защита места - всегда; отряд игрока - на своём занятом месте. Берут чужое место (стоят на
++    // нём, врагов нет) - на стражу по краю, пока не взяли
++    const Site* here = nullptr;
++    for(auto& site:st.sites)
++      if(distXZ(site.pos,s.goal)<siteDef(size_t(site.def)).radius && (here==nullptr || qDistXZ(site.pos,s.goal)<qDistXZ(here->pos,s.goal)))
++        here = &site;
++    const bool capturing = here!=nullptr && here->owner!=s.f && s.task!=Task::Garrison && s.task!=Task::Gather;
++    bool rest = (s.task==Task::Garrison || s.task==Task::Defend) && !capturing;
++    if(s.task==Task::Player && here!=nullptr && here->owner==s.f)
++      rest = true;
++    const uint64_t delay = capturing ? 2000 : SettleDelay;
++    if((rest || capturing) && st.now>=s.calmAt+delay && distXZ(c,s.goal)<2500.f)
++      settleSquad(s,mem,capturing);
 +    return;
 +    }
 +
@@ -13601,9 +13655,10 @@ index 0000000..1929425
 +
 +  if(s.phase==Phase::Form) {
 +    size_t counted = 0, ready = 0;
++    const auto& fit = fitted(s,s.anchor,s.dir,mem.size());
 +    for(size_t i=0; i<mem.size(); ++i) {
 +      auto* u = mem[i];
-+      const V3 to = slotPos(s,i,mem.size());
++      const V3 to = fit[i];
 +      const float d = distXZ(u->pos,to);
 +      if(d<FormReach) {
 +        ++counted;
@@ -13648,9 +13703,10 @@ index 0000000..1929425
 +    s.phaseAt = st.now;
 +    const V3 dir = dirTo(c,s.leg,s.dir);
 +    if(formBroken(s,mem,dir)) {
++      const bool fit = s.slots.size()==mem.size();
 +      V3 a;
 +      for(size_t i=0; i<mem.size(); ++i)
-+        a = a + (mem[i]->pos - slotOffset(s,dir,i,mem.size()));
++        a = a + (mem[i]->pos - (fit ? s.slots[i]-s.slotsAt : slotOffset(s,dir,i,mem.size())));
 +      a = a*(1.f/float(mem.size()));
 +      s.anchor = a + dir*300.f;
 +      s.dir    = dir;
@@ -13658,11 +13714,12 @@ index 0000000..1929425
 +      return;
 +      }
 +    }
++  const auto& fit = fitted(s,s.leg,s.dir,mem.size());
 +  for(size_t i=0; i<mem.size(); ++i) {
 +    auto* u = mem[i];
 +    if(u->fighting)
 +      continue;
-+    sendUnit(*u,s.leg+slotOffset(s,s.dir,i,mem.size()),true,false);
++    sendUnit(*u,fit[i],true,false);
 +    }
 +  }
 +
@@ -13826,10 +13883,10 @@ index 0000000..1929425
 +}
 diff --git a/common/game/rts/rtscore.h b/common/game/rts/rtscore.h
 new file mode 100644
-index 0000000..33a5c0d
+index 0000000..9bbdee3
 --- /dev/null
 +++ b/common/game/rts/rtscore.h
-@@ -0,0 +1,463 @@
+@@ -0,0 +1,477 @@
 +#pragma once
 +
 +// Gothic II Mobile: ядро режима стратегии «Война за Хоринис» (docs/RTS.md). Без движка: тела бойцов, их бой и
@@ -13939,6 +13996,7 @@ index 0000000..33a5c0d
 +  uint64_t  slotAt = 0;
 +  bool      sent   = false;
 +  bool      settled = false;  // расселён на месте: занят делом по распорядку игры (костёр, скамья, беседа), отряд не ведёт
++  bool      guard   = false;  // ... на страже по краю места (захват, дозор), а не на отдыхе
 +  V3        movedFrom;        // где был, когда последний раз сдвинулся (застрял - послать заново)
 +  uint64_t  movedAt = 0;
 +  };
@@ -14023,6 +14081,11 @@ index 0000000..33a5c0d
 +  V3        leg;             // марш: конец нынешнего плеча (точка пути или цель)
 +  uint64_t  legAt   = 0;
 +  uint64_t  calmAt  = 0;     // стоит без врагов с этого времени (расселиться)
++  // Места строя, подогнанные к местности (WorldApi::fitSlots): на склоне и за стеной места нет - ближе к якорю или
++  // колонной позади; считаются раз на сбор, плечо пути, стоянку (не сохраняются)
++  std::vector<V3> slots;
++  V3        slotsAt;
++  V3        slotsDir;
 +  };
 +
 +struct Relation {
@@ -14109,8 +14172,15 @@ index 0000000..33a5c0d
 +    virtual void report    (const Event& e) = 0;
 +    // Отряд пришёл и стоит без врагов: бойцы расходятся по местам вокруг center (не дальше radius) - костры, скамьи,
 +    // беседы, стойки по точкам мира игры; мир сам ведёт их по распорядку, пока отряд не позовёт (unsettle)
-+    virtual void settle    (const std::vector<const Unit*>& units, const V3& center, float radius) { (void)units; (void)center; (void)radius; }
++    // guard - на стражу по краю места (захват, дозор): стоят лицом наружу, а не отдыхают
++    virtual void settle    (const std::vector<const Unit*>& units, const V3& center, float radius, bool guard) {
++      (void)units; (void)center; (void)radius; (void)guard;
++      }
 +    virtual void unsettle  (const Unit& u) { (void)u; }
++    // Места строя у якоря - на проходимую землю: без крутого склона, стены, обрыва между якорем и местом, не друг в друге
++    virtual void fitSlots  (const V3& anchor, const V3& dir, std::vector<V3>& slots) { (void)anchor; (void)dir; (void)slots; }
++    // Место взято: радость бойцов рядом, знамя стороны
++    virtual void siteCaptured(int32_t site, Faction by, Faction was) { (void)site; (void)by; (void)was; }
 +  };
 +
 +class Diplomat;
@@ -14248,7 +14318,8 @@ index 0000000..33a5c0d
 +    void       startForm(Squad& s, const std::vector<Unit*>& mem, bool walkUp);
 +    void       startMarch(Squad& s, const V3& c);
 +    bool       formBroken(const Squad& s, const std::vector<Unit*>& mem, const V3& dir) const;
-+    void       settleSquad(Squad& s, const std::vector<Unit*>& mem);
++    void       settleSquad(Squad& s, const std::vector<Unit*>& mem, bool capturing);
++    const std::vector<V3>& fitted(Squad& s, const V3& anchor, const V3& dir, size_t n);
 +    void       unsettle(Unit& u);
 +    const Unit* nearestEnemy(Faction f, const V3& p, float r) const;
 +    void       sendUnit(Unit& u, const V3& to, bool run, bool force);
@@ -14295,10 +14366,10 @@ index 0000000..33a5c0d
 +}
 diff --git a/common/game/rts/rtsdefs.cpp b/common/game/rts/rtsdefs.cpp
 new file mode 100644
-index 0000000..5dfd422
+index 0000000..0ccf8ab
 --- /dev/null
 +++ b/common/game/rts/rtsdefs.cpp
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,220 @@
 +#include "rtsdefs.h"
 +
 +#include <cstring>
@@ -14441,7 +14512,8 @@ index 0000000..5dfd422
 +   V3(31000,0,-14000),  3.f,  10.f, true,  F_None,     2500.f},
 +  {"farm_lobart","Ферма Лобарта",           SiteKind::Farm,      {"NW_FARM1_LOBART", "NW_FARM1_OUT_05", "FARM1"},
 +   V3(25000,0,-3000),   3.f,  12.f, true,  F_Paladins, 2500.f},
-+  {"tavern",     "Таверна «Мёртвая гарпия»", SiteKind::Tavern,   {"NW_TAVERNE_04", "TAVERNE", nullptr},
++  // Таверна Орлана: внутри - стулья, скамьи, стойка с выпивкой, кровати наверху (RtsGame, «места внутри построек»)
++  {"tavern",     "Таверна Орлана «Мёртвая гарпия»", SiteKind::Tavern, {"NW_TAVERNE_04", "NW_TAVERNE", "NW_TAVERNE_IN_04"},
 +   V3(37000,0,-2000),   10.f, 3.f,  true,  F_None,     2500.f},
 +  {"bigcross",   "Перекрёсток у полей Онара", SiteKind::Cross,   {"BIGCROSS", nullptr, nullptr},
 +   V3(44000,0,-5000),   2.f,  2.f,  false, F_None,     2000.f},
@@ -14923,10 +14995,10 @@ index 0000000..fecca26
 +}
 diff --git a/common/game/rts/rtsgame.cpp b/common/game/rts/rtsgame.cpp
 new file mode 100644
-index 0000000..fd113bf
+index 0000000..af13982
 --- /dev/null
 +++ b/common/game/rts/rtsgame.cpp
-@@ -0,0 +1,1472 @@
+@@ -0,0 +1,1991 @@
 +#include "rtsgame.h"
 +
 +#include <Tempest/Application>
@@ -14939,6 +15011,8 @@ index 0000000..fd113bf
 +#include <fstream>
 +#include <random>
 +#include <sstream>
++#include <cstring>
++#include <unordered_set>
 +
 +#include "game/gamescript.h"
 +#include "game/serialize.h"
@@ -15064,6 +15138,7 @@ index 0000000..fd113bf
 +      core.joinSquad(u,core.garrison(u.f,t));
 +    }
 +  started  = true;
++  showBanners();
 +  viewMode = (s.mode==rts::Mode::Hero) ? View::Hero : View::Command;
 +  const int32_t cap = core.capital(s.mode==rts::Mode::Commander ? s.player : rts::F_Paladins);
 +  if(cap>=0)
@@ -15458,7 +15533,8 @@ index 0000000..fd113bf
 +  const float d = (npc->position()-dst).length();
 +  // Видно - прямо к своему месту в строю (до 60 м: на марше места у конца плеча пути у каждого свои; по сети путей все
 +  // шли бы к одной точке у цели и сбивались в кучу); за стеной или дальше - по сети путей к точке у цели
-+  if(d>6000.f || !npc->canRayHitPoint(dst+Vec3(0,60,0),true,d+100.f)) {
++  // Близко (место строя уже на проходимой земле - fitSlots) - прямо и без проверки луча
++  if(d>6000.f || (d>1500.f && !npc->canRayHitPoint(dst+Vec3(0,100,0),true,d+100.f))) {
 +    auto* wp = w.findWayPoint(dst,[](const WayPoint& p){ return p.isConnected(); });
 +    if(wp!=nullptr && (wp->position()-npc->position()).length()>300.f) {
 +      npc->clearAiQueue();
@@ -15722,6 +15798,30 @@ index 0000000..fd113bf
 +        }
 +      }
 +    }
++  // Знамёна над взятыми местами: флаги и штандарты игры (у орков - со словом ORC)
++  for(auto& m:all) {
++    if(m.find("BANNER")==std::string::npos && m.find("FLAG")==std::string::npos &&
++       m.find("FAHNE")==std::string::npos && m.find("STANDART")==std::string::npos)
++      continue;
++    auto& list = bannerModels[m.find("ORC")!=std::string::npos ? 1 : 0];
++    if(list.size()>=2)
++      continue;
++    if(loaded>=200)
++      break;
++    ++loaded;
++    if(auto* mesh = Resources::loadMesh(m)) {
++      auto* bb = mesh->bbox();
++      const Vec3 sz = bb[1]-bb[0];
++      if(sz.y>=150.f && sz.y<=1200.f && std::max(sz.x,sz.z)<=700.f)
++        list.push_back(m);
++      }
++    }
++  for(int i=0; i<2; ++i) {
++    std::string l;
++    for(auto& m:bannerModels[i])
++      l += m+" ";
++    Log::i("[rts] banners ",i==0 ? "people" : "orcs",": ",l.empty() ? std::string("(none)") : l);
++    }
 +  // Не нашлось модели - взять у другой постройки своей стороны (дом виден всегда, а не только метка на экране)
 +  static const rts::BuildingType borrow[] = {rts::B_TownHall, rts::B_Barracks, rts::B_Store, rts::B_Farm, rts::B_Tower,
 +                                             rts::B_Smithy, rts::B_Infirmary};
@@ -15886,82 +15986,269 @@ index 0000000..fd113bf
 +
 +// ---- места: бойцы на своём месте заняты делом ----
 +
++namespace {
++// Чем заняться на месте - распорядки самой игры (скрипты TA_Human): предмет (mob) или точка (FP) с этим словом в имени
++enum Kind : uint8_t { K_Rest, K_Social, K_Work, K_Drill, K_Sleep, K_Pray, K_Guard, K_Stand };
++
++struct Act {
++  bool        mob;
++  const char* name;     // схема предмета (точно) или слово в имени точки
++  const char* state;
++  uint8_t     kind;
++  float       day, night;
++  float       fac[3];   // паладины, наёмники, орки (люди-образцы орков не бывают)
++  };
++
++static const Act acts[] = {
++  {true,  "BENCH",     "ZS_SIT_BENCH",         K_Rest,   1.0f, 0.7f, {1.0f, 1.0f, 0}},
++  {true,  "CHAIR",     "ZS_SIT_CHAIR",         K_Rest,   1.0f, 0.7f, {1.0f, 1.0f, 0}},
++  {true,  "THRONE",    "ZS_SIT_THRONE",        K_Rest,   0.4f, 0.2f, {1.0f, 1.2f, 0}},
++  {true,  "SMOKE",     "ZS_SMOKE_WATERPIPE",   K_Rest,   0.7f, 0.6f, {0.3f, 1.5f, 0}},
++  {true,  "BEDHIGH",   "ZS_SLEEP",             K_Sleep,  0.0f, 3.0f, {1.0f, 1.0f, 0}},
++  {true,  "BARBQ",     "ZS_ROAST_SCAVENGER",   K_Work,   1.2f, 0.5f, {1.0f, 1.2f, 0}},
++  {true,  "STOVE",     "ZS_COOK_STOVE",        K_Work,   1.0f, 0.2f, {1.0f, 1.0f, 0}},
++  {true,  "PAN",       "ZS_COOK_PAN",          K_Work,   1.0f, 0.3f, {1.0f, 1.0f, 0}},
++  {true,  "CAULDRON",  "ZS_COOK_CAULDRON",     K_Work,   1.0f, 0.3f, {1.0f, 1.0f, 0}},
++  {true,  "BSANVIL",   "ZS_SMITH_ANVIL",       K_Work,   1.4f, 0.0f, {1.0f, 1.0f, 0}},
++  {true,  "BSFIRE",    "ZS_SMITH_FIRE",        K_Work,   1.0f, 0.0f, {1.0f, 1.0f, 0}},
++  {true,  "BSCOOL",    "ZS_SMITH_COOL",        K_Work,   0.8f, 0.0f, {1.0f, 1.0f, 0}},
++  {true,  "BSSHARP",   "ZS_SMITH_SHARP",       K_Work,   1.2f, 0.1f, {1.0f, 1.0f, 0}},
++  {true,  "BAUMSAEGE", "ZS_SAW",               K_Work,   0.9f, 0.0f, {0.8f, 1.2f, 0}},
++  {true,  "REPAIR",    "ZS_REPAIR_HUT",        K_Work,   0.9f, 0.0f, {0.8f, 1.2f, 0}},
++  {true,  "BOOK",      "ZS_READ_BOOKSTAND",    K_Rest,   0.6f, 0.3f, {2.0f, 0.3f, 0}},
++  {true,  "INNOS",     "ZS_PRAY_INNOS",        K_Pray,   0.6f, 0.6f, {2.5f, 0.2f, 0}},
++  {false, "CAMPFIRE",  "ZS_SIT_CAMPFIRE",      K_Rest,   1.0f, 2.2f, {1.0f, 1.2f, 0}},
++  {false, "SMALLTALK", "ZS_SMALLTALK",         K_Social, 1.3f, 0.6f, {1.0f, 1.0f, 0}},
++  {false, "PRAY",      "ZS_PRAY_INNOS_FP",     K_Pray,   0.5f, 0.5f, {2.5f, 0.2f, 0}},
++  {false, "STAND",     "ZS_STAND_DRINKING",    K_Stand,  0.9f, 0.9f, {0.8f, 1.4f, 0}},
++  {false, "STAND",     "ZS_STAND_EATING",      K_Stand,  0.8f, 0.4f, {1.0f, 1.0f, 0}},
++  {false, "STAND",     "ZS_STAND_ARMSCROSSED", K_Stand,  0.5f, 0.4f, {1.0f, 1.0f, 0}},
++  {false, "STAND",     "ZS_SMOKE_JOINT",       K_Stand,  0.3f, 0.5f, {0.1f, 1.5f, 0}},
++  {false, "STAND",     "ZS_PLAY_LUTE",         K_Stand,  0.25f,0.4f, {0.6f, 1.0f, 0}},
++  };
++// Учёба с мечом - у точки пути на открытом месте, без предмета; днём
++static constexpr float DrillDay[3] = {1.4f, 0.8f, 0};
++
++// Места внутри построек мира у места (таверна, башня): занятия ищутся и вокруг этих точек
++struct Inner { const char* site; const char* wp[4]; };
++static const Inner inners[] = {
++  {"tavern", {"NW_TAVERNE_IN_04", "NW_TAVERNE_IN_RANGERMEETING", "NW_TAVERNE_IN_06", "NW_TAVERNE_IN_07"}},
++  {"dexter", {"NW_CASTLEMINE_HUT_10", "NW_CASTLEMINE_TOWER_CAMPFIRE_03", "NW_CASTLEMINE_TOWER_STAND_01", "NW_CASTLEMINE_TOWER_REP_HUT"}},
++  {"bigfarm",{"NW_BIGFARM_TORLOF", "NW_BIGFARM_KITCHEN_01", nullptr, nullptr}},
++  {"city",   {"NW_CITY_UPTOWNPARADE_HAGEN", "NW_CITY_HAGEN", nullptr, nullptr}},
++  };
++
++bool isNight(const World& w) {
++  const auto t = w.time();
++  return t.hour()>=22 || t.hour()<6;
++  }
++}
++
 +bool RtsGame::isSettled(const Npc& npc) const {
 +  const uint32_t id = unitOf(npc);
-+  return id!=0 && settledAt.find(id)!=settledAt.end();
++  return id!=0 && posts.find(id)!=posts.end();
 +  }
 +
-+void RtsGame::settle(const std::vector<const rts::Unit*>& units, const rts::V3& center, float radius) {
-+  // Как жители игры: точки мира (костры, беседы, стойки) и скамьи, стулья, трон - распорядок игры ZS_* с точкой пути
-+  // рядом; дальше бойца ведёт сам распорядок (сядет, встанет, вернётся после боя). Мест нет - стойка у точки пути
-+  auto& w = owner.world();
++void RtsGame::releasePost(uint32_t unit) {
++  auto it = posts.find(unit);
++  if(it==posts.end())
++    return;
++  // Собеседник без пары - тоже на новое место (говорить в пустоту не будет)
++  const uint32_t peer = it->second.peer;
++  posts.erase(it);
++  if(peer!=0)
++    if(auto p = posts.find(peer); p!=posts.end() && p->second.peer==unit) {
++      p->second.peer = 0;
++      p->second.pair = nullptr;
++      p->second.since = 0; // смена занятий (tickPosts) возьмёт его первым
++      }
++  }
++
++bool RtsGame::applyPost(Npc& npc, const std::string& wp, size_t state, bool orcFire) {
++  auto& h = npc.handle();
++  if(npc.isHuman()) {
++    if(state==size_t(-1))
++      return false;
++    npc.setRoutineAllDay(state,wp);
++    h.wp = wp;
++    npc.setWalkMode(WalkBit::WM_Walk);
++    npc.resumeAiRoutine();
++    return true;
++    }
++  // Орки и звери: распорядок монстров - у костра сидеть или отдыхать (бродить по FP_ROAM)
++  for(size_t i=30; i<=41 && i<zenkit::INpc::aivar_count; ++i)
++    h.aivar[i] = 0;
++  const int32_t only = sconst("ONLYROUTINE",-1);
++  if(orcFire && npc.hasAnim("T_STAND_2_GUARDSLEEP"))
++    h.aivar[40] = only; // AIV_MM_OrcSitStart
++  else
++    h.aivar[32] = only; // AIV_MM_RestStart
++  h.wp = wp;
++  npc.clearAiQueue();
++  npc.resumeAiRoutine();
++  return true;
++  }
++
++void RtsGame::settle(const std::vector<const rts::Unit*>& units, const rts::V3& center, float radius, bool guard) {
 +  Vec3 c = toV(center);
 +  groundAt(c,c);
++  for(auto* u:units)
++    releasePost(u->id);
++  if(guard)
++    guardPosts(units,c,radius);
++  else
++    settleOne(units,c,radius,size_t(-1));
++  }
++
++void RtsGame::guardPosts(const std::vector<const rts::Unit*>& units, const Vec3& c, float radius) {
++  // Стража по краю места: точки пути и стойки (FP STAND) в кольце 0,45-1 радиуса, по кругу поровну; идут от центра -
++  // стоят лицом наружу (ZS_Stand_Guarding). Не кучей посередине, пока место берут
++  auto& w = owner.world();
++  std::vector<const WayPoint*> ring;
++  for(int k=0; k<48; ++k) {
++    const float a = float(k)*0.1308997f;
++    const float r = radius*(0.5f+0.45f*float(k%4)/3.f);
++    const Vec3  p = c + Vec3(std::cos(a)*r,0,std::sin(a)*r);
++    auto* wp = w.findWayPoint(p,[&c,radius](const WayPoint& q){
++      const float d = (q.position()-c).quadLength();
++      return q.isConnected() && d>radius*radius*0.2f && d<radius*radius;
++      });
++    if(wp!=nullptr && std::find(ring.begin(),ring.end(),wp)==ring.end())
++      ring.push_back(wp);
++    }
++  std::unordered_set<const void*> taken;
++  for(auto& [id,p]:posts)
++    if(p.key!=nullptr)
++      taken.insert(p.key);
++  const size_t zs = symbol("ZS_STAND_GUARDING");
++  const float  a0 = float(std::rand()%628)/100.f;
++  int placed = 0;
++  for(size_t i=0; i<units.size(); ++i) {
++    Npc* npc = body(units[i]->id);
++    if(npc==nullptr || npc->isPlayer() || npc->isDown() || npc->isAttack())
++      continue;
++    const float want = a0 + float(i)*6.2831853f/float(units.size());
++    const WayPoint* best = nullptr;
++    float bs = 0;
++    for(auto* wp:ring) {
++      if(taken.count(wp))
++        continue;
++      const Vec3  d  = wp->position()-c;
++      float da = std::abs(std::atan2(d.z,d.x)-want);
++      da = std::fmod(da,6.2831853f);
++      da = std::min(da,6.2831853f-da);
++      if(best==nullptr || da<bs) {
++        best = wp;
++        bs   = da;
++        }
++      }
++    Post post;
++    post.center = c;
++    post.radius = radius;
++    post.kind   = K_Guard;
++    post.since  = w.tickCount();
++    post.state  = zs;
++    if(best!=nullptr) {
++      taken.insert(best);
++      post.key = best;
++      applyPost(*npc,best->name,zs,false);
++      ++placed;
++      }
++    posts[units[i]->id] = post;
++    }
++  Log::i("[rts] guard ",int(units.size())," at (",int(c.x),",",int(c.z),") r ",int(radius),": posts ",int(ring.size()),
++         ", placed ",placed);
++  }
++
++void RtsGame::settleOne(const std::vector<const rts::Unit*>& units, const Vec3& c, float radius, size_t avoid) {
++  // Как жители игры: каждый - к своему занятию (скамья, костёр, беседа вдвоём, кузня, котёл, сон ночью, молитва у
++  // паладинов, кальян у наёмников, учёба с мечом). Выбор - по весу занятия днём и ночью, стороне, расстоянию и
++  // разнообразию (чем больше уже так заняты у этого места, тем меньше охота); дальше бойца ведёт распорядок игры
++  auto& w = owner.world();
++  const bool night = isNight(w);
++
++  // Центры поиска: само место и точки внутри построек у него (таверна Орлана, башня Декстера)
++  std::vector<std::pair<Vec3,float>> centers = {{c,radius}};
++  {
++  int32_t site = -1;
++  float   bd   = 4000.f*4000.f;
++  auto&   st   = core.state();
++  for(size_t i=0; i<st.sites.size(); ++i) {
++    const float d = (toV(st.sites[i].pos)-c).quadLength();
++    if(d<bd) {
++      bd   = d;
++      site = int32_t(i);
++      }
++    }
++  if(site>=0)
++    for(auto& in:inners)
++      if(std::strcmp(in.site,rts::siteDef(size_t(st.sites[size_t(site)].def)).key)==0)
++        for(auto name:in.wp)
++          if(name!=nullptr)
++            if(auto* p = w.findPoint(name,false))
++              centers.push_back({p->position(),1500.f});
++  }
++
 +  struct Spot {
 +    Vec3        pos;
-+    const void* key   = nullptr;
-+    const char* state = nullptr; // люди
-+    bool        orcFire = false; // орк: сидеть у костра
-+    bool        orcOk = false;   // орку подходит
++    const void* key  = nullptr;
++    std::string name;    // схема предмета или имя точки (заглавные)
++    bool        mob  = false;
 +    std::string wp;
++    bool        used = false;
++    };
++  std::unordered_set<const void*> taken;
++  for(auto& [id,p]:posts) {
++    if(p.key!=nullptr)
++      taken.insert(p.key);
++    if(p.pair!=nullptr)
++      taken.insert(p.pair);
++    }
++  auto nearWp = [&](const Vec3& p) -> const WayPoint* {
++    return w.findWayPoint(p,[&p](const WayPoint& q){ return q.qDistTo(p)<700.f*700.f; });
 +    };
 +  std::vector<Spot> spots;
-+  std::unordered_map<const void*,uint32_t> taken;
-+  for(auto& [id,key]:settledAt)
-+    taken[key] = id;
-+  auto nearWp = [&](const Vec3& p) -> const WayPoint* {
-+    auto* wp = w.findWayPoint(p,[&p](const WayPoint& q){ return q.qDistTo(p)<700.f*700.f; });
-+    return wp;
-+    };
-+  std::vector<const WayPoint*> fps;
-+  w.freePointsNear(c,radius,fps);
-+  static const char* stands[] = {"ZS_STAND_GUARDING", "ZS_STAND_DRINKING", "ZS_STAND_EATING", "ZS_STAND_ARMSCROSSED"};
-+  for(auto* fp:fps) {
-+    if(fp->isLocked() || taken.count(fp))
-+      continue;
-+    const std::string n = upper(fp->name);
-+    Spot sp;
-+    sp.pos = fp->position();
-+    sp.key = fp;
-+    if(n.find("CAMPFIRE")!=std::string::npos) {
-+      sp.state = "ZS_SIT_CAMPFIRE";
-+      sp.orcFire = true;
-+      sp.orcOk = true;
++  std::unordered_set<const void*> seen;
++  for(auto& [cc,rr]:centers) {
++    std::vector<const WayPoint*> fps;
++    w.freePointsNear(cc,rr,fps);
++    for(auto* fp:fps) {
++      if(fp->isLocked() || taken.count(fp) || !seen.insert(fp).second)
++        continue;
++      auto* wp = nearWp(fp->position());
++      if(wp==nullptr)
++        continue;
++      Spot sp;
++      sp.pos  = fp->position();
++      sp.key  = fp;
++      sp.name = upper(fp->name);
++      sp.wp   = wp->name;
++      spots.push_back(std::move(sp));
 +      }
-+    else if(n.find("SMALLTALK")!=std::string::npos)
-+      sp.state = "ZS_SMALLTALK";
-+    else if(n.find("STAND")!=std::string::npos)
-+      sp.state = stands[size_t(std::rand())%std::size(stands)];
-+    else if(n.find("ROAM")!=std::string::npos)
-+      sp.orcOk = true;
-+    else
-+      continue;
-+    auto* wp = nearWp(sp.pos);
-+    if(wp==nullptr)
-+      continue;
-+    sp.wp = wp->name;
-+    spots.push_back(std::move(sp));
 +    }
 +  for(uint32_t i=0; ; ++i) {
 +    Interactive* mob = w.mobsiById(i);
 +    if(mob==nullptr)
 +      break;
-+    if(!mob->isAvailable() || taken.count(mob))
++    if(taken.count(mob) || !mob->isAvailable())
 +      continue;
 +    const Vec3 p = mob->position();
-+    if((p-c).quadLength()>radius*radius)
++    bool inside = false;
++    for(auto& [cc,rr]:centers)
++      if((p-cc).quadLength()<rr*rr)
++        inside = true;
++    if(!inside)
 +      continue;
-+    const std::string sch = upper(mob->schemeName());
 +    Spot sp;
-+    sp.pos = p;
-+    sp.key = mob;
-+    if(sch=="BENCH")
-+      sp.state = "ZS_SIT_BENCH";
-+    else if(sch=="CHAIR")
-+      sp.state = "ZS_SIT_CHAIR";
-+    else if(sch=="THRONE")
-+      sp.state = "ZS_SIT_THRONE";
-+    else
++    sp.pos  = p;
++    sp.key  = mob;
++    sp.name = upper(mob->schemeName());
++    sp.mob  = true;
++    bool known = false;
++    for(auto& a:acts)
++      if(a.mob && sp.name==a.name)
++        known = true;
++    if(!known)
 +      continue;
 +    auto* wp = nearWp(p);
 +    if(wp==nullptr)
@@ -15969,89 +16256,244 @@ index 0000000..fd113bf
 +    sp.wp = wp->name;
 +    spots.push_back(std::move(sp));
 +    }
-+  // Без мест - стоять у точек пути вокруг (не больше двоих у одной)
-+  std::vector<const WayPoint*> stand;
++  // Точки пути для учёбы с мечом и стойки, если мест нет
++  std::vector<const WayPoint*> open;
 +  for(int k=0; k<16; ++k) {
-+    const float a = float(k)*2.3999632f, r = radius*(0.25f+0.7f*float(k%4)/3.f);
++    const float a = float(k)*2.3999632f, r = radius*(0.2f+0.6f*float(k%4)/3.f);
 +    const Vec3  p = c + Vec3(std::cos(a)*r,0,std::sin(a)*r);
 +    auto* wp = w.findWayPoint(p,[&c,radius](const WayPoint& q){ return q.isConnected() && q.qDistTo(c)<radius*radius; });
-+    if(wp!=nullptr)
-+      stand.push_back(wp);
++    if(wp!=nullptr && std::find(open.begin(),open.end(),wp)==open.end())
++      open.push_back(wp);
 +    }
-+  std::unordered_map<const WayPoint*,int> standUse;
++  std::unordered_map<const WayPoint*,int> openUse;
 +
-+  int sat = 0, stood = 0;
-+  for(auto* u:units) {
++  // Сколько уже чем заняты у этого места
++  std::unordered_map<size_t,int> usedState;
++  for(auto& [id,p]:posts)
++    if((p.center-c).quadLength()<1000.f*1000.f)
++      usedState[p.state]++;
++  const size_t drill = symbol("ZS_PRACTICE_SWORD");
++  const size_t stand = symbol("ZS_STAND_GUARDING");
++  auto rnd = []() { return 0.6f+float(std::rand()%1000)/1250.f; };
++
++  std::vector<const rts::Unit*> queue(units.begin(),units.end());
++  int sat = 0, talk = 0, work = 0, sleep = 0, drilled = 0, stood = 0;
++  while(!queue.empty()) {
++    const rts::Unit* u = queue.front();
++    queue.erase(queue.begin());
 +    Npc* npc = body(u->id);
 +    if(npc==nullptr || npc->isPlayer() || npc->isDown() || npc->isAttack())
 +      continue;
-+    const bool human = npc->isHuman();
-+    // Из шести ближних свободных мест - случайное: кто к костру, кто на скамью, кто поболтать
-+    std::vector<size_t> cand;
-+    for(size_t i=0; i<spots.size(); ++i)
-+      if(spots[i].key!=nullptr && (human ? spots[i].state!=nullptr : spots[i].orcOk))
-+        cand.push_back(i);
-+    std::sort(cand.begin(),cand.end(),[&](size_t a, size_t b){
-+      return (spots[a].pos-npc->position()).quadLength()<(spots[b].pos-npc->position()).quadLength();
-+      });
-+    if(cand.size()>6)
-+      cand.resize(6);
-+    Spot* sp = cand.empty() ? nullptr : &spots[cand[size_t(std::rand())%cand.size()]];
-+    std::string wpName;
-+    const char* state = nullptr;
-+    bool orcFire = false;
-+    if(sp!=nullptr) {
-+      wpName  = sp->wp;
-+      state   = sp->state;
-+      orcFire = sp->orcFire;
-+      settledAt[u->id] = sp->key;
-+      sp->key = nullptr; // занято
++    const Vec3   at    = npc->position();
++    const bool   human = npc->isHuman();
++    const size_t fi    = std::min<size_t>(u->f,2);
++    Post post;
++    post.center = c;
++    post.radius = radius;
++    post.since  = w.tickCount();
++
++    if(!human) {
++      // Орки и звери: к свободному костру (орк сядет у огня) или отдыхать у точки пути
++      Spot* best = nullptr;
++      for(auto& sp:spots)
++        if(!sp.used && !sp.mob && sp.name.find("CAMPFIRE")!=std::string::npos &&
++           (best==nullptr || (sp.pos-at).quadLength()<(best->pos-at).quadLength()))
++          best = &sp;
++      std::string wpName;
++      if(best!=nullptr && npc->hasAnim("T_STAND_2_GUARDSLEEP")) {
++        best->used = true;
++        post.key   = best->key;
++        wpName     = best->wp;
++        post.kind  = K_Rest;
++        } else if(!open.empty()) {
++        wpName    = open[size_t(std::rand())%open.size()]->name;
++        post.kind = K_Stand;
++        } else {
++        if(auto* wp = w.findWayPoint(at))
++          wpName = wp->name;
++        post.kind = K_Stand;
++        }
++      if(!wpName.empty())
++        applyPost(*npc,wpName,size_t(-1),best!=nullptr && post.key!=nullptr);
++      posts[u->id] = post;
 +      ++sat;
-+      } else {
-+      const WayPoint* best = nullptr;
-+      for(auto* wp:stand)
-+        if(standUse[wp]<2 && (best==nullptr || (wp->position()-npc->position()).quadLength()<(best->position()-npc->position()).quadLength()))
-+          best = wp;
-+      if(best==nullptr) {
-+        settledAt[u->id] = nullptr; // стоит, где стоял (лагерь)
++      continue;
++      }
++
++    // Люди: лучшее (место, занятие)
++    Spot*      bestSp  = nullptr;
++    const Act* bestAct = nullptr;
++    float      bs      = 0;
++    for(auto& sp:spots) {
++      if(sp.used)
++        continue;
++      const float dist = 1.f/(1.f+std::sqrt((sp.pos-at).quadLength())/2000.f);
++      for(auto& a:acts) {
++        if(a.mob!=sp.mob)
++          continue;
++        if(a.mob ? sp.name!=a.name : sp.name.find(a.name)==std::string::npos)
++          continue;
++        const size_t zs = symbol(a.state);
++        if(zs==size_t(-1))
++          continue;
++        float s = (night ? a.night : a.day)*a.fac[fi];
++        if(s<=0.f)
++          continue;
++        if(a.kind==K_Social && queue.empty())
++          continue; // беседа - вдвоём
++        s *= dist*rnd()/(1.f+1.2f*float(usedState[zs]));
++        if(zs==avoid)
++          s *= 0.15f;
++        if(s>bs) {
++          bs      = s;
++          bestSp  = &sp;
++          bestAct = &a;
++          }
++        }
++      }
++    // Учёба с мечом - днём, на открытом месте
++    const float drillW = (!night && drill!=size_t(-1) && !open.empty()) ?
++                         DrillDay[fi]*0.45f*rnd()/(1.f+1.2f*float(usedState[drill]))*(drill==avoid ? 0.15f : 1.f) : 0.f;
++    if(drillW>bs) {
++      const WayPoint* wp = nullptr;
++      for(auto* o:open)
++        if(openUse[o]==0 && (wp==nullptr || (o->position()-at).quadLength()<(wp->position()-at).quadLength()))
++          wp = o;
++      if(wp!=nullptr) {
++        openUse[wp]++;
++        post.kind  = K_Drill;
++        post.state = drill;
++        post.key   = wp;
++        applyPost(*npc,wp->name,drill,false);
++        posts[u->id] = post;
++        usedState[drill]++;
++        ++drilled;
 +        continue;
 +        }
-+      standUse[best]++;
-+      wpName = best->name;
-+      state  = (std::rand()%2) ? "ZS_STAND_GUARDING" : "ZS_STAND_ARMSCROSSED";
-+      settledAt[u->id] = nullptr;
-+      ++stood;
 +      }
-+    auto& h = npc->handle();
-+    npc->clearAiQueue();
-+    if(human) {
-+      const size_t zs = symbol(state);
-+      if(zs==size_t(-1))
-+        continue;
-+      npc->setRoutineAllDay(zs,wpName);
-+      h.wp = wpName;
-+      npc->setWalkMode(WalkBit::WM_Walk);
-+      npc->resumeAiRoutine();
-+      } else {
-+      // Орки и звери: состояние распорядка монстров - у костра сидеть или отдыхать (бродить по FP_ROAM)
-+      for(size_t i=30; i<=41 && i<zenkit::INpc::aivar_count; ++i)
-+        h.aivar[i] = 0;
-+      const int32_t only = sconst("ONLYROUTINE",-1);
-+      if(orcFire && npc->hasAnim("T_STAND_2_GUARDSLEEP"))
-+        h.aivar[40] = only; // AIV_MM_OrcSitStart
-+      else
-+        h.aivar[32] = only; // AIV_MM_RestStart
-+      h.wp = wpName;
-+      npc->resumeAiRoutine();
++    if(bestSp==nullptr) {
++      // Мест нет - стоять у точки пути вокруг (не больше двоих у одной)
++      const WayPoint* wp = nullptr;
++      for(auto* o:open)
++        if(openUse[o]<2 && (wp==nullptr || (o->position()-at).quadLength()<(wp->position()-at).quadLength()))
++          wp = o;
++      if(wp!=nullptr) {
++        openUse[wp]++;
++        post.kind  = K_Stand;
++        post.state = (std::rand()%2) ? stand : symbol("ZS_STAND_ARMSCROSSED");
++        applyPost(*npc,wp->name,post.state,false);
++        ++stood;
++        }
++      posts[u->id] = post;
++      continue;
++      }
++    const size_t zs = symbol(bestAct->state);
++    bestSp->used = true;
++    post.key   = bestSp->key;
++    post.kind  = bestAct->kind;
++    post.state = zs;
++    usedState[zs]++;
++    if(bestAct->kind==K_Social) {
++      // Собеседник: ближняя свободная точка беседы (они парами) и ближний из ещё не занятых бойцов
++      Spot* mate = nullptr;
++      for(auto& sp:spots)
++        if(!sp.used && !sp.mob && sp.name.find("SMALLTALK")!=std::string::npos && (sp.pos-bestSp->pos).quadLength()<500.f*500.f &&
++           (mate==nullptr || (sp.pos-bestSp->pos).quadLength()<(mate->pos-bestSp->pos).quadLength()))
++          mate = &sp;
++      size_t who = queue.size();
++      for(size_t k=0; k<queue.size(); ++k) {
++        Npc* o = body(queue[k]->id);
++        if(o==nullptr || !o->isHuman() || o->isDown() || o->isAttack())
++          continue;
++        if(who==queue.size() || (o->position()-at).quadLength()<(body(queue[who]->id)->position()-at).quadLength())
++          who = k;
++        }
++      if(mate!=nullptr && who<queue.size()) {
++        const rts::Unit* v = queue[who];
++        queue.erase(queue.begin()+long(who));
++        mate->used = true;
++        Post vp = post;
++        vp.key  = mate->key;
++        vp.pair = bestSp->key;
++        vp.peer = u->id;
++        post.pair = mate->key;
++        post.peer = v->id;
++        applyPost(*body(v->id),mate->wp,zs,false);
++        posts[v->id] = vp;
++        usedState[zs]++;
++        talk += 2;
++        } else {
++        // Пары нет - постоять с кружкой у той же точки
++        post.kind  = K_Stand;
++        post.state = symbol("ZS_STAND_DRINKING");
++        }
++      }
++    applyPost(*npc,bestSp->wp,post.state,false);
++    posts[u->id] = post;
++    if(post.kind==K_Work)
++      ++work;
++    else if(post.kind==K_Sleep)
++      ++sleep;
++    else if(post.kind!=K_Social)
++      ++sat;
++    }
++  Log::i("[rts] settle ",int(units.size())," at (",int(c.x),",",int(c.z),") r ",int(radius),night ? " night" : " day",
++         ": spots ",int(spots.size()),", rest ",sat,", talk ",talk,", work ",work,", sleep ",sleep,", drill ",drilled,
++         ", standing ",stood);
++  }
++
++void RtsGame::tickPosts() {
++  // Смена занятий, как у жителей по распорядку: раз в 12 с один из давно занятых встаёт и идёт к другому делу; ночью -
++  // спать и к кострам, утром - вставать; кто остался без собеседника - первым. Стража стоит, пока отряд не сменит её
++  auto& w = owner.world();
++  const uint64_t now = w.tickCount();
++  if(now<postsAt)
++    return;
++  const bool night = isNight(w);
++  uint32_t pick = 0;
++  int      ps   = 0;
++  size_t   cnt  = 0;
++  for(auto& [id,p]:posts) {
++    if(p.kind==K_Guard)
++      continue;
++    Npc* npc = body(id);
++    if(npc==nullptr || npc->isAttack() || npc->isDown() || npc->isPlayer())
++      continue;
++    int s = 0;
++    if((p.kind==K_Sleep && !night) || (p.kind==K_Work && night) || (p.kind==K_Drill && night))
++      s = 3; // не ко времени
++    else if(p.kind==K_Social && p.peer==0 && p.since==0)
++      s = 3; // собеседник ушёл
++    else if(now>p.since+90000)
++      s = 1;
++    if(s==0)
++      continue;
++    ++cnt;
++    if(s>ps || (s==ps && std::rand()%int(cnt)==0)) {
++      pick = id;
++      ps   = s;
 +      }
 +    }
-+  Log::i("[rts] settle ",int(units.size())," at (",int(c.x),",",int(c.z),") r ",int(radius),": spots ",int(spots.size()),
-+         ", busy ",sat,", standing ",stood);
++  postsAt = now + (ps>=3 ? 4000 : 12000);
++  if(pick==0)
++    return;
++  auto* u = core.state().unit(pick);
++  if(u==nullptr || !u->settled || u->guard)
++    return;
++  const Post   p     = posts[pick];
++  std::vector<const rts::Unit*> v = {u};
++  // Беседа: собеседник - тоже к новому делу
++  if(p.peer!=0)
++    if(auto* o = core.state().unit(p.peer); o!=nullptr && o->settled && !o->guard)
++      v.push_back(o);
++  for(auto* x:v)
++    releasePost(x->id);
++  settleOne(v,p.center,p.radius,p.state);
 +  }
 +
 +void RtsGame::unsettle(const rts::Unit& u) {
 +  // Зовёт отряд: распорядок лагеря (конец прежнего состояния - встать со скамьи - сам ляжет в очередь ИИ)
-+  settledAt.erase(u.id);
++  releasePost(u.id);
 +  Npc* npc = body(u.id);
 +  if(npc==nullptr || npc->isPlayer() || npc->isDown())
 +    return;
@@ -16059,6 +16501,139 @@ index 0000000..fd113bf
 +    return; // дерётся - после боя распорядок отряда
 +  setArmyRoutine(*npc);
 +  standUntil[u.id] = owner.world().tickCount()+1500;
++  }
++
++void RtsGame::fitSlots(const rts::V3& anchor, const rts::V3& dir, std::vector<rts::V3>& slots) {
++  // Места строя - на проходимой земле: не на крутом склоне, без стены или гребня между якорем и местом, не друг в
++  // друге. Не нашлось - ближе к якорю, потом колонной позади по пути (узкая тропа). Прежде место на склоне было
++  // «не видно» - боец шёл к точке пути у цели, и весь отряд стоял кучей у одной точки
++  auto& w = owner.world();
++  auto* phys = w.physic();
++  Vec3 a = toV(anchor);
++  groundAt(a,a);
++  const Vec3 fwd(dir.x,0,dir.z), right(-dir.z,0,dir.x);
++  std::vector<Vec3> used;
++  auto fits = [&](const Vec3& p, Vec3& g) {
++    if(!groundAt(p,g))
++      return false;
++    const float h = std::sqrt((g.x-a.x)*(g.x-a.x)+(g.z-a.z)*(g.z-a.z));
++    if(std::abs(g.y-a.y)>120.f+0.6f*h)
++      return false; // круто
++    for(auto& o:used)
++      if((o.x-g.x)*(o.x-g.x)+(o.z-g.z)*(o.z-g.z)<110.f*110.f)
++        return false;
++    if(phys!=nullptr && h>60.f && phys->ray(a+Vec3(0,110,0),g+Vec3(0,110,0)).hasCol)
++      return false; // стена, гребень, дом
++    return true;
++    };
++  int moved = 0;
++  for(auto& sl:slots) {
++    const Vec3 off = toV(sl)-a;
++    Vec3 g;
++    bool ok = false;
++    for(float k : {1.f, 0.65f, 0.35f})
++      if(fits(a+Vec3(off.x*k,0,off.z*k),g)) {
++        ok = true;
++        break;
++        }
++    for(int k=1; !ok && k<40; ++k)
++      for(float side : {0.f, -70.f, 70.f})
++        if(fits(a-fwd*(150.f*float(k))+right*side,g)) {
++          ok = true;
++          break;
++          }
++    if(!ok) {
++      used.push_back(toV(sl));
++      continue;
++      }
++    if((g-toV(sl)).quadLength()>50.f*50.f)
++      ++moved;
++    sl = toR(g);
++    used.push_back(g);
++    }
++  if(moved>0)
++    Log::d("[rts] formation fitted to the ground: ",moved," of ",int(slots.size())," moved");
++  }
++
++void RtsGame::siteCaptured(int32_t site, rts::Faction by, rts::Faction was) {
++  // Взяли: бойцы рядом радуются (как зрители драки в игре - T_WATCHFIGHT_YEAH, орки - рык T_WARN), над местом - знамя
++  (void)was;
++  auto& st = core.state();
++  if(site<0 || size_t(site)>=st.sites.size())
++    return;
++  const auto& s = st.sites[size_t(site)];
++  const float r = rts::siteDef(size_t(s.def)).radius;
++  int cheered = 0;
++  for(auto& u:st.units) {
++    if(u.f!=by || u.st!=rts::UnitState::Alive || rts::qDistXZ(u.pos,s.pos)>r*r)
++      continue;
++    Npc* npc = body(u.id);
++    if(npc==nullptr || npc->isPlayer() || npc->isDown() || npc->isAttack() || npc->interactive()!=nullptr)
++      continue;
++    const char* ani = npc->isHuman() ? "T_WATCHFIGHT_YEAH" : "T_WARN";
++    if(!npc->hasAnim(ani))
++      continue;
++    npc->aiPush(AiQueue::aiWait(uint64_t(std::rand()%700)));
++    npc->aiPush(AiQueue::aiPlayAnim(ani));
++    ++cheered;
++    }
++  showBanner(site);
++  Log::i("[rts] captured \"",rts::siteDef(size_t(s.def)).key,"\" by ",rts::factionKey(by),": cheer ",cheered);
++  }
++
++void RtsGame::showBanner(int32_t site) {
++  auto& st = core.state();
++  if(site<0 || size_t(site)>=st.sites.size())
++    return;
++  const auto& s = st.sites[size_t(site)];
++  Banner* b = nullptr;
++  for(auto& i:banners)
++    if(i.site==site)
++      b = &i;
++  if(b!=nullptr && b->owner==uint8_t(s.owner))
++    return;
++  if(b==nullptr) {
++    banners.emplace_back();
++    b = &banners.back();
++    b->site = site;
++    }
++  b->owner = uint8_t(s.owner);
++  b->mesh  = MeshObjects::Mesh();
++  if(s.owner>=rts::F_Count)
++    return;
++  auto& list = bannerModels[s.owner==rts::F_Orcs ? 1 : 0];
++  if(list.empty())
++    return;
++  // Паладины и наёмники - разные знамёна, если их несколько
++  const std::string& m = list[(s.owner==rts::F_Mercs ? 1 : 0)%list.size()];
++  b->mesh = owner.world().addStaticView(m);
++  Vec3 pos = toV(s.pos) + Vec3(250,0,250);
++  groundAt(pos,pos);
++  Matrix4x4 mt;
++  mt.identity();
++  mt.translate(pos.x,pos.y,pos.z);
++  mt.rotateOY(float(site*47%360));
++  b->mesh.setObjMatrix(mt);
++  }
++
++void RtsGame::showBanners() {
++  auto& st = core.state();
++  for(size_t i=0; i<st.sites.size(); ++i)
++    showBanner(int32_t(i));
++  }
++
++bool RtsGame::captureNear(const Vec3& at, std::string& name, float& k, rts::Faction& by) const {
++  auto& st = core.state();
++  for(auto& s:st.sites) {
++    const auto& d = rts::siteDef(size_t(s.def));
++    if(s.cap<=0.f || s.capBy>=rts::F_Count || (toV(s.pos)-at).quadLength()>d.radius*d.radius*2.25f)
++      continue;
++    name = toCp1251(d.name);
++    k    = s.cap;
++    by   = s.capBy;
++    return true;
++    }
++  return false;
 +  }
 +
 +// ---- такт ----
@@ -16158,6 +16733,7 @@ index 0000000..fd113bf
 +void RtsGame::dropVisuals() {
 +  // Мир уходит (выход из игры, загрузка, другой мир): модели построек - до него, они живут в его WorldView
 +  visuals.clear();
++  banners.clear();
 +  bodies.clear();
 +  boundWorld = nullptr;
 +  }
@@ -16172,6 +16748,7 @@ index 0000000..fd113bf
 +  auto& w = owner.world();
 +  if(&w!=boundWorld) {
 +    visuals.clear();
++    banners.clear();
 +    bodies.clear();
 +    boundWorld = &w;
 +    if(!enabled() || !isNewWorld(w))
@@ -16184,14 +16761,27 @@ index 0000000..fd113bf
 +        core.rebind(u.id,body(u.id)!=nullptr);
 +      // Места - заново по точкам мира (новые места в старом сохранении стоят «примерно»); расселённые - на местах
 +      resolveSites(w);
-+      settledAt.clear();
++      posts.clear();
 +      standUntil.clear();
-+      for(auto& u:st.units)
-+        if(u.settled)
-+          settledAt[u.id] = nullptr;
++      for(auto& u:st.units) {
++        if(!u.settled)
++          continue;
++        // Занятие из сохранения идёт своим распорядком; место отряда - ближнее место карты
++        Post p;
++        p.center = toV(u.pos);
++        p.radius = 1500.f;
++        p.kind   = u.guard ? uint8_t(K_Guard) : uint8_t(K_Stand);
++        for(auto& s:st.sites)
++          if(rts::distXZ(s.pos,u.pos)<rts::siteDef(size_t(s.def)).radius) {
++            p.center = toV(s.pos);
++            p.radius = std::min(rts::siteDef(size_t(s.def)).radius*0.8f,2500.f);
++            }
++        posts[u.id] = p;
++        }
 +      pickModels();
 +      for(auto& b:st.buildings)
 +        showBuilding(b);
++      showBanners();
 +      applyTreaties();
 +      started  = true;
 +      viewMode = (st.setup.mode==rts::Mode::Hero) ? View::Hero : View::Command;
@@ -16203,6 +16793,7 @@ index 0000000..fd113bf
 +  if(!started || !isNewWorld(w))
 +    return;
 +  rebindBodies(w);
++  tickPosts();
 +  {
 +  const auto t = w.time();
 +  core.setDayTime(float(t.hour()) + float(t.minute())/60.f);
@@ -16401,10 +16992,10 @@ index 0000000..fd113bf
 +  }
 diff --git a/common/game/rts/rtsgame.h b/common/game/rts/rtsgame.h
 new file mode 100644
-index 0000000..a04e7ef
+index 0000000..7726669
 --- /dev/null
 +++ b/common/game/rts/rtsgame.h
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,210 @@
 +#pragma once
 +
 +#include <Tempest/Vec>
@@ -16508,8 +17099,13 @@ index 0000000..a04e7ef
 +    bool findLot   (const rts::V3& center, float minR, float maxR, float radius, uint32_t seed, rts::V3& out) override;
 +    bool route     (const rts::V3& from, const rts::V3& to, std::vector<rts::V3>& out) override;
 +    void report    (const rts::Event& e) override;
-+    void settle    (const std::vector<const rts::Unit*>& units, const rts::V3& center, float radius) override;
++    void settle    (const std::vector<const rts::Unit*>& units, const rts::V3& center, float radius, bool guard) override;
 +    void unsettle  (const rts::Unit& u) override;
++    void fitSlots  (const rts::V3& anchor, const rts::V3& dir, std::vector<rts::V3>& slots) override;
++    void siteCaptured(int32_t site, rts::Faction by, rts::Faction was) override;
++
++    // Захват места рядом (экран своего героя): имя места (Windows-1251), доля, кто берёт
++    bool        captureNear(const Tempest::Vec3& at, std::string& name, float& k, rts::Faction& by) const;
 +
 +    struct Notice {
 +      std::string   text;  // Windows-1251 (шрифты игры)
@@ -16558,8 +17154,27 @@ index 0000000..a04e7ef
 +    bool                       modelsReady = false;
 +    uint64_t                   pendingDownCheck = 0;
 +    mutable std::vector<size_t> idleStates;
-+    std::unordered_map<uint32_t,const void*> settledAt;  // расселённый боец - его место (точка FP или скамья)
-+    std::unordered_map<uint32_t,uint64_t>    standUntil; // встаёт со скамьи, от костра: до этого (время мира) не вести
++    // Расселённый боец: где и чем занят (settle). Занятие - распорядок игры ZS_* с точкой пути у места
++    struct Post {
++      const void*   key    = nullptr; // точка FP, предмет (скамья) или точка пути стражи: занято
++      const void*   pair   = nullptr; // беседа: точка собеседника
++      uint32_t      peer   = 0;       // беседа: собеседник
++      Tempest::Vec3 center;           // место отряда
++      float         radius = 0;
++      size_t        state  = size_t(-1);
++      uint8_t       kind   = 0;       // Act: отдых, беседа, работа, учёба, сон, молитва, стража
++      uint64_t      since  = 0;       // время мира
++      };
++    struct Banner {
++      int32_t           site  = -1;
++      uint8_t           owner = 255;
++      MeshObjects::Mesh mesh;
++      };
++    std::unordered_map<uint32_t,Post>     posts;
++    std::unordered_map<uint32_t,uint64_t> standUntil; // встаёт со скамьи, от костра: до этого (время мира) не вести
++    uint64_t                   postsAt = 0;
++    std::vector<Banner>        banners;
++    std::vector<std::string>   bannerModels[2];      // люди, орки
 +
 +    void        begin(World& w);
 +    void        readSetup(rts::Setup& s) const;
@@ -16577,6 +17192,14 @@ index 0000000..a04e7ef
 +    void        dress(Npc& npc, const rts::Loadout& l);
 +    void        setArmyRoutine(Npc& npc);
 +    void        pickModels();
++    void        showBanner(int32_t site);
++    void        showBanners();
++    void        tickPosts();
++    void        settleOne(const std::vector<const rts::Unit*>& units, const Tempest::Vec3& center, float radius,
++                          size_t avoid);
++    void        guardPosts(const std::vector<const rts::Unit*>& units, const Tempest::Vec3& center, float radius);
++    void        releasePost(uint32_t unit);
++    bool        applyPost(Npc& npc, const std::string& wp, size_t state, bool orcFire);
 +    void        showBuilding(const rts::Building& b);
 +    size_t      symbol(std::string_view name) const;
 +    int32_t     sconst(std::string_view name, int32_t def) const;
@@ -16710,7 +17333,7 @@ index 0000000..2273206
 +}
 diff --git a/common/game/rts/rtsio.cpp b/common/game/rts/rtsio.cpp
 new file mode 100644
-index 0000000..f53afe9
+index 0000000..c3ea2d4
 --- /dev/null
 +++ b/common/game/rts/rtsio.cpp
 @@ -0,0 +1,268 @@
@@ -16772,7 +17395,7 @@ index 0000000..f53afe9
 +      o<<"unit "<<u.id<<' '<<int(u.f)<<' '<<(u.def>=0 ? unitDef(size_t(u.def)).key : "-")<<' '<<u.hero<<' '<<int(u.st)
 +       <<' '<<u.squad;
 +      put(o,u.pos);
-+      o<<' '<<u.hp01<<' '<<u.kills<<' '<<int(u.settled)<<'\n';
++      o<<' '<<u.hp01<<' '<<u.kills<<' '<<(u.settled ? (u.guard ? 2 : 1) : 0)<<'\n';
 +      }
 +    for(auto& h:st.heroes) {
 +      o<<"hero "<<heroDef(size_t(h.def)).key<<' '<<h.level<<' '<<h.xp<<' '<<h.unit<<' '<<h.kills<<' '<<int(h.st)
@@ -16901,7 +17524,7 @@ index 0000000..f53afe9
 +        l>>u.hp01>>u.kills;
 +        int settled = 0;
 +        if(l>>settled) // нет в сохранениях до 2026-11-05
-+          u.settled = settled!=0;
++          u.settled = settled!=0, u.guard = settled==2;
 +        u.f   = Faction(f);
 +        u.st  = UnitState(s);
 +        u.def = key=="-" ? int16_t(-1) : int16_t(unitDefByKey(key.c_str()));
@@ -30728,10 +31351,10 @@ index fbb1b8a..298f487 100644
    };
 diff --git a/common/ui/rtsui.cpp b/common/ui/rtsui.cpp
 new file mode 100644
-index 0000000..2274561
+index 0000000..d807ee4
 --- /dev/null
 +++ b/common/ui/rtsui.cpp
-@@ -0,0 +1,1007 @@
+@@ -0,0 +1,1028 @@
 +#include "rtsui.h"
 +
 +#include <Tempest/Application>
@@ -30748,6 +31371,8 @@ index 0000000..2274561
 +#include "camera.h"
 +#include "gothic.h"
 +#include "resources.h"
++#include "world/objects/npc.h"
++#include "world/world.h"
 +
 +using namespace Tempest;
 +
@@ -31354,6 +31979,25 @@ index 0000000..2274561
 +  const uint64_t now = Application::tickCount();
 +  int y = top;
 +  int shown = 0;
++  // Захват места рядом с героем: имя места и полоска цвета берущей стороны (вверху посередине)
++  if(auto* wr = Gothic::inst().world(); wr!=nullptr && wr->player()!=nullptr) {
++    std::string  name;
++    float        k  = 0;
++    rts::Faction by = rts::F_None;
++    if(rts.captureNear(wr->player()->position(),name,k,by)) {
++      const std::string l  = cp("Захват: ")+name;
++      const auto        ts = textSize(l,0.8f);
++      const int bw = std::max(ts.w+int(16*dp),int(220*dp)), bh = int(6*dp);
++      const int x  = (w()-bw)/2, yy = int(56*dp);
++      p.setBrush(Color(0.f,0.f,0.f,0.55f));
++      p.drawRect(x,yy,bw,ts.h+bh+int(14*dp));
++      text(p,l,x+(bw-ts.w)/2,yy+int(4*dp),0.8f);
++      p.setBrush(Color(0.15f,0.12f,0.1f,0.9f));
++      p.drawRect(x+int(6*dp),yy+ts.h+int(8*dp),bw-int(12*dp),bh);
++      p.setBrush(sideColor(by,0.95f));
++      p.drawRect(x+int(6*dp),yy+ts.h+int(8*dp),int(float(bw-int(12*dp))*std::clamp(k,0.f,1.f)),bh);
++      }
++    }
 +  for(size_t i=ns.size(); i>0 && shown<3; --i) {
 +    auto& n = ns[i-1];
 +    if(now>n.at+12000)
