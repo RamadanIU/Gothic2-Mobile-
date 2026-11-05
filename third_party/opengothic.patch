@@ -11461,10 +11461,10 @@ index 0000000..dc6f980
 +  }
 diff --git a/common/game/rts/rtsai.cpp b/common/game/rts/rtsai.cpp
 new file mode 100644
-index 0000000..057efba
+index 0000000..7752d2c
 --- /dev/null
 +++ b/common/game/rts/rtsai.cpp
-@@ -0,0 +1,555 @@
+@@ -0,0 +1,557 @@
 +#include "rtscore.h"
 +
 +#include <algorithm>
@@ -11590,8 +11590,10 @@ index 0000000..057efba
 +    for(auto bt:want) {
 +      std::string why;
 +      if(g.canBuild(f,town,bt,&why)) {
-+        g.build(f,town,bt);
-+        break;
++        // Нет места под этот дом - попробовать следующее желание (дом поменьше), а не ждать без конца
++        if(g.build(f,town,bt,&why))
++          break;
++        continue;
 +        }
 +      // не хватает денег - копить (найм их не тратит); другое (нельзя больше) - следующее желание
 +      auto& d = buildingDef(bt);
@@ -12022,10 +12024,10 @@ index 0000000..057efba
 +}
 diff --git a/common/game/rts/rtscore.cpp b/common/game/rts/rtscore.cpp
 new file mode 100644
-index 0000000..6aa1e6e
+index 0000000..1929425
 --- /dev/null
 +++ b/common/game/rts/rtscore.cpp
-@@ -0,0 +1,1557 @@
+@@ -0,0 +1,1796 @@
 +#include "rtscore.h"
 +
 +#include <algorithm>
@@ -12045,6 +12047,15 @@ index 0000000..6aa1e6e
 +static constexpr uint64_t HeroCarryTime  = 8000;  // герой без сознания - через столько его уносят лечиться
 +static constexpr uint64_t SimStep        = 250;
 +static constexpr uint64_t SquadStep      = 500;
++// Ход строем (tickSquad): собраться, бежать, раз в RegroupEvery проверить строй - рассыпался, собраться снова
++static constexpr uint64_t RegroupEvery   = 10000;
++static constexpr float    InSlot         = 250.f;  // см: боец на своём месте в строю
++static constexpr float    FormReach      = 6000.f; // сбор ждёт только тех, кто ближе (дальние догонят на марше)
++static constexpr float    LegSwitch      = 1000.f; // центр отряда ближе к концу плеча - следующее плечо
++static constexpr float    BrokenMax      = 800.f;  // строй рассыпался: кто-то дальше своего места
++static constexpr float    BrokenMean     = 350.f;  // ... или в среднем дальше
++static constexpr uint64_t StuckTime      = 3000;   // послан и не двигается - послать снова
++static constexpr uint64_t SettleDelay    = 6000;   // пришёл и тихо - расселиться по местам
 +
 +const char* treatyName(Treaty t) {
 +  switch(t) {
@@ -12338,10 +12349,20 @@ index 0000000..6aa1e6e
 +    auto& v = old->units;
 +    v.erase(std::remove(v.begin(),v.end(),u.id),v.end());
 +    }
++  unsettle(u); // новый отряд ведёт его сам: встать со скамьи, от костра
 +  u.squad = sq;
 +  u.sent  = false;
 +  if(auto* s = st.squad(sq))
 +    s->units.push_back(u.id);
++  }
++
++void Game::unsettle(Unit& u) {
++  if(!u.settled)
++    return;
++  u.settled = false;
++  u.sent    = false;
++  u.movedAt = st.now;
++  w.unsettle(u);
 +  }
 +
 +void Game::report(Faction f, std::string text, const V3& pos, bool important) {
@@ -12590,17 +12611,36 @@ index 0000000..6aa1e6e
 +      }
 +    lot = *at;
 +    }
-+  else if(!w.findLot(tw.center,1000,TownRadius-d.radius,d.radius,st.nextId*2654435761u,lot)) {
-+    if(why)
-+      *why = "Нет места рядом с ратушей";
-+    return false;
++  else {
++    // Место - не вплотную к другим постройкам города: несколько попыток
++    if(st.now<tw.noLotUntil && d.radius>=tw.noLotRadius) {
++      if(why)
++        *why = "Нет места рядом с ратушей";
++      return false;
++      }
++    bool found = false;
++    for(uint32_t k=0; k<6 && !found; ++k) {
++      if(!w.findLot(tw.center,1000,TownRadius-d.radius,d.radius,(st.nextId+k*7919u)*2654435761u,lot))
++        break;
++      found = true;
++      for(auto& b:st.buildings)
++        if(b.town==town && !b.ruined && distXZ(b.pos,lot)<buildingDef(b.type).radius+d.radius)
++          found = false;
++      }
++    if(!found) {
++      tw.noLotUntil  = st.now+sec(45);
++      tw.noLotRadius = d.radius;
++      if(why)
++        *why = "Нет места рядом с ратушей";
++      return false;
++      }
 +    }
-+  // не вплотную к другим постройкам
-+  for(auto& b:st.buildings) {
-+    if(b.town!=town || b.ruined)
-+      continue;
-+    if(distXZ(b.pos,lot)<buildingDef(b.type).radius+d.radius) {
-+      if(at!=nullptr) {
++  if(at!=nullptr) {
++    // не вплотную к другим постройкам
++    for(auto& b:st.buildings) {
++      if(b.town!=town || b.ruined)
++        continue;
++      if(distXZ(b.pos,lot)<buildingDef(b.type).radius+d.radius) {
 +        if(why)
 +          *why = "Место занято";
 +        return false;
@@ -13113,8 +13153,9 @@ index 0000000..6aa1e6e
 +
 +// ---- отряды ----
 +
-+V3 Game::slotPos(const Squad& s, size_t i, size_t n) const {
-+  const V3 fwd   = s.dir;
++V3 Game::slotOffset(const Squad& s, const V3& dir, size_t i, size_t n) const {
++  // Место i-го бойца в строю относительно якоря (dir - куда смотрит строй)
++  const V3 fwd   = dir;
 +  const V3 right = V3(-fwd.z,0,fwd.x);
 +  const V3 back  = fwd*-1.f;
 +  float sx = 0, sb = 0;
@@ -13145,13 +13186,17 @@ index 0000000..6aa1e6e
 +      }
 +    case Formation::Circle: {
 +      if(i==0)
-+        return s.anchor;
++        return V3();
 +      const float r = std::max(250.f, float(n)*45.f);
 +      const float a = float(i)/float(std::max<size_t>(n-1,1))*6.2831853f;
-+      return s.anchor + V3(std::cos(a)*r,0,std::sin(a)*r);
++      return V3(std::cos(a)*r,0,std::sin(a)*r);
 +      }
 +    }
-+  return s.anchor + right*sx + back*sb;
++  return right*sx + back*sb;
++  }
++
++V3 Game::slotPos(const Squad& s, size_t i, size_t n) const {
++  return s.anchor + slotOffset(s,s.dir,i,n);
 +  }
 +
 +const Unit* Game::nearestEnemy(Faction f, const V3& p, float r) const {
@@ -13170,10 +13215,16 @@ index 0000000..6aa1e6e
 +  }
 +
 +void Game::sendUnit(Unit& u, const V3& to, bool run, bool force) {
-+  // Не дёргать: тот же слот и недавно послан - не повторять
-+  if(!force && u.sent && qDistXZ(u.slot,to)<150.f*150.f && st.now<u.slotAt+4000)
++  // Послан туда же - не дёргать: тело само идёт к цели. Повторить, только если застрял (не двигается StuckTime) и
++  // ещё не дошёл. Прежде приказ повторялся каждые 4 с, а цель строя плыла каждые 0,5 с - бойцы шли рывками
++  if(u.settled)
 +    return;
-+  if(!force && qDistXZ(u.pos,to)<120.f*120.f) {
++  const bool same = u.sent && qDistXZ(u.slot,to)<150.f*150.f;
++  if(!force && same) {
++    if(qDistXZ(u.pos,to)<200.f*200.f || st.now<u.movedAt+StuckTime)
++      return;
++    }
++  else if(!force && qDistXZ(u.pos,to)<120.f*120.f) {
 +    if(u.sent)
 +      w.halt(u);
 +    u.sent = false;
@@ -13181,9 +13232,11 @@ index 0000000..6aa1e6e
 +    return;
 +    }
 +  w.moveTo(u,to,run);
-+  u.sent   = true;
-+  u.slot   = to;
-+  u.slotAt = st.now;
++  u.sent      = true;
++  u.slot      = to;
++  u.slotAt    = st.now;
++  u.movedAt   = st.now;
++  u.movedFrom = u.pos;
 +  }
 +
 +uint32_t Game::command(const std::vector<uint32_t>& ids, Order o, const V3& to, uint32_t target, Formation fm) {
@@ -13226,6 +13279,9 @@ index 0000000..6aa1e6e
 +  s->routeIdx = 0;
 +  if(l>3000.f)
 +    w.route(c,to,s->route);
++  s->phase   = Phase::None; // tickSquad: сначала собраться в строй
++  s->phaseAt = st.now;
++  s->calmAt  = st.now;
 +  for(auto id:s->units)
 +    if(auto* u = st.unit(id))
 +      u->sent = false;
@@ -13255,10 +13311,116 @@ index 0000000..6aa1e6e
 +void Game::setFormation(uint32_t sq, Formation fm) {
 +  if(auto* s = st.squad(sq)) {
 +    s->form = fm;
++    // Новый строй: собраться в него на месте (на ходу - тоже), потом дальше
++    if(s->phase!=Phase::None)
++      s->phase = Phase::None;
 +    for(auto id:s->units)
 +      if(auto* u = st.unit(id))
 +        u->sent = false;
 +    }
++  }
++
++static V3 dirTo(const V3& from, const V3& to, const V3& def) {
++  V3 d = to-from;
++  const float l = d.lenXZ();
++  return l>1.f ? V3(d.x/l,0,d.z/l) : def;
++  }
++
++void Game::startForm(Squad& s, const std::vector<Unit*>& mem, bool walkUp) {
++  // Сбор: якорь стоит, каждому - его место; ждать, пока почти все на местах (или не дольше formLimit)
++  if(!walkUp) {
++    // Первый сбор - там, где больше всего своих (не посередине между далёкими кучками), у ближнего к центру
++    V3 c;
++    for(auto* u:mem)
++      c = c+u->pos;
++    c = c*(1.f/float(std::max<size_t>(mem.size(),1)));
++    const Unit* best = nullptr;
++    int   bn = -1;
++    float bd = 0;
++    for(auto* u:mem) {
++      int near = 0;
++      for(auto* o:mem)
++        if(qDistXZ(o->pos,u->pos)<3000.f*3000.f)
++          ++near;
++      const float d = qDistXZ(u->pos,c);
++      if(near>bn || (near==bn && d<bd)) {
++        best = u;
++        bn   = near;
++        bd   = d;
++        }
++      }
++    if(best!=nullptr)
++      s.anchor = best->pos;
++    }
++  const V3 aim = s.routeIdx<s.route.size() ? s.route[s.routeIdx] : s.goal;
++  s.dir     = dirTo(s.anchor,aim,s.dir);
++  s.phase   = Phase::Form;
++  s.phaseAt = st.now;
++  float far = 0;
++  for(size_t i=0; i<mem.size(); ++i) {
++    const float d = distXZ(mem[i]->pos,slotPos(s,i,mem.size()));
++    if(d<FormReach)
++      far = std::max(far,d);
++    mem[i]->sent = false;
++    }
++  // Бегом ~3,5 м/с; дольше 15 с не ждать
++  s.formLimit = uint64_t(std::clamp(far/350.f*1000.f+2000.f, 2500.f, 15000.f));
++  }
++
++void Game::startMarch(Squad& s, const V3& c) {
++  // Марш: пропустить точки пути позади, плечо - до следующей
++  while(s.routeIdx<s.route.size() && distXZ(c,s.route[s.routeIdx])<LegSwitch)
++    s.routeIdx++;
++  s.leg     = s.routeIdx<s.route.size() ? s.route[s.routeIdx] : s.goal;
++  s.legAt   = st.now;
++  s.dir     = dirTo(c,s.leg,s.dir);
++  s.anchor  = s.leg;
++  s.phase   = Phase::March;
++  s.phaseAt = st.now;
++  }
++
++bool Game::formBroken(const Squad& s, const std::vector<Unit*>& mem, const V3& dir) const {
++  // Где был бы якорь по каждому бойцу (позиция минус его место в строю) - среднее; отклонение каждого от своего места
++  if(mem.size()<2)
++    return false;
++  V3 a;
++  for(size_t i=0; i<mem.size(); ++i)
++    a = a + (mem[i]->pos - slotOffset(s,dir,i,mem.size()));
++  a = a*(1.f/float(mem.size()));
++  float maxD = 0, sum = 0;
++  for(size_t i=0; i<mem.size(); ++i) {
++    const float d = distXZ(mem[i]->pos,a+slotOffset(s,dir,i,mem.size()));
++    maxD = std::max(maxD,d);
++    sum += d;
++    }
++  return maxD>BrokenMax || sum/float(mem.size())>BrokenMean;
++  }
++
++void Game::settleSquad(Squad& s, const std::vector<Unit*>& mem) {
++  // Пришли и тихо: разойтись по местам (костёр, скамья, беседа, стойка) - в пределах места, чтобы держать его
++  float radius = 1500.f;
++  float bd = 4000.f*4000.f;
++  for(auto& site:st.sites) {
++    const float d = qDistXZ(site.pos,s.goal);
++    if(d<bd) {
++      bd     = d;
++      radius = std::min(siteDef(size_t(site.def)).radius*0.8f, 2500.f);
++      }
++    }
++  std::vector<const Unit*> go;
++  for(auto* u:mem) {
++    if(u->settled || u->fighting || qDistXZ(u->pos,s.goal)>(radius+800.f)*(radius+800.f))
++      continue;
++    go.push_back(u);
++    }
++  if(go.empty())
++    return;
++  w.settle(go,s.goal,radius);
++  for(auto* u:go)
++    if(auto* m = st.unit(u->id)) {
++      m->settled = true;
++      m->sent    = false;
++      }
 +  }
 +
 +void Game::tickSquad(Squad& s, float dtSec) {
@@ -13299,8 +13461,10 @@ index 0000000..6aa1e6e
 +      s.route.clear();
 +      s.routeIdx = 0;
 +      w.route(c,s.goal,s.route);
++      s.phase  = Phase::None;
 +      for(auto id:s.units)
 +        if(auto* u = st.unit(id); u!=nullptr && u->st==UnitState::Alive) {
++          unsettle(*u);
 +          w.setCalm(*u,true);
 +          u->sent = false;
 +          }
@@ -13345,15 +13509,21 @@ index 0000000..6aa1e6e
 +        continue;
 +      if(st.now<u->slotAt+2500 && u->sent && qDistXZ(u->slot,t->pos)<300.f*300.f)
 +        continue;
++      // Расселённый встаёт сам (бой - состояние игры), после боя вернётся на своё место по распорядку
 +      w.attack(*u,*t);
 +      u->sent   = true;
 +      u->slot   = t->pos;
 +      u->slotAt = st.now;
 +      }
++    s.calmAt = st.now;
 +    return;
 +    }
 +  if(s.engaged) {
++    // Бой кончился: на ходу - собраться снова, стоящим - на места
 +    s.engaged = false;
++    s.calmAt  = st.now;
++    if(s.phase!=Phase::None)
++      s.phase = Phase::None;
 +    for(auto id:s.units)
 +      if(auto* u = st.unit(id))
 +        u->sent = false;
@@ -13366,35 +13536,6 @@ index 0000000..6aa1e6e
 +      s.order = Order::Hold, s.target = 0;
 +    else
 +      s.goal = t->pos;
-+    }
-+
-+  // Путь: по точкам сети путей мира, строй - вокруг «якоря»
-+  V3 to = s.goal;
-+  bool last = true;
-+  if(s.routeIdx<s.route.size()) {
-+    to   = s.route[s.routeIdx];
-+    last = false;
-+    if(distXZ(c,to)<900.f)
-+      s.routeIdx++;
-+    }
-+  const bool moving = (s.order==Order::Move || s.order==Order::March || s.order==Order::Attack);
-+  if(moving) {
-+    V3 d = to-c;
-+    const float l = d.lenXZ();
-+    if(l>200.f) {
-+      // Якорь - впереди центра, не дальше 12 м: строй идёт вместе, не растягиваясь по дороге
-+      const float step = std::min(l,1200.f);
-+      s.anchor = c + V3(d.x/l*step,0,d.z/l*step);
-+      s.dir    = V3(d.x/l,0,d.z/l);
-+      } else {
-+      s.anchor = to;
-+      }
-+    if(last && distXZ(c,s.goal)<500.f && s.order!=Order::Attack) {
-+      s.order  = Order::Hold;
-+      s.anchor = s.goal;
-+      }
-+    } else {
-+    s.anchor = s.goal;
 +    }
 +
 +  // Места в строю: ближний бой впереди, стрелки сзади
@@ -13416,12 +13557,112 @@ index 0000000..6aa1e6e
 +      };
 +    return rank(a)<rank(b);
 +    });
-+  const bool run = moving && (distXZ(c,to)>800.f || s.order==Order::March);
++  for(auto* u:mem)
++    if(qDistXZ(u->pos,u->movedFrom)>60.f*60.f) {
++      u->movedFrom = u->pos;
++      u->movedAt   = st.now;
++      }
++
++  const bool moving = (s.order==Order::Move || s.order==Order::March || s.order==Order::Attack);
++  if(!moving) {
++    // Стоит: строй у цели, потом - по местам
++    s.phase  = Phase::None;
++    s.anchor = s.goal;
++    for(size_t i=0; i<mem.size(); ++i) {
++      auto* u = mem[i];
++      if(u->fighting || u->settled)
++        continue;
++      const V3 to = slotPos(s,i,mem.size());
++      sendUnit(*u,to,qDistXZ(u->pos,to)>800.f*800.f,false);
++      }
++    // Расселиться: дом и защита места - всегда; отряд игрока - на своём занятом месте; идущий на штурм - нет
++    bool rest = (s.task==Task::Garrison || s.task==Task::Defend);
++    if(s.task==Task::Player)
++      for(auto& site:st.sites)
++        if(site.owner==s.f && distXZ(site.pos,s.goal)<siteDef(size_t(site.def)).radius)
++          rest = true;
++    if(rest && st.now>=s.calmAt+SettleDelay && distXZ(c,s.goal)<2500.f)
++      settleSquad(s,mem);
++    return;
++    }
++
++  // Идёт: расселённые встают
++  for(auto* u:mem)
++    unsettle(*u);
++  s.calmAt = st.now;
++
++  if(s.phase==Phase::None) {
++    // Начало пути (или после боя, смены строя): близко - сразу к цели; бегство - без сбора
++    if(s.task==Task::Retreat || distXZ(c,s.goal)<2000.f)
++      startMarch(s,c);
++    else
++      startForm(s,mem,false);
++    }
++
++  if(s.phase==Phase::Form) {
++    size_t counted = 0, ready = 0;
++    for(size_t i=0; i<mem.size(); ++i) {
++      auto* u = mem[i];
++      const V3 to = slotPos(s,i,mem.size());
++      const float d = distXZ(u->pos,to);
++      if(d<FormReach) {
++        ++counted;
++        if(d<InSlot)
++          ++ready;
++        }
++      if(!u->fighting)
++        sendUnit(*u,to,d>800.f,false);
++      }
++    if(ready*100>=counted*85 || st.now>=s.phaseAt+s.formLimit)
++      startMarch(s,c);
++    else
++      return;
++    }
++
++  // Марш: каждому - его место в строю у конца плеча; посылается раз за плечо
++  if(s.order==Order::Attack && st.now>=s.legAt+2000 && s.routeIdx>=s.route.size() &&
++     qDistXZ(s.leg,s.goal)>400.f*400.f) {
++    s.leg   = s.goal;
++    s.legAt = st.now;
++    s.dir   = dirTo(c,s.leg,s.dir);
++    s.anchor = s.leg;
++    }
++  if(s.routeIdx<s.route.size() && distXZ(c,s.leg)<LegSwitch) {
++    s.routeIdx++;
++    s.leg    = s.routeIdx<s.route.size() ? s.route[s.routeIdx] : s.goal;
++    s.legAt  = st.now;
++    s.dir    = dirTo(c,s.leg,s.dir);
++    s.anchor = s.leg;
++    }
++  const bool last = s.routeIdx>=s.route.size();
++  if(last && distXZ(c,s.goal)<500.f && s.order!=Order::Attack) {
++    // Пришли: строй уже стоит у цели
++    s.order  = Order::Hold;
++    s.phase  = Phase::None;
++    s.anchor = s.goal;
++    s.calmAt = st.now;
++    return;
++    }
++  // Раз в RegroupEvery: рассыпался строй - собраться (не бегство); якорь - где строй сейчас, чуть впереди
++  if(s.task!=Task::Retreat && st.now>=s.phaseAt+RegroupEvery && distXZ(c,s.goal)>2500.f) {
++    s.phaseAt = st.now;
++    const V3 dir = dirTo(c,s.leg,s.dir);
++    if(formBroken(s,mem,dir)) {
++      V3 a;
++      for(size_t i=0; i<mem.size(); ++i)
++        a = a + (mem[i]->pos - slotOffset(s,dir,i,mem.size()));
++      a = a*(1.f/float(mem.size()));
++      s.anchor = a + dir*300.f;
++      s.dir    = dir;
++      startForm(s,mem,true);
++      return;
++      }
++    }
 +  for(size_t i=0; i<mem.size(); ++i) {
 +    auto* u = mem[i];
 +    if(u->fighting)
 +      continue;
-+    sendUnit(*u,slotPos(s,i,mem.size()),run,false);
++    sendUnit(*u,s.leg+slotOffset(s,s.dir,i,mem.size()),true,false);
 +    }
 +  }
 +
@@ -13585,10 +13826,10 @@ index 0000000..6aa1e6e
 +}
 diff --git a/common/game/rts/rtscore.h b/common/game/rts/rtscore.h
 new file mode 100644
-index 0000000..e4e07a3
+index 0000000..33a5c0d
 --- /dev/null
 +++ b/common/game/rts/rtscore.h
-@@ -0,0 +1,434 @@
+@@ -0,0 +1,463 @@
 +#pragma once
 +
 +// Gothic II Mobile: ядро режима стратегии «Война за Хоринис» (docs/RTS.md). Без движка: тела бойцов, их бой и
@@ -13626,6 +13867,14 @@ index 0000000..e4e07a3
 +  Wedge,
 +  Column,
 +  Circle,
++  };
++
++// Ход отряда: сначала собраться в строй, потом бежать, не оглядываясь на строй; раз в RegroupEvery - проверить строй
++// и, если рассыпался, собраться снова (rtscore.cpp, tickSquad)
++enum class Phase : uint8_t {
++  None,     // стоит (или ещё не начал)
++  Form,     // собирается в строй вокруг неподвижного якоря
++  March,    // бежит: каждому - его место в строю у конца плеча пути, раз за плечо
 +  };
 +
 +enum class Task : uint8_t {
@@ -13689,6 +13938,9 @@ index 0000000..e4e07a3
 +  V3        slot;            // куда послан
 +  uint64_t  slotAt = 0;
 +  bool      sent   = false;
++  bool      settled = false;  // расселён на месте: занят делом по распорядку игры (костёр, скамья, беседа), отряд не ведёт
++  V3        movedFrom;        // где был, когда последний раз сдвинулся (застрял - послать заново)
++  uint64_t  movedAt = 0;
 +  };
 +
 +struct Hero {
@@ -13734,6 +13986,8 @@ index 0000000..e4e07a3
 +  uint32_t hall  = 0;   // Building::id ратуши
 +  V3       center;
 +  bool     alive = true;
++  uint64_t noLotUntil  = 0;   // не нашлось места под дом такого размера - до этого времени не искать (поиск дорогой)
++  float    noLotRadius = 0;
 +  };
 +
 +struct Site {
@@ -13763,6 +14017,12 @@ index 0000000..e4e07a3
 +  V3        anchor;          // центр строя сейчас
 +  bool      engaged = false;
 +  uint64_t  engagedAt = 0;
++  Phase     phase   = Phase::None;
++  uint64_t  phaseAt = 0;     // начало фазы
++  uint64_t  formLimit = 0;   // сбор: дольше не ждать (мс от начала)
++  V3        leg;             // марш: конец нынешнего плеча (точка пути или цель)
++  uint64_t  legAt   = 0;
++  uint64_t  calmAt  = 0;     // стоит без врагов с этого времени (расселиться)
 +  };
 +
 +struct Relation {
@@ -13847,6 +14107,10 @@ index 0000000..e4e07a3
 +    virtual bool findLot   (const V3& center, float minR, float maxR, float radius, uint32_t seed, V3& out) = 0;
 +    virtual bool route     (const V3& from, const V3& to, std::vector<V3>& out) = 0;
 +    virtual void report    (const Event& e) = 0;
++    // Отряд пришёл и стоит без врагов: бойцы расходятся по местам вокруг center (не дальше radius) - костры, скамьи,
++    // беседы, стойки по точкам мира игры; мир сам ведёт их по распорядку, пока отряд не позовёт (unsettle)
++    virtual void settle    (const std::vector<const Unit*>& units, const V3& center, float radius) { (void)units; (void)center; (void)radius; }
++    virtual void unsettle  (const Unit& u) { (void)u; }
 +  };
 +
 +class Diplomat;
@@ -13979,7 +14243,13 @@ index 0000000..e4e07a3
 +    void       finishBuilding(Building& b);
 +    void       destroyBuilding(Building& b, Faction by);
 +    void       levelUp(Hero& h);
++    V3         slotOffset(const Squad& s, const V3& dir, size_t i, size_t n) const;
 +    V3         slotPos(const Squad& s, size_t i, size_t n) const;
++    void       startForm(Squad& s, const std::vector<Unit*>& mem, bool walkUp);
++    void       startMarch(Squad& s, const V3& c);
++    bool       formBroken(const Squad& s, const std::vector<Unit*>& mem, const V3& dir) const;
++    void       settleSquad(Squad& s, const std::vector<Unit*>& mem);
++    void       unsettle(Unit& u);
 +    const Unit* nearestEnemy(Faction f, const V3& p, float r) const;
 +    void       sendUnit(Unit& u, const V3& to, bool run, bool force);
 +    void       recount(Faction f);
@@ -14025,10 +14295,10 @@ index 0000000..e4e07a3
 +}
 diff --git a/common/game/rts/rtsdefs.cpp b/common/game/rts/rtsdefs.cpp
 new file mode 100644
-index 0000000..a5e4e57
+index 0000000..5dfd422
 --- /dev/null
 +++ b/common/game/rts/rtsdefs.cpp
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,219 @@
 +#include "rtsdefs.h"
 +
 +#include <cstring>
@@ -14181,6 +14451,10 @@ index 0000000..a5e4e57
 +   V3(58000,0,22000),   10.f, 6.f,  false, F_None,     3000.f},
 +  {"pass",       "Перевал в Долину рудников", SiteKind::Pass,    {"NW_FARM3_PATH_LEVELCHANGE_02", nullptr, nullptr},
 +   V3(76000,0,-33000),  4.f,  4.f,  true,  F_Orcs,     3000.f},
++  // Логово Декстера: старая башня у шахты, там живут бандиты (костры, стойки, трон Декстера) - распорядок Декстера
++  // (BDT_1060_Dexter: NW_CASTLEMINE_HUT_10) и его людей (NW_CASTLEMINE_TOWER_*)
++  {"dexter",     "Башня Декстера",          SiteKind::Lair,      {"NW_CASTLEMINE_TOWER_CAMPFIRE_01", "NW_CASTLEMINE_HUT_10", "CASTLEMINE"},
++   V3(30000,0,-24000),  8.f,  2.f,  true,  F_None,     2500.f},
 +  };
 +
 +size_t unitDefCount() { return std::size(units); }
@@ -14246,10 +14520,10 @@ index 0000000..a5e4e57
 +}
 diff --git a/common/game/rts/rtsdefs.h b/common/game/rts/rtsdefs.h
 new file mode 100644
-index 0000000..b457d00
+index 0000000..f94387f
 --- /dev/null
 +++ b/common/game/rts/rtsdefs.h
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,171 @@
 +#pragma once
 +
 +// Gothic II Mobile: режим стратегии «Война за Хоринис» (docs/RTS.md) - каталог: стороны, бойцы по рангам, герои,
@@ -14382,6 +14656,7 @@ index 0000000..b457d00
 +  Coast,
 +  Monastery,
 +  Cross,
++  Lair,      // логово (башня Декстера)
 +  };
 +
 +struct SiteDef {
@@ -14648,10 +14923,10 @@ index 0000000..fecca26
 +}
 diff --git a/common/game/rts/rtsgame.cpp b/common/game/rts/rtsgame.cpp
 new file mode 100644
-index 0000000..5c8e758
+index 0000000..fd113bf
 --- /dev/null
 +++ b/common/game/rts/rtsgame.cpp
-@@ -0,0 +1,1218 @@
+@@ -0,0 +1,1472 @@
 +#include "rtsgame.h"
 +
 +#include <Tempest/Application>
@@ -14672,6 +14947,7 @@ index 0000000..5c8e758
 +#include "utils/cp1251.h"
 +#include "world/objects/npc.h"
 +#include "world/objects/item.h"
++#include "world/objects/interactive.h"
 +#include "world/world.h"
 +#include "world/waypoint.h"
 +#include "camera.h"
@@ -15164,12 +15440,25 @@ index 0000000..5c8e758
 +  if(npc==nullptr || npc->isPlayer() || npc->isDown() || npc->isAttack() || npc->isTalk())
 +    return;
 +  auto& w = owner.world();
++  // Встаёт со скамьи, от костра (конец состояния распорядка - в очереди ИИ): не мешать, ядро пошлёт снова
++  if(auto it = standUntil.find(u.id); it!=standUntil.end()) {
++    if(w.tickCount()<it->second)
++      return;
++    standUntil.erase(it);
++    }
++  if(auto* mob = npc->interactive()) {
++    npc->clearAiQueue();
++    npc->aiPush(AiQueue::aiUseMob(mob->schemeName(),-1));
++    standUntil[u.id] = w.tickCount()+1500;
++    return;
++    }
 +  Vec3 dst = toV(to);
 +  groundAt(dst,dst);
 +  npc->setWalkMode(run ? WalkBit::WM_Run : WalkBit::WM_Walk);
 +  const float d = (npc->position()-dst).length();
-+  // Далеко или за стеной - по сети путей к точке у цели; рядом и видно - прямо
-+  if(d>2500.f || !npc->canRayHitPoint(dst+Vec3(0,60,0),true,d+100.f)) {
++  // Видно - прямо к своему месту в строю (до 60 м: на марше места у конца плеча пути у каждого свои; по сети путей все
++  // шли бы к одной точке у цели и сбивались в кучу); за стеной или дальше - по сети путей к точке у цели
++  if(d>6000.f || !npc->canRayHitPoint(dst+Vec3(0,60,0),true,d+100.f)) {
 +    auto* wp = w.findWayPoint(dst,[](const WayPoint& p){ return p.isConnected(); });
 +    if(wp!=nullptr && (wp->position()-npc->position()).length()>300.f) {
 +      npc->clearAiQueue();
@@ -15372,9 +15661,45 @@ index 0000000..5c8e758
 +    {rts::B_Smithy,   0, {"FORGE", nullptr, nullptr}},
 +    {rts::B_Infirmary,1, {"ALTAR", nullptr, nullptr}}, {rts::B_Infirmary, 1, {"SKULL", nullptr, nullptr}},
 +    {rts::B_Infirmary,0, {"TENT", nullptr, nullptr}}, {rts::B_Infirmary, 0, {"BED", nullptr, nullptr}},
++    // Запасные слова: сараи, навесы, лавки, частокол - у людей; шатры и частокол - у орков
++    {rts::B_TownHall, 0, {"BARN", nullptr, nullptr}}, {rts::B_TownHall, 0, {"SHED", nullptr, nullptr}},
++    {rts::B_Barracks, 0, {"HUT", nullptr, nullptr}}, {rts::B_Barracks, 0, {"SHED", nullptr, nullptr}},
++    {rts::B_Store,    0, {"STALL", nullptr, nullptr}}, {rts::B_Store, 0, {"SHED", nullptr, nullptr}},
++    {rts::B_Tower,    0, {"PALISADE", nullptr, nullptr}}, {rts::B_Tower, 0, {"STAND", nullptr, nullptr}},
++    {rts::B_Smithy,   0, {"SMITH", nullptr, nullptr}}, {rts::B_Infirmary, 0, {"HUT", nullptr, nullptr}},
++    {rts::B_TownHall, 1, {"ORC", "HOUSE", nullptr}}, {rts::B_Barracks, 1, {"ORC", "HUT", nullptr}},
++    {rts::B_Tower,    1, {"ORC", "PALISADE", nullptr}}, {rts::B_Store, 1, {"ORC", "BARREL", nullptr}},
 +    };
++  // Размер модели - раз на модель (паладины и наёмники ищут по тем же словам); загрузок - не больше 160 на всё
++  struct Fit { bool ok = false; };
++  std::unordered_map<std::string,Fit> fits;
 +  size_t loaded = 0;
++  auto fitModel = [&](const std::string& m) -> bool {
++    auto it = fits.find(m);
++    if(it!=fits.end())
++      return it->second.ok;
++    if(loaded>=160)
++      return false;
++    ++loaded;
++    Fit fit;
++    if(auto* mesh = Resources::loadMesh(m)) {
++      auto* bb = mesh->bbox();
++      const Vec3 sz = bb[1]-bb[0];
++      const float big = std::max(sz.x,sz.z);
++      // Не мелочь и не целый квартал
++      fit.ok = big>=120.f && big<=2500.f && sz.y<=2500.f;
++      }
++    fits[m] = fit;
++    return fit.ok;
++    };
 +  for(auto& wnt:wants) {
++    // Это слово нужно хоть одной стороне: иначе не грузить (место в лимите - следующим постройкам)
++    bool need = false;
++    for(uint8_t f=0; f<rts::F_Count; ++f)
++      if((wnt.side==1)==(f==rts::F_Orcs) && models[wnt.t][f].size()<3)
++        need = true;
++    if(!need)
++      continue;
 +    for(auto& m:all) {
 +      bool ok = true;
 +      for(auto wd:wnt.words)
@@ -15382,29 +15707,34 @@ index 0000000..5c8e758
 +          ok = false;
 +      if(!ok)
 +        continue;
++      bool want = false;
 +      for(uint8_t f=0; f<rts::F_Count; ++f) {
-+        const bool orc = (f==rts::F_Orcs);
-+        if((wnt.side==1)!=orc)
-+          continue;
 +        auto& list = models[wnt.t][f];
-+        if(list.size()>=3 || std::find(list.begin(),list.end(),m)!=list.end())
-+          continue;
-+        // Размер: не мелочь и не целый квартал
-+        if(loaded>=60)
-+          continue;
-+        ++loaded;
-+        auto* mesh = Resources::loadMesh(m);
-+        if(mesh==nullptr)
-+          continue;
-+        auto* bb = mesh->bbox();
-+        const Vec3 sz = bb[1]-bb[0];
-+        const float big = std::max(sz.x,sz.z);
-+        if(big<120.f || big>2500.f || sz.y>2500.f)
-+          continue;
-+        list.push_back(m);
++        if((wnt.side==1)==(f==rts::F_Orcs) && list.size()<3 && std::find(list.begin(),list.end(),m)==list.end())
++          want = true;
++        }
++      if(!want || !fitModel(m))
++        continue;
++      for(uint8_t f=0; f<rts::F_Count; ++f) {
++        auto& list = models[wnt.t][f];
++        if((wnt.side==1)==(f==rts::F_Orcs) && list.size()<3 && std::find(list.begin(),list.end(),m)==list.end())
++          list.push_back(m);
 +        }
 +      }
 +    }
++  // Не нашлось модели - взять у другой постройки своей стороны (дом виден всегда, а не только метка на экране)
++  static const rts::BuildingType borrow[] = {rts::B_TownHall, rts::B_Barracks, rts::B_Store, rts::B_Farm, rts::B_Tower,
++                                             rts::B_Smithy, rts::B_Infirmary};
++  for(uint8_t t=0; t<rts::B_Count; ++t)
++    for(uint8_t f=0; f<rts::F_Count; ++f) {
++      if(!models[t][f].empty())
++        continue;
++      for(auto o:borrow)
++        if(!models[o][f].empty()) {
++          models[t][f].push_back(models[o][f][size_t(t)%models[o][f].size()]);
++          break;
++          }
++      }
 +  for(uint8_t t=0; t<rts::B_Count; ++t)
 +    for(uint8_t f=0; f<rts::F_Count; ++f) {
 +      std::string s;
@@ -15471,34 +15801,49 @@ index 0000000..5c8e758
 +  }
 +
 +bool RtsGame::findLot(const rts::V3& center, float minR, float maxR, float radius, uint32_t seed, rts::V3& out) {
-+  // Ровное место у ратуши: земля (луч сверху), уклон по четырём краям меньше 1 м, не в воде, не на точке пути
++  // Ровное открытое место у ратуши: земля (не крыша - не выше ближней точки пути), уклон по краям меньше 1 м, вокруг
++  // нет стен (лучи на уровне груди), не на дороге. В городе и на ферме Онара строгий поиск часто не находил места -
++  // стройка паладинов и наёмников не начиналась: три круга - строго, мягче, шире
 +  auto& w = owner.world();
++  auto* phys = w.physic();
 +  std::mt19937 rng(seed);
 +  const Vec3 c = toV(center);
-+  for(int i=0; i<24; ++i) {
-+    const float a = float(rng()%3600)/3600.f*6.2831853f;
-+    const float r = minR + float(rng()%1000)/1000.f*(maxR-minR);
-+    Vec3 p = c + Vec3(std::cos(a)*r,0,std::sin(a)*r);
-+    Vec3 g;
-+    if(!groundAt(p,g))
-+      continue;
-+    if(std::abs(g.y-c.y)>800.f)
-+      continue;
-+    bool flat = true;
-+    for(int k=0; k<4 && flat; ++k) {
-+      const float ka = float(k)*1.5707963f;
-+      Vec3 e;
-+      if(!groundAt(g+Vec3(std::cos(ka)*radius*0.6f,0,std::sin(ka)*radius*0.6f),e) || std::abs(e.y-g.y)>100.f)
-+        flat = false;
++  struct Pass { float rMul, slope, road; int tries; };
++  static const Pass passes[] = {{1.f,100.f,0.7f,32}, {1.f,160.f,0.4f,40}, {1.7f,180.f,0.3f,48}};
++  for(auto& ps:passes) {
++    for(int i=0; i<ps.tries; ++i) {
++      const float a = float(rng()%3600)/3600.f*6.2831853f;
++      const float r = minR + float(rng()%1000)/1000.f*(maxR*ps.rMul-minR);
++      Vec3 p = c + Vec3(std::cos(a)*r,0,std::sin(a)*r);
++      Vec3 g;
++      if(!groundAt(p,g))
++        continue;
++      if(std::abs(g.y-c.y)>800.f)
++        continue;
++      // Крыша: ближняя точка пути (она на земле) намного ниже
++      auto* near = w.findWayPoint(g,[&g](const WayPoint& q){ return q.qDistTo(g)<3000.f*3000.f; });
++      if(near!=nullptr && g.y-near->position().y>300.f)
++        continue;
++      bool ok = true;
++      for(int k=0; k<8 && ok; ++k) {
++        const float ka = float(k)*0.78539816f;
++        const Vec3  dir(std::cos(ka),0,std::sin(ka));
++        Vec3 e;
++        if(!groundAt(g+dir*(radius*0.6f),e) || std::abs(e.y-g.y)>ps.slope)
++          ok = false;
++        else if(phys!=nullptr && phys->ray(g+Vec3(0,120,0),g+Vec3(0,120,0)+dir*(radius*0.6f)).hasCol)
++          ok = false; // стена, забор, скала
++        }
++      if(!ok)
++        continue;
++      auto* wp = w.findWayPoint(g);
++      if(wp!=nullptr && (wp->position()-g).length()<radius*ps.road)
++        continue; // на дороге не строить
++      out = toR(g);
++      return true;
 +      }
-+    if(!flat)
-+      continue;
-+    auto* wp = w.findWayPoint(g);
-+    if(wp!=nullptr && (wp->position()-g).length()<radius*0.7f)
-+      continue; // на дороге не строить
-+    out = toR(g);
-+    return true;
 +    }
++  Log::i("[rts] no building lot near (",int(c.x),",",int(c.z),") r ",int(radius));
 +  return false;
 +  }
 +
@@ -15537,6 +15882,183 @@ index 0000000..5c8e758
 +  news.push_back(n);
 +  if(news.size()>8)
 +    news.erase(news.begin());
++  }
++
++// ---- места: бойцы на своём месте заняты делом ----
++
++bool RtsGame::isSettled(const Npc& npc) const {
++  const uint32_t id = unitOf(npc);
++  return id!=0 && settledAt.find(id)!=settledAt.end();
++  }
++
++void RtsGame::settle(const std::vector<const rts::Unit*>& units, const rts::V3& center, float radius) {
++  // Как жители игры: точки мира (костры, беседы, стойки) и скамьи, стулья, трон - распорядок игры ZS_* с точкой пути
++  // рядом; дальше бойца ведёт сам распорядок (сядет, встанет, вернётся после боя). Мест нет - стойка у точки пути
++  auto& w = owner.world();
++  Vec3 c = toV(center);
++  groundAt(c,c);
++  struct Spot {
++    Vec3        pos;
++    const void* key   = nullptr;
++    const char* state = nullptr; // люди
++    bool        orcFire = false; // орк: сидеть у костра
++    bool        orcOk = false;   // орку подходит
++    std::string wp;
++    };
++  std::vector<Spot> spots;
++  std::unordered_map<const void*,uint32_t> taken;
++  for(auto& [id,key]:settledAt)
++    taken[key] = id;
++  auto nearWp = [&](const Vec3& p) -> const WayPoint* {
++    auto* wp = w.findWayPoint(p,[&p](const WayPoint& q){ return q.qDistTo(p)<700.f*700.f; });
++    return wp;
++    };
++  std::vector<const WayPoint*> fps;
++  w.freePointsNear(c,radius,fps);
++  static const char* stands[] = {"ZS_STAND_GUARDING", "ZS_STAND_DRINKING", "ZS_STAND_EATING", "ZS_STAND_ARMSCROSSED"};
++  for(auto* fp:fps) {
++    if(fp->isLocked() || taken.count(fp))
++      continue;
++    const std::string n = upper(fp->name);
++    Spot sp;
++    sp.pos = fp->position();
++    sp.key = fp;
++    if(n.find("CAMPFIRE")!=std::string::npos) {
++      sp.state = "ZS_SIT_CAMPFIRE";
++      sp.orcFire = true;
++      sp.orcOk = true;
++      }
++    else if(n.find("SMALLTALK")!=std::string::npos)
++      sp.state = "ZS_SMALLTALK";
++    else if(n.find("STAND")!=std::string::npos)
++      sp.state = stands[size_t(std::rand())%std::size(stands)];
++    else if(n.find("ROAM")!=std::string::npos)
++      sp.orcOk = true;
++    else
++      continue;
++    auto* wp = nearWp(sp.pos);
++    if(wp==nullptr)
++      continue;
++    sp.wp = wp->name;
++    spots.push_back(std::move(sp));
++    }
++  for(uint32_t i=0; ; ++i) {
++    Interactive* mob = w.mobsiById(i);
++    if(mob==nullptr)
++      break;
++    if(!mob->isAvailable() || taken.count(mob))
++      continue;
++    const Vec3 p = mob->position();
++    if((p-c).quadLength()>radius*radius)
++      continue;
++    const std::string sch = upper(mob->schemeName());
++    Spot sp;
++    sp.pos = p;
++    sp.key = mob;
++    if(sch=="BENCH")
++      sp.state = "ZS_SIT_BENCH";
++    else if(sch=="CHAIR")
++      sp.state = "ZS_SIT_CHAIR";
++    else if(sch=="THRONE")
++      sp.state = "ZS_SIT_THRONE";
++    else
++      continue;
++    auto* wp = nearWp(p);
++    if(wp==nullptr)
++      continue;
++    sp.wp = wp->name;
++    spots.push_back(std::move(sp));
++    }
++  // Без мест - стоять у точек пути вокруг (не больше двоих у одной)
++  std::vector<const WayPoint*> stand;
++  for(int k=0; k<16; ++k) {
++    const float a = float(k)*2.3999632f, r = radius*(0.25f+0.7f*float(k%4)/3.f);
++    const Vec3  p = c + Vec3(std::cos(a)*r,0,std::sin(a)*r);
++    auto* wp = w.findWayPoint(p,[&c,radius](const WayPoint& q){ return q.isConnected() && q.qDistTo(c)<radius*radius; });
++    if(wp!=nullptr)
++      stand.push_back(wp);
++    }
++  std::unordered_map<const WayPoint*,int> standUse;
++
++  int sat = 0, stood = 0;
++  for(auto* u:units) {
++    Npc* npc = body(u->id);
++    if(npc==nullptr || npc->isPlayer() || npc->isDown() || npc->isAttack())
++      continue;
++    const bool human = npc->isHuman();
++    // Из шести ближних свободных мест - случайное: кто к костру, кто на скамью, кто поболтать
++    std::vector<size_t> cand;
++    for(size_t i=0; i<spots.size(); ++i)
++      if(spots[i].key!=nullptr && (human ? spots[i].state!=nullptr : spots[i].orcOk))
++        cand.push_back(i);
++    std::sort(cand.begin(),cand.end(),[&](size_t a, size_t b){
++      return (spots[a].pos-npc->position()).quadLength()<(spots[b].pos-npc->position()).quadLength();
++      });
++    if(cand.size()>6)
++      cand.resize(6);
++    Spot* sp = cand.empty() ? nullptr : &spots[cand[size_t(std::rand())%cand.size()]];
++    std::string wpName;
++    const char* state = nullptr;
++    bool orcFire = false;
++    if(sp!=nullptr) {
++      wpName  = sp->wp;
++      state   = sp->state;
++      orcFire = sp->orcFire;
++      settledAt[u->id] = sp->key;
++      sp->key = nullptr; // занято
++      ++sat;
++      } else {
++      const WayPoint* best = nullptr;
++      for(auto* wp:stand)
++        if(standUse[wp]<2 && (best==nullptr || (wp->position()-npc->position()).quadLength()<(best->position()-npc->position()).quadLength()))
++          best = wp;
++      if(best==nullptr) {
++        settledAt[u->id] = nullptr; // стоит, где стоял (лагерь)
++        continue;
++        }
++      standUse[best]++;
++      wpName = best->name;
++      state  = (std::rand()%2) ? "ZS_STAND_GUARDING" : "ZS_STAND_ARMSCROSSED";
++      settledAt[u->id] = nullptr;
++      ++stood;
++      }
++    auto& h = npc->handle();
++    npc->clearAiQueue();
++    if(human) {
++      const size_t zs = symbol(state);
++      if(zs==size_t(-1))
++        continue;
++      npc->setRoutineAllDay(zs,wpName);
++      h.wp = wpName;
++      npc->setWalkMode(WalkBit::WM_Walk);
++      npc->resumeAiRoutine();
++      } else {
++      // Орки и звери: состояние распорядка монстров - у костра сидеть или отдыхать (бродить по FP_ROAM)
++      for(size_t i=30; i<=41 && i<zenkit::INpc::aivar_count; ++i)
++        h.aivar[i] = 0;
++      const int32_t only = sconst("ONLYROUTINE",-1);
++      if(orcFire && npc->hasAnim("T_STAND_2_GUARDSLEEP"))
++        h.aivar[40] = only; // AIV_MM_OrcSitStart
++      else
++        h.aivar[32] = only; // AIV_MM_RestStart
++      h.wp = wpName;
++      npc->resumeAiRoutine();
++      }
++    }
++  Log::i("[rts] settle ",int(units.size())," at (",int(c.x),",",int(c.z),") r ",int(radius),": spots ",int(spots.size()),
++         ", busy ",sat,", standing ",stood);
++  }
++
++void RtsGame::unsettle(const rts::Unit& u) {
++  // Зовёт отряд: распорядок лагеря (конец прежнего состояния - встать со скамьи - сам ляжет в очередь ИИ)
++  settledAt.erase(u.id);
++  Npc* npc = body(u.id);
++  if(npc==nullptr || npc->isPlayer() || npc->isDown())
++    return;
++  if(npc->isAttack())
++    return; // дерётся - после боя распорядок отряда
++  setArmyRoutine(*npc);
++  standUntil[u.id] = owner.world().tickCount()+1500;
 +  }
 +
 +// ---- такт ----
@@ -15660,6 +16182,13 @@ index 0000000..5c8e758
 +      auto& st = core.state();
 +      for(auto& u:st.units)
 +        core.rebind(u.id,body(u.id)!=nullptr);
++      // Места - заново по точкам мира (новые места в старом сохранении стоят «примерно»); расселённые - на местах
++      resolveSites(w);
++      settledAt.clear();
++      standUntil.clear();
++      for(auto& u:st.units)
++        if(u.settled)
++          settledAt[u.id] = nullptr;
 +      pickModels();
 +      for(auto& b:st.buildings)
 +        showBuilding(b);
@@ -15872,10 +16401,10 @@ index 0000000..5c8e758
 +  }
 diff --git a/common/game/rts/rtsgame.h b/common/game/rts/rtsgame.h
 new file mode 100644
-index 0000000..ba377e2
+index 0000000..a04e7ef
 --- /dev/null
 +++ b/common/game/rts/rtsgame.h
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,178 @@
 +#pragma once
 +
 +#include <Tempest/Vec>
@@ -15926,6 +16455,8 @@ index 0000000..ba377e2
 +    bool        isUnit(const Npc& npc) const;
 +    // Состояние отдыха бойца (Npc::isRtsIdle): цикл молчит - стоит, где поставили
 +    bool        isIdleState(size_t fn) const;
++    // Расселён на месте (settle): у орков и зверей цикл отдыха идёт - они сами идут к костру или бродят
++    bool        isSettled(const Npc& npc) const;
 +    // Мир: игрок-«наблюдатель» стоит (не тикает); точки, у которых NPC обрабатываются полностью
 +    bool        freezePlayer() const;
 +    const Npc*  frozenNpc() const;   // кто не тикает: герой-наблюдатель (и пока игрок в теле бойца)
@@ -15977,6 +16508,8 @@ index 0000000..ba377e2
 +    bool findLot   (const rts::V3& center, float minR, float maxR, float radius, uint32_t seed, rts::V3& out) override;
 +    bool route     (const rts::V3& from, const rts::V3& to, std::vector<rts::V3>& out) override;
 +    void report    (const rts::Event& e) override;
++    void settle    (const std::vector<const rts::Unit*>& units, const rts::V3& center, float radius) override;
++    void unsettle  (const rts::Unit& u) override;
 +
 +    struct Notice {
 +      std::string   text;  // Windows-1251 (шрифты игры)
@@ -16025,6 +16558,8 @@ index 0000000..ba377e2
 +    bool                       modelsReady = false;
 +    uint64_t                   pendingDownCheck = 0;
 +    mutable std::vector<size_t> idleStates;
++    std::unordered_map<uint32_t,const void*> settledAt;  // расселённый боец - его место (точка FP или скамья)
++    std::unordered_map<uint32_t,uint64_t>    standUntil; // встаёт со скамьи, от костра: до этого (время мира) не вести
 +
 +    void        begin(World& w);
 +    void        readSetup(rts::Setup& s) const;
@@ -16175,10 +16710,10 @@ index 0000000..2273206
 +}
 diff --git a/common/game/rts/rtsio.cpp b/common/game/rts/rtsio.cpp
 new file mode 100644
-index 0000000..060aaf9
+index 0000000..f53afe9
 --- /dev/null
 +++ b/common/game/rts/rtsio.cpp
-@@ -0,0 +1,251 @@
+@@ -0,0 +1,268 @@
 +#include "rtscore.h"
 +
 +#include <sstream>
@@ -16237,7 +16772,7 @@ index 0000000..060aaf9
 +      o<<"unit "<<u.id<<' '<<int(u.f)<<' '<<(u.def>=0 ? unitDef(size_t(u.def)).key : "-")<<' '<<u.hero<<' '<<int(u.st)
 +       <<' '<<u.squad;
 +      put(o,u.pos);
-+      o<<' '<<u.hp01<<' '<<u.kills<<'\n';
++      o<<' '<<u.hp01<<' '<<u.kills<<' '<<int(u.settled)<<'\n';
 +      }
 +    for(auto& h:st.heroes) {
 +      o<<"hero "<<heroDef(size_t(h.def)).key<<' '<<h.level<<' '<<h.xp<<' '<<h.unit<<' '<<h.kills<<' '<<int(h.st)
@@ -16364,6 +16899,9 @@ index 0000000..060aaf9
 +        l>>u.id>>f>>key>>u.hero>>s>>u.squad;
 +        get(l,u.pos);
 +        l>>u.hp01>>u.kills;
++        int settled = 0;
++        if(l>>settled) // нет в сохранениях до 2026-11-05
++          u.settled = settled!=0;
 +        u.f   = Faction(f);
 +        u.st  = UnitState(s);
 +        u.def = key=="-" ? int16_t(-1) : int16_t(unitDefByKey(key.c_str()));
@@ -16406,6 +16944,20 @@ index 0000000..060aaf9
 +        s.form  = Formation(fm);
 +        ns.squads.push_back(s);
 +        }
++      }
++    // Места, которых не было, когда партию сохранили (башня Декстера - с 2026-11-05): ничьи или как в начале
++    for(size_t i=0; i<siteDefCount(); ++i) {
++      bool have = false;
++      for(auto& s:ns.sites)
++        if(s.def==int16_t(i))
++          have = true;
++      if(have)
++        continue;
++      Site site;
++      site.def   = int16_t(i);
++      site.pos   = siteDef(i).approx;
++      site.owner = siteDef(i).owner;
++      ns.sites.push_back(site);
 +      }
 +    // Герои ссылаются на бойцов по индексу героя - проверить
 +    for(auto& u:ns.units)
@@ -35782,7 +36334,7 @@ index b45a9bd..35a566d 100644
      bool                isCracked() const { return isLockCracked; }
      bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..d3013f1 100644
+index e015398..50d36b0 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -3,11 +3,17 @@
@@ -36346,7 +36898,7 @@ index e015398..d3013f1 100644
    if(Gothic::inst().version().game==1) {
      b.setHitChance(float(hnpc->attribute[ATR_DEXTERITY])/100.f);
      if(rgn!=nullptr && rgn->isCrossbow())
-@@ -4158,10 +4440,83 @@ bool Npc::isPrehit() const {
+@@ -4158,10 +4440,84 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -36377,7 +36929,8 @@ index e015398..d3013f1 100644
 +bool Npc::isRtsIdle() const {
 +  // Gothic II Mobile: боец стратегии (aivar[92]) в состоянии отдыха - стоит, где поставили: цикл отдыха зверей и орков
 +  // (FP_ROAM, бродить) молчит, ведёт отряд (game/rts/rtsgame.h)
-+  return hnpc->aivar[92]!=0 && owner.script().rts().isIdleState(aiState.funcIni.ptr);
++  // Расселённый на месте (у костра, на отдыхе) - цикл идёт: он сам ищет свою точку (RtsGame::settle)
++  return hnpc->aivar[92]!=0 && owner.script().rts().isIdleState(aiState.funcIni.ptr) && !owner.script().rts().isSettled(*this);
 +  }
 +
 +bool Npc::isCompanionCamp() const {
@@ -36430,7 +36983,7 @@ index e015398..d3013f1 100644
  void Npc::setPerceptionTime(uint64_t time) {
    perceptionTime = time;
    }
-@@ -4238,6 +4593,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4594,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -36441,7 +36994,7 @@ index e015398..d3013f1 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4292,6 +4651,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
+@@ -4292,6 +4652,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
  void Npc::quitInteraction() {
    if(currentInteract==nullptr)
      return;
@@ -36451,7 +37004,7 @@ index e015398..d3013f1 100644
    if(invTorch)
      processDefInvTorch();
    setDirectionY(0);
-@@ -4356,6 +4718,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4719,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -36489,7 +37042,7 @@ index e015398..d3013f1 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4818,7 +5211,1469 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4818,7 +5212,1469 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
      durtyTranform = 0;
      }
  
@@ -38910,6 +39463,40 @@ index 0000000..bfb50f7
 +  takeDamage(other,nullptr,COLL_DOEVERYTHING,0,false);
 +  bladeHit.on    = false;
 +  }
+diff --git a/common/world/waymatrix.cpp b/common/world/waymatrix.cpp
+index 63d4873..7e53a22 100644
+--- a/common/world/waymatrix.cpp
++++ b/common/world/waymatrix.cpp
+@@ -80,6 +80,16 @@ const WayPoint *WayMatrix::findFreePoint(const Vec3& at, std::string_view name,
+   return findFreePoint(at,index,filter);
+   }
+ 
++void WayMatrix::freePointsNear(const Vec3& at, float R, std::vector<const WayPoint*>& out) const {
++  // Gothic II Mobile: fpInd отсортирован по x
++  auto b = std::lower_bound(fpInd.begin(),fpInd.end(),at.x-R,[](const WayPoint* a, float x){
++    return a->pos.x < x;
++    });
++  for(auto i=b; i!=fpInd.end() && (*i)->pos.x<=at.x+R; ++i)
++    if(((*i)->pos-at).quadLength()<R*R)
++      out.push_back(*i);
++  }
++
+ const WayPoint *WayMatrix::findNextPoint(const Vec3& at) const {
+   const WayPoint* ret   = nullptr;
+   float           dist  = distanceThreshold;
+diff --git a/common/world/waymatrix.h b/common/world/waymatrix.h
+index 2441f38..471c9e9 100644
+--- a/common/world/waymatrix.h
++++ b/common/world/waymatrix.h
+@@ -20,6 +20,8 @@ class WayMatrix final {
+ 
+     const WayPoint* findWayPoint (const Tempest::Vec3& at, const std::function<bool(const WayPoint&)>& filter) const;
+     const WayPoint* findFreePoint(const Tempest::Vec3& at, std::string_view name, const std::function<bool(const WayPoint&)>& filter) const;
++    // Gothic II Mobile: все свободные точки (FP_*) ближе R - места для бойцов стратегии (game/rts/rtsgame.cpp)
++    void            freePointsNear(const Tempest::Vec3& at, float R, std::vector<const WayPoint*>& out) const;
+     const WayPoint* findNextPoint(const Tempest::Vec3& at) const;
+ 
+     void            addFreePoint (const Tempest::Vec3& pos, const Tempest::Vec3& dir, std::string_view name);
 diff --git a/common/world/waypath.h b/common/world/waypath.h
 index 915e49b..8a1732c 100644
 --- a/common/world/waypath.h
@@ -38924,7 +39511,7 @@ index 915e49b..8a1732c 100644
    private:
      std::vector<const WayPoint*> dat;
 diff --git a/common/world/world.cpp b/common/world/world.cpp
-index 63a9d3f..4c2fdb3 100644
+index 63a9d3f..544df5f 100644
 --- a/common/world/world.cpp
 +++ b/common/world/world.cpp
 @@ -143,6 +143,12 @@ void World::insertPlayer(std::unique_ptr<Npc> &&npc, std::string_view waypoint)
@@ -39006,7 +39593,19 @@ index 63a9d3f..4c2fdb3 100644
    b.setTarget(target);
    return b;
    }
-@@ -985,6 +974,13 @@ void World::detectItem(const Tempest::Vec3& p, const float r, const std::functio
+@@ -930,6 +919,11 @@ const WayPoint* World::findFreePoint(const Tempest::Vec3& pos, std::string_view
+     });
+   }
+ 
++void World::freePointsNear(const Tempest::Vec3& pos, float R, std::vector<const WayPoint*>& out) const {
++  // Gothic II Mobile: места для бойцов стратегии (game/rts/rtsgame.cpp, settle)
++  wmatrix->freePointsNear(pos,R,out);
++  }
++
+ const WayPoint* World::findNextFreePoint(const Npc &npc, std::string_view name) const {
+   auto pos = npc.centerPosition();
+   auto cur = npc.currentWayPoint();
+@@ -985,6 +979,13 @@ void World::detectItem(const Tempest::Vec3& p, const float r, const std::functio
    wobj.detectItem(p.x,p.y,p.z,r,f);
    }
  
@@ -39021,7 +39620,7 @@ index 63a9d3f..4c2fdb3 100644
    const auto npcPos = npc.centerPosition();
  
 diff --git a/common/world/world.h b/common/world/world.h
-index ae2719e..6988e18 100644
+index ae2719e..00bb1b7 100644
 --- a/common/world/world.h
 +++ b/common/world/world.h
 @@ -37,6 +37,8 @@ class World final {
@@ -39033,7 +39632,15 @@ index ae2719e..6988e18 100644
      void                 setPlayer(Npc* npc);
      void                 postInit();
      std::string_view     name() const { return wname; }
-@@ -75,6 +77,8 @@ class World final {
+@@ -62,6 +64,7 @@ class World final {
+ 
+     const WayPoint*      findFreePoint(const Npc& pos,           std::string_view name) const;
+     const WayPoint*      findFreePoint(const Tempest::Vec3& pos, std::string_view name) const;
++    void                 freePointsNear(const Tempest::Vec3& pos, float R, std::vector<const WayPoint*>& out) const; // Gothic II Mobile
+ 
+     const WayPoint*      findNextFreePoint(const Npc& pos, std::string_view name) const;
+     const WayPoint*      findNextWayPoint(const Npc &npc) const;
+@@ -75,6 +78,8 @@ class World final {
      void                 detectItem(const Tempest::Vec3& p, const float r, const std::function<void(Item&)>& f);
  
      WayPath              wayTo(const Npc& pos,const WayPoint& end) const;
@@ -39042,7 +39649,7 @@ index ae2719e..6988e18 100644
  
      WorldView*           view()     const { return wview.get();    }
      WorldSound*          sound()          { return &wsound;        }
-@@ -106,6 +110,9 @@ class World final {
+@@ -106,6 +111,9 @@ class World final {
  
      void                 updateAnimation(uint64_t dt);
      void                 resetPositionToTA();
@@ -39052,7 +39659,7 @@ index ae2719e..6988e18 100644
  
      auto                 takeHero() -> std::unique_ptr<Npc>;
      Npc*                 player() const { return npcPlayer; }
-@@ -151,6 +158,8 @@ class World final {
+@@ -151,6 +159,8 @@ class World final {
      bool                 isInDialog() const;
  
      bool                 isTargeted (Npc& npc);
@@ -39061,7 +39668,7 @@ index ae2719e..6988e18 100644
      Npc*                 addNpc     (std::string_view name, std::string_view     at);
      Npc*                 addNpc     (size_t npcInstance,    std::string_view     at);
      Npc*                 addNpc     (size_t npcInstance,    const Tempest::Vec3& at);
-@@ -164,7 +173,8 @@ class World final {
+@@ -164,7 +174,8 @@ class World final {
      void                 removeItem (Item& it);
      size_t               hasItems(std::string_view tag, size_t itemCls);
  
