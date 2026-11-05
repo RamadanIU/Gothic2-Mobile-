@@ -56,6 +56,9 @@ struct Headless : WorldApi {
   int treatyCalls = 0;
   int heroLevels = 0;
   int revived = 0;
+  std::map<uint32_t,int> moveCalls;   // сколько раз бойцу отдан приказ идти
+  std::map<uint32_t,int> settledNow;  // расселён (1) или нет
+  int settleCalls = 0, unsettleCalls = 0;
 
   void fill(Mob& b, float power, bool ranged) {
     b.hpMax = 80.f + 70.f*power;
@@ -104,6 +107,7 @@ struct Headless : WorldApi {
     return true;
     }
   void moveTo(const Unit& u, const V3& to, bool run) override {
+    moveCalls[u.id]++;
     auto& b = bodies[u.id];
     b.goal = to;
     b.moving = true;
@@ -150,7 +154,31 @@ struct Headless : WorldApi {
     ++treatyCalls;
     }
   void buildingChanged(const Building&) override {}
-  bool findLot(const V3& c, float minR, float maxR, float, uint32_t seed, V3& out) override {
+  void settle(const std::vector<const Unit*>& units, const V3& c, float r) override {
+    // Как в игре: каждый - на своё место у центра (костёр, скамья), дальше его ведёт распорядок
+    ++settleCalls;
+    uint32_t k = 0;
+    for(auto* u:units) {
+      settledNow[u->id] = 1;
+      auto& b = bodies[u->id];
+      const float a = float(k++)*2.3999632f;
+      b.goal   = c + V3(std::cos(a)*r*0.7f,0,std::sin(a)*r*0.7f);
+      b.moving = true;
+      b.run    = false;
+      }
+    }
+  void unsettle(const Unit& u) override {
+    ++unsettleCalls;
+    settledNow[u.id] = 0;
+    bodies[u.id].moving = false;
+    }
+  float lotMaxRadius = 1e9f; // тесно, как в верхнем квартале: больше этого места нет
+  int   lotFails = 0;
+  bool findLot(const V3& c, float minR, float maxR, float radius, uint32_t seed, V3& out) override {
+    if(radius>lotMaxRadius) {
+      ++lotFails;
+      return false;
+    }
     lotSeed = lotSeed*1103515245u + seed + 12345u;
     const float a = float(lotSeed%3600)/3600.f*6.2831853f;
     const float r = minR + float((lotSeed/3600)%1000)/1000.f*(maxR-minR);
@@ -653,6 +681,98 @@ static void testFormation() {
   CHECK(s2!=nullptr && s2->task==Task::Player, "player squad must stay player's");
   }
 
+static void testMarch() {
+  // Ход строем: сначала сбор, потом бег без повторных приказов (раз за плечо пути и раз в 10 с - проверка строя);
+  // быстрые (варги) убегают - строй собирается снова; пришли - через несколько секунд по местам
+  Headless w;
+  Game g(w);
+  w.game = &g;
+  Setup s;
+  s.mode = Mode::Commander;
+  s.player = F_Mercs;
+  s.seed = 9;
+  setupGame(g,w,s);
+  auto& st = g.state();
+  std::vector<uint32_t> ids;
+  V3 c;
+  for(auto& u:st.units)
+    if(u.f==F_Mercs && u.hero<0 && u.st==UnitState::Alive && ids.size()<12) {
+      ids.push_back(u.id);
+      c = c+u.pos;
+      }
+  c = c*(1.f/float(ids.size()));
+  // Двое - быстрые, как варги: строй рассыпается
+  w.bodies[ids[1]].speed = 520.f;
+  w.bodies[ids[2]].speed = 520.f;
+  const V3 to = siteDef(size_t(siteDefByKey("bigcross"))).approx;
+  const uint32_t sq = g.command(ids,Order::Move,to,0,Formation::Wedge);
+  w.moveCalls.clear();
+  const float ideal = distXZ(c,to)/320.f; // с: бегом напрямик
+  float arrived = -1;
+  int regroups = 0;
+  Phase was = Phase::None;
+  for(uint64_t t=0; t<sec(240); t+=100) {
+    w.step(100);
+    g.tick(100);
+    auto* q = st.squad(sq);
+    if(q==nullptr)
+      break;
+    if(q->phase==Phase::Form && was==Phase::March)
+      ++regroups;
+    was = q->phase;
+    if(arrived<0 && q->order==Order::Hold)
+      arrived = float(t)/1000.f;
+    }
+  int maxCalls = 0;
+  for(auto& [id,n]:w.moveCalls)
+    maxCalls = std::max(maxCalls,n);
+  std::printf("march: %.0f m, ideal %.0f s, arrived %.0f s, regroups %d, max moveTo per unit %d, settled %d\n",
+              double(distXZ(c,to)/100.f),double(ideal),double(arrived),regroups,maxCalls,w.settleCalls);
+  CHECK(arrived>0 && arrived<ideal*1.8f+15.f, "march too slow: %.0f s (ideal %.0f s)", double(arrived), double(ideal));
+  CHECK(maxCalls<=30, "units re-ordered too often: %d moveTo for one unit", maxCalls);
+  CHECK(regroups>=1, "fast units ran away, the squad never regrouped");
+  // Отряд игрока стоит у перекрёстка - он не их место: не расселяются. Занятое место - расселяются
+  for(auto& site:st.sites)
+    if(siteDef(size_t(site.def)).key==std::string("bigcross"))
+      site.owner = F_Mercs;
+  run(g,w,sec(15));
+  int settled = 0;
+  for(auto id:ids)
+    if(auto* u = st.unit(id); u!=nullptr && u->settled)
+      ++settled;
+  CHECK(settled>=int(ids.size())-1, "squad at its own site did not settle: %d of %zu", settled, ids.size());
+  // Новый приказ - встают
+  const uint32_t sq2 = g.command(ids,Order::Move,c,0,Formation::Line);
+  int still = 0;
+  for(auto id:ids)
+    if(auto* u = st.unit(id); u!=nullptr && u->settled)
+      ++still;
+  CHECK(sq2!=0 && still==0 && w.unsettleCalls>=settled, "settled units must stand up on a new order");
+  }
+
+static void testFactionsBuild() {
+  // Паладины и наёмники строят (и когда большим домам места нет - строят меньшие), поиск места не повторяется без конца
+  for(float cramped : {1e9f, 650.f}) {
+    Headless w;
+    Game g(w);
+    w.game = &g;
+    w.lotMaxRadius = cramped;
+    Setup s;
+    s.mode = Mode::Observer;
+    s.seed = 21;
+    setupGame(g,w,s);
+    run(g,w,sec(900));
+    size_t built[F_Count] = {};
+    for(auto& b:g.state().buildings)
+      if(!b.builtin && !b.ruined)
+        built[b.f]++;
+    std::printf("build (lots up to %.0f cm): paladins %zu, mercs %zu, orcs %zu, failed lot searches %d\n",
+                double(std::min(cramped,99999.f)),built[F_Paladins],built[F_Mercs],built[F_Orcs],w.lotFails);
+    CHECK(built[F_Paladins]>=2 && built[F_Mercs]>=2, "paladins %zu / mercs %zu buildings in 15 min", built[F_Paladins], built[F_Mercs]);
+    CHECK(w.lotFails<=60, "lot search repeated too often: %d", w.lotFails);
+    }
+  }
+
 static void testAiPlays() {
   // Три ИИ: строят, нанимают, нападают, захватывают; деньги не уходят в минус и бесконечность
   Summary s = play(77,40,false);
@@ -712,6 +832,8 @@ int main(int argc, char** argv) {
   testDiplomacy();
   testSaveLoad();
   testFormation();
+  testMarch();
+  testFactionsBuild();
   testAiPlays();
   if(fails==0)
     std::printf("ALL OK\n");
