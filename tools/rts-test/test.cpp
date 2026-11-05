@@ -154,17 +154,62 @@ struct Headless : WorldApi {
     ++treatyCalls;
     }
   void buildingChanged(const Building&) override {}
-  void settle(const std::vector<const Unit*>& units, const V3& c, float r) override {
+  int guardCalls = 0;
+  uint32_t settleSeq = 0;
+  void settle(const std::vector<const Unit*>& units, const V3& c, float r, bool guard) override {
+    if(guard)
+      ++guardCalls;
     // Как в игре: каждый - на своё место у центра (костёр, скамья), дальше его ведёт распорядок
     ++settleCalls;
-    uint32_t k = 0;
     for(auto* u:units) {
+      const uint32_t k = settleSeq++;
       settledNow[u->id] = 1;
       auto& b = bodies[u->id];
-      const float a = float(k++)*2.3999632f;
-      b.goal   = c + V3(std::cos(a)*r*0.7f,0,std::sin(a)*r*0.7f);
+      const float a = float(k)*2.3999632f, rr = r*(0.35f+0.6f*float(k%7)/6.f);
+      b.goal   = c + V3(std::cos(a)*rr,0,std::sin(a)*rr);
       b.moving = true;
       b.run    = false;
+      }
+    }
+  // Узкая тропа вдоль x (|z - corridorZ| < corridorHalf): вне её - склон, места нет. Как RtsGame::fitSlots:
+  // ближе к якорю, потом колонной позади, не друг в друге
+  bool  corridor = false;
+  float corridorZ = 0, corridorHalf = 150;
+  int   fitCalls = 0;
+  bool walkable(const V3& p) const { return !corridor || std::abs(p.z-corridorZ)<corridorHalf; }
+  void fitSlots(const V3& a, const V3& dir, std::vector<V3>& slots) override {
+    ++fitCalls;
+    std::vector<V3> used;
+    const V3 right(-dir.z,0,dir.x);
+    auto free = [&](const V3& p) {
+      if(!walkable(p))
+        return false;
+      for(auto& u:used)
+        if(qDistXZ(u,p)<110.f*110.f)
+          return false;
+      return true;
+      };
+    for(auto& sl:slots) {
+      const V3 off = sl-a;
+      V3 got = sl;
+      bool ok = false;
+      for(float k : {1.f, 0.65f, 0.35f})
+        if(free(a+off*k)) {
+          got = a+off*k;
+          ok  = true;
+          break;
+          }
+      for(int k=1; !ok && k<64; ++k)
+        for(float side : {0.f, -60.f, 60.f}) {
+          const V3 p = a + dir*(-150.f*float(k)) + right*side;
+          if(free(p)) {
+            got = p;
+            ok  = true;
+            break;
+            }
+          }
+      sl = got;
+      used.push_back(got);
       }
     }
   void unsettle(const Unit& u) override {
@@ -188,7 +233,7 @@ struct Headless : WorldApi {
   bool route(const V3& from, const V3& to, std::vector<V3>& out) override {
     // Прямая с изломом: проверка, что строй идёт по точкам
     out.clear();
-    out.push_back((from+to)*0.5f + V3(500,0,-500));
+    out.push_back((from+to)*0.5f + (corridor ? V3(500,0,0) : V3(500,0,-500)));
     out.push_back(to);
     return true;
     }
@@ -675,7 +720,8 @@ static void testFormation() {
         if(auto* o = st.unit(id2))
           minPair = std::min(minPair,distXZ(o->pos,u->pos));
     }
-  CHECK(maxD<1500.f, "squad not at the goal: %.0f cm", double(maxD));
+  // На захвате встают стражей по краю места (радиус перекрёстка - 20 м)
+  CHECK(maxD<2000.f, "squad not at the goal: %.0f cm", double(maxD));
   CHECK(minPair>80.f, "units on top of each other: %.0f cm", double(minPair));
   auto* s2 = st.squad(sq);
   CHECK(s2!=nullptr && s2->task==Task::Player, "player squad must stay player's");
@@ -759,18 +805,62 @@ static void testFactionsBuild() {
     w.lotMaxRadius = cramped;
     Setup s;
     s.mode = Mode::Observer;
-    s.seed = 21;
+    s.seed = std::getenv("BSEED") ? uint32_t(std::atoi(std::getenv("BSEED"))) : 21;
     setupGame(g,w,s);
     run(g,w,sec(900));
     size_t built[F_Count] = {};
     for(auto& b:g.state().buildings)
-      if(!b.builtin && !b.ruined)
-        built[b.f]++;
+      if(!b.builtin)
+        built[b.f]++; // и разрушенные потом осадой: важно, что строили
     std::printf("build (lots up to %.0f cm): paladins %zu, mercs %zu, orcs %zu, failed lot searches %d\n",
                 double(std::min(cramped,99999.f)),built[F_Paladins],built[F_Mercs],built[F_Orcs],w.lotFails);
     CHECK(built[F_Paladins]>=2 && built[F_Mercs]>=2, "paladins %zu / mercs %zu buildings in 15 min", built[F_Paladins], built[F_Mercs]);
     CHECK(w.lotFails<=60, "lot search repeated too often: %d", w.lotFails);
     }
+  }
+
+static void testNarrowPath() {
+  // Узкая тропа между склонами: строй «линия» не помещается - встают колонной по тропе, не кучей у одной точки
+  Headless w;
+  Game g(w);
+  w.game = &g;
+  Setup s;
+  s.mode = Mode::Commander;
+  s.player = F_Mercs;
+  s.seed = 5;
+  setupGame(g,w,s);
+  auto& st = g.state();
+  std::vector<uint32_t> ids;
+  for(auto& u:st.units)
+    if(u.f==F_Mercs && u.hero<0 && u.st==UnitState::Alive && ids.size()<12)
+      ids.push_back(u.id);
+  // Все - на тропе у её начала
+  V3 start = st.units[0].pos;
+  for(auto& u:st.units)
+    if(u.id==ids[0])
+      start = u.pos;
+  w.corridor  = true;
+  w.corridorZ = start.z;
+  for(size_t i=0; i<ids.size(); ++i) {
+    auto& b = w.bodies[ids[i]];
+    b.pos = start + V3(-float(i)*120.f,0,0);
+    }
+  run(g,w,sec(1));
+  const V3 to = start + V3(6000,0,0);
+  g.command(ids,Order::Move,to,0,Formation::Line);
+  run(g,w,sec(60));
+  float minPair = 1e9f, off = 0;
+  for(auto id:ids) {
+    auto& b = w.bodies[id];
+    off = std::max(off,std::abs(b.pos.z-start.z));
+    for(auto id2:ids)
+      if(id2!=id)
+        minPair = std::min(minPair,distXZ(w.bodies[id2].pos,b.pos));
+    }
+  std::printf("narrow path: closest pair %.0f cm, off the path %.0f cm, fits %d\n",double(minPair),double(off),w.fitCalls);
+  CHECK(minPair>=100.f, "units bunched on a narrow path: %.0f cm", double(minPair));
+  CHECK(off<w.corridorHalf, "unit off the path: %.0f cm", double(off));
+  CHECK(w.fitCalls<60, "slots re-fitted too often: %d", w.fitCalls);
   }
 
 static void testAiPlays() {
@@ -834,6 +924,7 @@ int main(int argc, char** argv) {
   testFormation();
   testMarch();
   testFactionsBuild();
+  testNarrowPath();
   testAiPlays();
   if(fails==0)
     std::printf("ALL OK\n");
