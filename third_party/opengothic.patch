@@ -5153,10 +5153,10 @@ index 0000000..1143a26
 +  }
 diff --git a/common/game/bladework.cpp b/common/game/bladework.cpp
 new file mode 100644
-index 0000000..7899b2d
+index 0000000..af62056
 --- /dev/null
 +++ b/common/game/bladework.cpp
-@@ -0,0 +1,381 @@
+@@ -0,0 +1,393 @@
 +#include "bladework.h"
 +
 +#include "graphics/mesh/skeleton.h"
@@ -5519,6 +5519,18 @@ index 0000000..7899b2d
 +  return false;
 +  }
 +
++bool BladeWork::parryCatches(const BodyHit& h, const Blade& guard, Vec3& near, float& uGuard) {
++  if(guard.weapon==W_Fist)
++    return false;
++  const Vec3  d  = guard.tip-guard.grip;
++  const float l2 = Vec3::dotProduct(d,d);
++  if(l2<1.f)
++    return false;
++  uGuard = std::clamp(Vec3::dotProduct(h.at-guard.grip,d)/l2, 0.f, 1.f);
++  near   = guard.grip + d*uGuard;
++  return (h.at-near).length()<=10.f + 0.3f*std::sqrt(l2);
++  }
++
 +float BladeWork::parryKick(const BladeHit& h, uint8_t attacker, uint8_t defender) {
 +  const float base  = std::clamp(h.speed/15.f, 0.3f, 1.5f);
 +  const float lever = 0.6f + 0.9f*std::clamp(h.uOther,0.f,1.f);
@@ -5540,10 +5552,10 @@ index 0000000..7899b2d
 +  }
 diff --git a/common/game/bladework.h b/common/game/bladework.h
 new file mode 100644
-index 0000000..8840c75
+index 0000000..96ed5fb
 --- /dev/null
 +++ b/common/game/bladework.h
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,144 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -5664,6 +5676,13 @@ index 0000000..8840c75
 +
 +// Клинок за кадр задел клинок противника (тот тоже двигался: other). false - мимо
 +bool hitBlade(const Sweep& s, const Sweep& other, BladeHit& out);
++
++// Блок «в последний миг»: клинок бьющего дошёл до тела, но клинок защищающегося (он в блоке и лицом к удару) рядом -
++// ближе ParryCatch от точки удара: боец доводит клинок или принимает удар на гарду. near - ближайшая точка его клинка.
++// Длинный клинок прикрывает больше: радиус - 10 см + 0,3 длины клинка защищающегося (меч 90 см - 37 см, двуручник
++// 125 см - 47 см)
++constexpr float ParryCatch = 38.f; // см, наибольший у меча (для справки; считается по длине)
++bool  parryCatches(const BodyHit& h, const Blade& guard, Tempest::Vec3& near, float& uGuard);
 +
 +// Отдача в руку блокирующего, м/с: по скорости удара, оружию бьющего и защищающегося и месту на клинке защищающегося
 +float parryKick(const BladeHit& h, uint8_t attacker, uint8_t defender);
@@ -7567,10 +7586,10 @@ index b1d951f..8d5f5cd 100644
    if(hitFlg) {
 diff --git a/common/game/fightbody.cpp b/common/game/fightbody.cpp
 new file mode 100644
-index 0000000..bc83443
+index 0000000..54a8b0a
 --- /dev/null
 +++ b/common/game/fightbody.cpp
-@@ -0,0 +1,1125 @@
+@@ -0,0 +1,1159 @@
 +#include "fightbody.h"
 +
 +#include "graphics/mesh/limbik.h"
@@ -7834,6 +7853,7 @@ index 0000000..bc83443
 +  strikeOn = false;
 +  blockW   = 0;
 +  pelStep  = Vec3();
++  memo     = BodyRig::Memo();
 +  }
 +
 +void FightBody::plantFeet(const Vec3& l, const Vec3& r) {
@@ -8040,6 +8060,7 @@ index 0000000..bc83443
 +      s.shift[i] += 6.f;
 +      }
 +    }
++  s.t0 = ck.t;
 +  str = s;
 +  // замах - от позы, в которой застала стадия (стойка или конец прошлого удара серии)
 +  stageKey = hasShown ? shown : guardKey(rig,in,fr);
@@ -8113,6 +8134,22 @@ index 0000000..bc83443
 +    else {
 +      s.hand[1]  = S + d*(std::clamp(len-bite, minR, maxR)/len);
 +      s.blade[1] = nrm(Pc-s.hand[1], Vec3(0,0,1));
++      if(!s.thrust && !fist) {
++        // рубящий удар: в миг удара клинок не продолжает руку, а чуть отстаёт от неё (рукоять в кулаке лежит наискось,
++        // кисть доворачивает не до конца) - поза достижима для кисти; кисть - так, чтобы клинок ударной частью
++        // прошёл цель
++        constexpr float Lag = 0.42f;
++        for(int q=0; q<3; ++q) {
++          const Vec3 arm = nrm(s.hand[1]-S, Vec3(0,0,1));
++          const Vec3 n   = nrm(Vec3::crossProduct(nrm(s.hand[0]-S),arm), Vec3(0,1,0));
++          const Vec3 v   = nrm(Vec3::crossProduct(n,arm), Vec3(1,0,0)); // куда идёт кисть
++          s.blade[1] = nrm(arm*std::cos(Lag) - v*std::sin(Lag), arm);
++          Vec3 h = Pc - s.blade[1]*bite;
++          const Vec3  hd = h-S;
++          const float hl = std::max(hd.length(),1.f);
++          s.hand[1] = S + hd*(std::clamp(hl, minR, maxR)/hl);
++          }
++        }
 +      if(s.thrust && !fist) {
 +        // укол: клинок - по линии удара с самого замаха
 +        s.blade[0] = nrm(s.blade[1] + Vec3(0,0.1f,0));
@@ -8286,7 +8323,9 @@ index 0000000..bc83443
 +    strikePow = 0;
 +    strikeOn  = false;
 +    lastS     = 0;
-+    const float u = (t-a0)/std::max(ws-a0,0.03f);
++    // замах - от мига, когда стадия началась для тела (не прыжком, если часы уже ушли вперёд)
++    const float w0 = std::clamp(str.t0, a0, ws-0.03f);
++    const float u  = (t-w0)/std::max(ws-w0,0.03f);
 +    precise   = 0.35f + 0.65f*sat(u);
 +    return mix(stageKey, strikeKey(in,g,0.f), smooth(u));
 +    }
@@ -8361,8 +8400,10 @@ index 0000000..bc83443
 +    Vec3 P = T.toLocal(in.threatAt,fr.k);
 +    P.y = std::clamp(P.y, -48.f, 34.f);
 +    const Vec3 toA = nrm(Vec3(P.x*0.4f, 0, std::max(P.z,18.f)), Vec3(0,0,1));
-+    C = P + toA*16.f;
 +    V = nrm(T.dirLocal(in.threatDir), Vec3(0,-1,0));
++    // клинки должны встретиться раньше, чем удар дойдёт до тела: место встречи - навстречу удару (против его хода, на
++    // толщину тела с запасом) и ближе к противнику. Иначе клинок успевал задеть плечо или руку перед самым блоком
++    C = P - V*22.f + toA*14.f;
 +    known = true;
 +    }
 +  else if(in.threat) {
@@ -8375,6 +8416,7 @@ index 0000000..bc83443
 +    const Vec3 Vv = T.dirLocal(in.threatVel);
 +    V = Vv.length()>100.f ? nrm(Vv) : Vec3::crossProduct(nrm(T.dirLocal(in.threatB-in.threatA),Vec3(0,1,0)), Vec3(0,0,1));
 +    V = nrm(V, Vec3(0,-1,0));
++    C = C - V*14.f;
 +    known = true;
 +    }
 +  if(known) {
@@ -8387,10 +8429,13 @@ index 0000000..bc83443
 +      } else if(Db.x<0.f) {
 +      Db = Db*-1.f;
 +      }
++    // клинок не перекидывается с кадра на кадр: сторона острия - как в прошлом кадре блока
++    if(parryHas && Vec3::dotProduct(Db,parryAx)<0.f && std::abs(Vec3::dotProduct(Db,parryAx))>0.3f)
++      Db = Db*-1.f;
 +    // наискось: остриё чуть вверх и вперёд - удар соскальзывает к гарде, а не рубит кисть
 +    Db = nrm(Db + Vec3(0,0.28f,0.10f));
-+    // удар принимает сильная часть клинка (четверть длины от гарды)
-+    hand = C - Db*(0.27f*bl);
++    // удар принимает сильная часть клинка, с запасом в обе стороны (треть длины от гарды)
++    hand = C - Db*(0.30f*bl);
 +    ax   = Db;
 +    }
 +  // не дальше руки от плеча, не в теле
@@ -8403,6 +8448,9 @@ index 0000000..bc83443
 +  if(hand.z<18.f)
 +    hand.z = 18.f;
 +  }
++  parryHand = hand;
++  parryAx   = ax;
++  parryHas  = true;
 +  k.hand[1]  = hand;
 +  k.axis[1]  = ax;
 +  k.pole[1]  = nrm(Vec3(-1,-0.6f,-0.15f));
@@ -8657,6 +8705,9 @@ index 0000000..bc83443
 +      k = guardKey(rig,inp,fr);
 +      break;
 +    }
++  parryDt = dt;
++  if(ck.move!=M_Parade)
++    parryHas = false;
 +  blockW = (ck.move==M_Parade) ? std::min(1.f, blockW+dt/0.1f) : std::max(0.f, blockW-dt/0.15f);
 +  if(!(ck.move==M_Attack || ck.move==M_AttackL || ck.move==M_AttackR || ck.move==M_AttackRun || ck.move==M_Finish))
 +    precise = (ck.move==M_Parade) ? 0.9f : 0.25f;
@@ -8695,13 +8746,15 @@ index 0000000..bc83443
 +
 +  tickFeet(rig,in,fr,k,dt);
 +  toSpec(rig,in,fr,k,out);
++  out.memo = &memo;
++  out.dt   = dt;
 +  }
 diff --git a/common/game/fightbody.h b/common/game/fightbody.h
 new file mode 100644
-index 0000000..4973697
+index 0000000..9c2926e
 --- /dev/null
 +++ b/common/game/fightbody.h
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,224 @@
 +#pragma once
 +
 +#include <Tempest/Vec>
@@ -8784,7 +8837,9 @@ index 0000000..4973697
 +      float         bladeLen = 90;      // см от хвата до острия
 +      Tempest::Vec3 bladeLocal = {};    // ось клинка в системе кисти (BodyRig::gripAxisInHand); 0 - по умолчанию
 +      bool          inHand   = true;    // оружие в руке (не в ножнах)
-+      float         lead     = 0.07f;   // с: поза хода берётся на столько вперёд - кукла отстаёт от цели мышц
++      // с: поза хода берётся на столько вперёд. Рука с оружием идёт за позой точно (Ragdoll::setGripPrecision), поэтому
++      // упреждение не нужно: с ним замах в первом кадре стадии прыгал вперёд
++      float         lead     = 0.f;
 +      uint32_t      seed     = 0;       // у каждого бойца своя фаза дыхания и покачивания
 +      std::function<float(const Tempest::Vec3&)> ground; // высота земли под точкой (шаги); пусто - root.y
 +      };
@@ -8878,6 +8933,7 @@ index 0000000..4973697
 +      float         tStrike = 0.15f, tFollow = 0.22f, tRecover = 0.32f; // с
 +      float         aimed  = -1;     // когда цель удара считалась в последний раз (часы хода)
 +      float         sw     = 21;     // плечо от середины груди, см
++      float         t0     = 0;      // время хода, когда стадия началась (замах идёт от него)
 +      };
 +
 +    Key           guardKey(const BodyRig& rig, const Input& in, const Frame& fr) const;
@@ -8913,6 +8969,11 @@ index 0000000..4973697
 +    float         lastS     = 0;    // где удар сейчас (0..1 - разгон, 1..2 - проводка) и время хода в этот миг
 +    float         lastT     = 0;
 +    float         precise   = 0;
++    BodyRig::Memo memo;             // поворот локтей между кадрами - плавно
++    // блок: кисть и клинок прошлого кадра (система груди) - клинок идёт за ударом плавно
++    mutable Tempest::Vec3 parryHand = {}, parryAx = {};
++    mutable bool          parryHas  = false;
++    float                 parryDt   = 0.033f;
 +    Impact        impKind   = I_None;
 +    uint32_t      impId     = 0;
 +    float         impS      = 0, impT = 0;
@@ -19671,10 +19732,10 @@ index dadfd6d..6afd8d0 100644
      bool                           hnpcFlagGhost = false;
 diff --git a/common/graphics/mesh/bodyrig.cpp b/common/graphics/mesh/bodyrig.cpp
 new file mode 100644
-index 0000000..fa76df7
+index 0000000..3c73dec
 --- /dev/null
 +++ b/common/graphics/mesh/bodyrig.cpp
-@@ -0,0 +1,643 @@
+@@ -0,0 +1,747 @@
 +#include "bodyrig.h"
 +
 +#include "humancanon.h"
@@ -19684,6 +19745,8 @@ index 0000000..fa76df7
 +#include <Tempest/Log>
 +
 +#include <algorithm>
++#include <cstdio>
++#include <cstdlib>
 +#include <cctype>
 +#include <cmath>
 +#include <map>
@@ -20036,7 +20099,7 @@ index 0000000..fa76df7
 +    rotateAround(W[d],at,ax,ang);
 +  }
 +
-+void BodyRig::solveArm(std::vector<Matrix4x4>& W, int a, const Arm& s) const {
++void BodyRig::solveArm(std::vector<Matrix4x4>& W, int a, const Arm& s, Memo* memo, float dt) const {
 +  // Рука: IK к хвату (локоть - шарнир), кисть - ось хвата к нужной. Ось задана - предплечье ставится так, чтобы кисть
 +  // была почти прямой (предплечье на конусе вокруг оси хвата), а поворот локтя вокруг линии плечо-кисть выбирается
 +  // так, чтобы кисть не перекручивалась за анатомию (кручение - до 75°, излом - до 60°): иначе мышцы куклы тянули бы
@@ -20100,6 +20163,48 @@ index 0000000..fa76df7
 +  auto clampWrist = [&]() {
 +    if(!aimed)
 +      return;
++    // Сначала - поворот кисти от прямой как целое: не больше 100° вокруг своей оси (непрерывно). Без этого
++    // недостижимая поза (кисть повёрнута почти на 180°) раскладывалась на углы у самого края ±180°, и ограничение
++    // перескакивало с одной стороны на другую - клинок переворачивался между кадрами
++    {
++    const Matrix4x4 neutral = W[f]*local[h];
++    Vec3 n0[3], n1[3];
++    for(int c=0; c<3; ++c) {
++      n0[c] = unitAxis(neutral,c);
++      n1[c] = unitAxis(W[h],c);
++      }
++    // R = N1 * N0^T: поворот, переводящий оси прямой кисти в нынешние
++    float R[3][3];
++    for(int i=0; i<3; ++i)
++      for(int j=0; j<3; ++j) {
++        R[i][j] = 0;
++        for(int c=0; c<3; ++c) {
++          const float x1[3] = {n1[c].x,n1[c].y,n1[c].z}, x0[3] = {n0[c].x,n0[c].y,n0[c].z};
++          R[i][j] += x1[i]*x0[j];
++          }
++        }
++    const float tr  = R[0][0]+R[1][1]+R[2][2];
++    const float ang = std::acos(std::clamp((tr-1.f)*0.5f,-1.f,1.f));
++    constexpr float MaxA = 100.f*float(M_PI)/180.f;
++    if(ang>MaxA) {
++      Vec3 ax = Vec3(R[2][1]-R[1][2], R[0][2]-R[2][0], R[1][0]-R[0][1]);
++      if(ax.length()<1e-3f) {
++        // почти 180°: ось - по самому длинному столбцу R + I
++        const Vec3 c0(R[0][0]+1.f,R[1][0],R[2][0]), c1(R[0][1],R[1][1]+1.f,R[2][1]), c2(R[0][2],R[1][2],R[2][2]+1.f);
++        ax = c0;
++        if(c1.length()>ax.length()) ax = c1;
++        if(c2.length()>ax.length()) ax = c2;
++        }
++      if(ax.length()>1e-6f) {
++        ax = Vec3::normalize(ax);
++        Matrix4x4 m = neutral;
++        rotateBasis(m,ax,MaxA);
++        setOrigin(m,origin(W[h]));
++        W[h] = m;
++        rebuild(W,h);
++        }
++      }
++    }
 +    float tw = 0, ab = 0, fl = 0;
 +    wristEuler(tw,ab,fl);
 +    const float d2r = float(M_PI)/180.f;
@@ -20122,8 +20227,9 @@ index 0000000..fa76df7
 +    rebuild(W,h);
 +    };
 +
-+  Vec3 off  = (slot[a]<n) ? origin(W[slot[a]])-origin(W[h]) : Vec3();
-+  Vec3 pole = s.pole;
++  Vec3  off  = (slot[a]<n) ? origin(W[slot[a]])-origin(W[h]) : Vec3();
++  Vec3  pole = s.pole;
++  float turn = 0;
 +  for(int it=0; it<2; ++it) {
 +    const Vec3 wr = s.grip-off;
 +    if(aimed) {
@@ -20132,6 +20238,15 @@ index 0000000..fa76df7
 +      const float sn  = std::sqrt(std::max(0.f,1.f-cs*cs));
 +      Vec3        nat = Vec3::normalize(wr-origin(W0[0]));
 +      Vec3        pp  = nat - bd*Vec3::dotProduct(nat,bd);
++      {
++      // клинок почти по линии плечо-кисть: её поперечная часть мала и пляшет - плавно уступает подсказке локтя
++      // (иначе локоть и клинок перескакивают между кадрами как раз в миг удара)
++      Vec3 pl = s.pole*-1.f;
++      pl = pl - bd*Vec3::dotProduct(pl,bd);
++      const float w = smooth((pp.length()-0.05f)/0.30f);
++      if(pl.length()>1e-3f)
++        pp = (pp.length()>1e-4f ? Vec3::normalize(pp) : Vec3())*w + Vec3::normalize(pl)*(1.f-w);
++      }
 +      if(pp.length()<1e-3f)
 +        pp = s.pole - bd*Vec3::dotProduct(s.pole,bd);
 +      if(pp.length()>1e-3f) {
@@ -20156,11 +20271,61 @@ index 0000000..fa76df7
 +        if(c<0.02f)
 +          break;
 +        }
++      if(memo!=nullptr && memo->has[a]) {
++        // Поворот локтя - непрерывно: от того, куда локоть смотрел в прошлой позе (по абсолютному направлению, а не
++        // от подсказки - она сама может перескочить), к лучшему, не быстрее 14 рад/с; прежний не меняется на лучший,
++        // пока тот не заметно лучше. Без этого локоть и клинок перещёлкивали между кадрами в миг удара
++        Vec3 pr = memo->elbow[a] - line*Vec3::dotProduct(memo->elbow[a],line);
++        Vec3 ph = pole - line*Vec3::dotProduct(pole,line);
++        if(pr.length()>1e-3f && ph.length()>1e-3f) {
++          pr = Vec3::normalize(pr);
++          ph = Vec3::normalize(ph);
++          const float prev = signedAngle(ph,pr,line);
++          place(wr, rotate(pole,line,std::cos(prev),std::sin(prev)));
++          const float cPrev = wristCost() + 0.08f*std::abs(prev);
++          float d = (bestCost<cPrev-0.04f) ? bestAng-prev : 0.f;
++          d = std::remainder(d, 2.f*float(M_PI));
++          // лучший - почти напротив: в какую сторону к нему идти, решено раньше (иначе знак меняется каждый кадр и
++          // локоть дрожит на месте)
++          if(std::abs(d)>2.4f && memo->turn[a]!=0.f && d*memo->turn[a]<0.f)
++            d += 2.f*float(M_PI)*memo->turn[a];
++          // поза кисти недостижима - локоть идёт быстрее (замах: за 0,1 с локоть уходит на 2-3 рад)
++          const float speed = cPrev>0.5f ? 32.f : 14.f;
++          const float lim   = speed*std::clamp(dt,0.001f,0.1f);
++          bestAng = prev + std::clamp(d,-lim,lim);
++          turn = (std::abs(d)>1e-3f) ? (d>0.f ? 1.f : -1.f) : 0.f;
++          }
++        }
 +      pole = rotate(pole,line,std::cos(bestAng),std::sin(bestAng));
 +      }
 +    place(wr,pole);
++#ifdef BODYRIG_TRACE
++    if(a==1 && std::getenv("ARMTRACE")) {
++      float tw = 0, ab = 0, fl = 0;
++      wristEuler(tw,ab,fl);
++      const Vec3 e = origin(W[f]);
++      std::printf("    arm it%d pole (%.2f %.2f %.2f) elbow (%.0f %.0f %.0f) wrist tw %.0f ab %.0f fl %.0f cost %.2f\n",it,
++                  double(pole.x),double(pole.y),double(pole.z),double(e.x),double(e.y),double(e.z),
++                  double(tw*57.3f),double(ab*57.3f),double(fl*57.3f),double(wristCost()));
++      }
++#endif
 +    clampWrist();
 +    off = (slot[a]<n) ? origin(W[slot[a]])-origin(W[h]) : Vec3();
++    }
++  if(memo!=nullptr) {
++    // куда в итоге смотрит локоть - для следующей позы
++    const Vec3 sh = origin(W[u]), el = origin(W[f]), wr = origin(W[h]);
++    const Vec3 ln = wr-sh;
++    if(ln.length()>1e-3f) {
++      const Vec3 l = Vec3::normalize(ln);
++      Vec3 e = el-sh;
++      e = e - l*Vec3::dotProduct(e,l);
++      if(e.length()>0.5f) {
++        memo->elbow[a] = Vec3::normalize(e);
++        memo->turn[a]  = turn;
++        memo->has[a]   = true;
++        }
++      }
 +    }
 +  }
 +
@@ -20314,16 +20479,16 @@ index 0000000..fa76df7
 +  Fp = Vec3::normalize(Fp);
 +
 +  for(int a=0; a<2; ++a)
-+    solveArm(W,a,s.arm[a]);
++    solveArm(W,a,s.arm[a],s.memo,s.dt);
 +  for(int k=0; k<2; ++k)
 +    solveLeg(W,k,s.leg[k],Fp,scale);
 +  }
 diff --git a/common/graphics/mesh/bodyrig.h b/common/graphics/mesh/bodyrig.h
 new file mode 100644
-index 0000000..9e3aea1
+index 0000000..382a486
 --- /dev/null
 +++ b/common/graphics/mesh/bodyrig.h
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,161 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -20365,6 +20530,14 @@ index 0000000..9e3aea1
 +      // прямым углом к ней
 +      bool          flat  = true;
 +      };
++    // Память позы между кадрами (её держит тот, кто строит позу каждый кадр, - FightBody): поворот локтя вокруг
++    // линии плечо-кисть меняется плавно. Без неё лучший поворот выбирается заново и может перескочить - локоть и
++    // клинок «перещёлкивают» между кадрами
++    struct Memo final {
++      Tempest::Vec3 elbow[2] = {};          // куда смотрел локоть (от линии плечо-кисть), мир
++      float         turn[2]  = {0,0};       // в какую сторону он поворачивал (+1, -1; 0 - стоял)
++      bool          has[2]   = {false,false};
++      };
 +    struct Spec final {
 +      Tempest::Vec3 pelvis = {};            // начало кости таза, мир
 +      Tempest::Vec3 fwd    = {0,0,1};       // вперёд таза (мир)
@@ -20376,6 +20549,8 @@ index 0000000..9e3aea1
 +      float         shrug[2] = {0,0};       // плечо вверх (0..1): левое, правое
 +      Arm           arm[2];                 // 0 - левая, 1 - правая
 +      Leg           leg[2];
++      Memo*         memo   = nullptr;       // память между кадрами (может не быть)
++      float         dt     = 0.033f;        // с с прошлой позы (для memo)
 +      };
 +
 +    // Схема скелета человека; nullptr - не человек
@@ -20445,7 +20620,7 @@ index 0000000..9e3aea1
 +                      Tempest::Vec3& Fc) const;
 +    void   rebuild(std::vector<Tempest::Matrix4x4>& W, size_t b) const;
 +    void   rotateTree(std::vector<Tempest::Matrix4x4>& W, size_t b, const Tempest::Vec3& at, const Tempest::Vec3& ax, float ang) const;
-+    void   solveArm(std::vector<Tempest::Matrix4x4>& W, int a, const Arm& s) const;
++    void   solveArm(std::vector<Tempest::Matrix4x4>& W, int a, const Arm& s, Memo* memo, float dt) const;
 +    void   solveLeg(std::vector<Tempest::Matrix4x4>& W, int k, const Leg& s, const Tempest::Vec3& pelFwd, float scale) const;
 +
 +    size_t                           n      = 0;
@@ -30939,7 +31114,7 @@ index 0000000..73d792c
 +  }
 diff --git a/common/physics/ragdoll.h b/common/physics/ragdoll.h
 new file mode 100644
-index 0000000..ac0ec87
+index 0000000..7071ce4
 --- /dev/null
 +++ b/common/physics/ragdoll.h
 @@ -0,0 +1,490 @@
@@ -31047,7 +31222,7 @@ index 0000000..ac0ec87
 +    static constexpr float    ThroesDist   = 2500;  // см: дальше агонии нет - тело лежит, как упало
 +    static constexpr uint64_t ThroesMaxTime= 16000; // мс в физике с агонией - дольше не бывает
 +    static constexpr uint64_t BalanceMaxTime= 4500; // мс: ловит равновесие после толчка - дольше не бывает
-+    static constexpr uint64_t GetUpMaxTime = 12000; // мс: встаёт телом - дольше не бывает (Npc доводит анимацией)
++    static constexpr uint64_t GetUpMaxTime = 14000; // мс: встаёт телом (со спины - через перекат, ~6 с) - дольше не бывает
 +
 +    struct Hit final {
 +      Tempest::Vec3 at       = {};       // точка удара, см
@@ -40856,10 +41031,10 @@ index 7309936..ba8b3ba 100644
      float                          angleY   = 0.f;
 diff --git a/common/world/objects/npcfight.cpp b/common/world/objects/npcfight.cpp
 new file mode 100644
-index 0000000..50806f3
+index 0000000..eeec2ef
 --- /dev/null
 +++ b/common/world/objects/npcfight.cpp
-@@ -0,0 +1,578 @@
+@@ -0,0 +1,599 @@
 +#include "npc.h"
 +
 +#include <Tempest/Log>
@@ -41388,6 +41563,27 @@ index 0000000..50806f3
 +    n.takeBladeBlock(*this, h.at, h.dir, 0.12f*h.speed);
 +    return;
 +    }
++  // клинок дошёл до тела, но противник в блоке, лицом к удару, и его клинок рядом: принял на клинок или гарду
++  {
++  BladeWork::Blade guard;
++  Vec3  nearG;
++  float uG = 0;
++  const Vec3 toMe = position()-n.position();
++  const bool front = Vec3::dotProduct(Vec3(toMe.x,0,toMe.z), n.direction())>0.f;
++  if(fightWeapon!=FightBody::W_Fist && front && n.isParrying() && n.weaponState()!=WeaponState::Fist && n.bladeNow(guard) &&
++     BladeWork::parryCatches(h,guard,nearG,uG)) {
++    BladeWork::BladeHit bh;
++    bh.at = nearG; bh.vel = h.vel; bh.u = h.u; bh.uOther = uG; bh.speed = h.speed;
++    fightBody->impact(FightBody::I_Blocked);
++    if(ragdoll!=nullptr && ragdoll->isSimulated()) {
++      ragdoll->softenGrip(0.16f);
++      ragdoll->nudge(h.at, h.dir*(-0.25f*h.speed));
++      }
++    n.takeBladeBlock(*this, nearG, h.dir, BladeWork::parryKick(bh,uint8_t(fightWeapon),uint8_t(n.fightWeapon)));
++    Log::i("[g2m] fight body: \"",displayName(),"\" blocked by \"",n.displayName(),"\" at the last moment, ",float(int(h.speed*10.f))/10.f," m/s");
++    return;
++    }
++  }
 +  if(!bladeMayHurt(n) || !h.wounds) {
 +    // задел постороннего или без силы - толкнул, но не ранил
 +    if(n.ragdoll!=nullptr && n.ragdoll->isSimulated() && n.ragdoll->state()==Ragdoll::S_Active)

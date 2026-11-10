@@ -198,6 +198,8 @@ struct Fighter {
         BladeWork::Body body;
         body.sk = &foe->a.sk; body.bones = foe->a.disp.data(); body.count = foe->a.disp.size();
         BladeWork::BodyHit h;
+        Vec3  nearG;
+        float uG = 0;
         if(BladeWork::hitBody(sw,body,h)) {
           const bool armPart = (h.part==BladeWork::BP_Forearm || h.part==BladeWork::BP_Hand || h.part==BladeWork::BP_UpperArm);
           if(weapon==FightBody::W_Fist && armPart && foe->fb.blocking()) {
@@ -209,7 +211,28 @@ struct Fighter {
             std::snprintf(buf,sizeof(buf),"блок: кулак в предплечья, %.0f м/с",double(h.speed));
             log.push_back(buf);
             }
+          else if(weapon!=FightBody::W_Fist && foe->fb.blocking() && foe->weapon!=FightBody::W_Fist &&
+                  BladeWork::parryCatches(h,foe->bladeNow(),nearG,uG)) {
+            // клинок дошёл до тела, но защищающийся в блоке и его клинок рядом: принял на клинок или гарду
+            BladeWork::BladeHit bh;
+            bh.at = nearG; bh.vel = h.vel; bh.u = h.u; bh.uOther = uG; bh.speed = h.speed;
+            const float kick = BladeWork::parryKick(bh,uint8_t(weapon),uint8_t(foe->weapon));
+            if(a.r) { a.r->softenGrip(0.16f); a.r->nudge(org(a.disp[rig->handBone(1)]), h.dir*(-0.25f*h.speed)); }
+            foe->a.r->softenGrip(0.14f);
+            foe->a.r->nudge(org(foe->a.disp[foe->rig->handBone(1)]), h.dir*kick);
+            fb.impact(FightBody::I_Blocked);
+            blocks++;
+            fx.push_back({nearG,'y'});
+            std::snprintf(buf,sizeof(buf),"блок в последний миг: принял на клинок (%.0f%% от гарды), %.0f м/с",double(uG*100.f),double(h.speed));
+            log.push_back(buf);
+            }
           else if(h.wounds) {
+            if(std::getenv("PARRYTRACE") && foe->fb.blocking()) {
+              Vec3 nG; float uu = 0;
+              BladeWork::parryCatches(h,foe->bladeNow(),nG,uu);
+              std::printf("  parry missed: hit %s at u=%.2f, guard blade nearest %.0f cm (u=%.2f)\n",BladeWork::partTitle(h.part),
+                          double(h.u),double((h.at-nG).length()),double(uu));
+              }
             const float k    = (beat==id ? keep : 1.f);
             const float loss = dmg*h.damageMul()*k;
             foe->hp = std::max(0.f, foe->hp-loss);

@@ -236,6 +236,17 @@ inline int run(const std::string& name, const Skeleton& hum, bench::Recorder* re
       } else {
       B.a.tick();
       }
+    if(std::getenv("LABTRACE")) {
+      // клинок A по ходу: остриё тела и цели, скорость острия
+      static Vec3 prevTip, prevGoal;
+      Vec3 b0, b1, g0, g1;
+      A.blade(b0,b1); A.blade(g0,g1,true);
+      const float v = (b1-prevTip).length()/dts*0.01f, vg = (g1-prevGoal).length()/dts*0.01f;
+      if(v>45.f || vg>45.f)
+        std::printf("  t=%.3f move %d stage %d tip (%.0f %.0f %.0f) v %.0f m/s | goal tip (%.0f %.0f %.0f) v %.0f m/s\n",double(t),int(A.clock.move),A.clock.stage,
+                    double(b1.x),double(b1.y),double(b1.z),double(v),double(g1.x),double(g1.y),double(g1.z),double(vg));
+      prevTip = b1; prevGoal = g1;
+      }
     A.sweep();
     if(!refAnim)
       B.sweep();
