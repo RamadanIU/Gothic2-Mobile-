@@ -135,8 +135,10 @@ inline int run(const std::string& name, const Skeleton& hum, bench::Recorder* re
     sa = {{0.8f,FightBody::M_Parade,1,0.6f,-1}, {1.8f,FightBody::M_Parade,1,0.6f,-1}, {3.3f,FightBody::M_Parade,1,0.7f,-1}};
     }
   else if(name=="duel1h") {
-    sa = {{0.6f,FightBody::M_Attack,2,SL,ST}, {3.5f,FightBody::M_Parade,1,0.6f,-1}, {4.6f,FightBody::M_AttackR,1,1.2f,0.32f}};
-    sb = {{0.65f,FightBody::M_Parade,1,0.6f,-1}, {2.9f,FightBody::M_Attack,1,SL,ST}, {3.5f+0.55f,FightBody::M_AttackL,1,1.2f,0.32f}};
+    sa = {{0.6f,FightBody::M_Attack,2,SL,ST}, {2.95f,FightBody::M_Parade,1,0.6f,-1}, {4.15f,FightBody::M_Parade,1,0.6f,-1},
+          {5.3f,FightBody::M_AttackR,1,1.2f,0.32f}};
+    sb = {{0.65f,FightBody::M_Parade,1,0.6f,-1}, {2.9f,FightBody::M_Attack,1,SL,ST}, {4.05f,FightBody::M_AttackL,1,1.2f,0.32f},
+          {5.35f,FightBody::M_Parade,1,0.6f,-1}};
     }
   else if(name=="run1h") {
     dist = 560; B.a.at = Vec3(0,0,dist);

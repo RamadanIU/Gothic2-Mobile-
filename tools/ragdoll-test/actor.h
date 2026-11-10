@@ -54,6 +54,12 @@ inline void aim(const Skeleton& sk, std::vector<Matrix4x4>& w, const char* name,
   const size_t b = bone(sk,name), c = bone(sk,childName);
   if(b==size_t(-1) || c==size_t(-1))
     return;
+  // направления заданы для скелета, у которого левые кости - по +x; у настоящего (левая тройка Gothic) - зеркально
+  {
+  const size_t l = bone(sk,"BIP01 L THIGH"), r = bone(sk,"BIP01 R THIGH");
+  if(l!=size_t(-1) && r!=size_t(-1) && org(refPose(sk)[l]).x<org(refPose(sk)[r]).x)
+    want.x = -want.x;
+  }
   const Vec3 at  = org(w[b]);
   const Vec3 cur = org(w[c])-at;
   Matrix4x4 tmp = Matrix4x4::mkIdentity();
