@@ -49,6 +49,7 @@ struct Result {
   int   hits[2] = {}, blocks[2] = {};
   bool  fell    = false;
   float lagMax  = 0;   // см: кисть куклы от цели в окне удара
+  float stoodAt = -1;  // с от потери сознания до «встал» (<0 - не вставал)
   };
 
 struct Scene {
@@ -70,6 +71,8 @@ inline const std::vector<Scene>& scenes() {
     {"parry2h",    "Двуручный меч", "Блок двуручным мечом", "", 5.f},
     {"fists",      "Кулаки", "Кулаки: прямой, прямой, боковой", "", 5.f},
     {"fistblock",  "Кулаки", "Кулаки: защита", "", 4.5f},
+    {"knockout",   "Потеря сознания и подъём", "Серия до потери сознания, подъём", "Синий получает удары, пока не потеряет сознание, падает, лежит и встаёт сам.", 14.f},
+    {"knockfists", "Потеря сознания и подъём", "Нокаут кулаками, подъём", "", 12.f},
     };
   return s;
   }
@@ -151,6 +154,16 @@ inline int run(const std::string& name, const Skeleton& hum, bench::Recorder* re
     sb = {{0.8f,FightBody::M_Attack,2,1.25f,0.40f}};
     sa = {{0.9f,FightBody::M_Parade,1,0.7f,-1}, {2.15f,FightBody::M_Parade,1,0.7f,-1}};
     }
+  else if(name=="knockout") {
+    sa = {{0.7f,FightBody::M_Attack,4,SL,ST}};
+    B.hp = 0.16f;
+    }
+  else if(name=="knockfists") {
+    arm(FightBody::W_Fist,0);
+    dist = 100; B.a.at = Vec3(0,0,dist);
+    sa = {{0.7f,FightBody::M_Attack,3,0.75f,0.2f}};
+    B.hp = 0.25f;
+    }
   else if(name=="fists") {
     arm(FightBody::W_Fist,0);
     dist = 100; B.a.at = Vec3(0,0,dist);
@@ -207,6 +220,34 @@ inline int run(const std::string& name, const Skeleton& hum, bench::Recorder* re
     A.sweep();
     if(!refAnim)
       B.sweep();
+    // здоровье кончилось - потеря сознания: тело падает куклой (как Npc::onNoHealth -> startRagdoll), удар - последний;
+    // через 3 с после того, как легло, встаёт само (как Npc::ragdollGetUp -> startRagdollRise)
+    for(auto* f:{&A,&B}) {
+      if(f->hp<=0.f && !f->down && f->a.r) {
+        f->down   = true;
+        f->downAt = t;
+        const auto& h = f->foe->lastHit;
+        f->a.throesLife = -1;
+        f->a.kill(h.at, h.dir, h.power, Ragdoll::H_Melee, Ragdoll::S_Unconscious);
+        f->a.proc = nullptr;
+        if(rec!=nullptr)
+          rec->event(t,"note",h.at,std::string(f==&A ? "A" : "B")+": потерял сознание",f==&A ? 0 : 1);
+        }
+      if(f->down && !f->rising && f->a.r && t-f->downAt>1.2f && (f->a.r->isResting() || t-f->downAt>4.f) && t-f->downAt>3.0f) {
+        f->rising = f->a.r->startRise(1.f);
+        if(rec!=nullptr)
+          rec->event(t,"note",f->a.r->rootPosition(),std::string(f==&A ? "A" : "B")+(f->rising ? ": встаёт" : ": не может встать"),f==&A ? 0 : 1);
+        if(!f->rising)
+          f->downAt = t;
+        }
+      if(f->rising && f->a.recovered && !f->stood) {
+        f->stood = true;
+        if(rec!=nullptr)
+          rec->event(t,"note",f->a.at+Vec3(0,100,0),std::string(f==&A ? "A" : "B")+(f->a.riseResult>0 ? ": встал" : ": не встал сам"),f==&A ? 0 : 1);
+        if(res!=nullptr)
+          res->stoodAt = t-f->downAt;
+        }
+      }
     if(res!=nullptr) {
       if((A.a.r && A.a.r->state()==Ragdoll::S_Fall) || (B.a.r && B.a.r->state()==Ragdoll::S_Fall))
         res->fell = true;
@@ -253,7 +294,7 @@ inline int run(const std::string& name, const Skeleton& hum, bench::Recorder* re
         rec->blade(who,h,b1);
         }
       for(; fg->recLog<fg->fx.size(); ++fg->recLog)
-        rec->event(t, fg->fx[fg->recLog].second=='y' ? "block" : "hit", fg->fx[fg->recLog].first,
+        rec->event(t, fg->fx[fg->recLog].second=='y' ? "block" : (fg->fx[fg->recLog].second=='o' ? "note" : "hit"), fg->fx[fg->recLog].first,
                    std::string(who==0 ? "A: " : "B: ") + (fg->recLog<fg->log.size() ? fg->log[fg->recLog] : ""), who);
       ++who;
       }

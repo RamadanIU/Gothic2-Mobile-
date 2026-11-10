@@ -12,11 +12,13 @@ const path = require('path');
   await page.waitForFunction(() => window.lab && window.THREE);
   const info = await page.evaluate(n => window.lab.info(n), scene);
   const t0 = t0s !== undefined && t0s !== '-' ? Number(t0s) : info.t0, t1 = t1s !== undefined && t1s !== '-' ? Number(t1s) : info.t1;
-  const n = Number(ns || 12);
+  // SHOT_TIMES="0.8,0.9,1.0" - свои моменты вместо равных шагов
+  const list = process.env.SHOT_TIMES ? process.env.SHOT_TIMES.split(',').map(Number) : null;
+  const n = list ? list.length : Number(ns || 12);
   const files = [];
   for (let i = 0; i < n; i++) {
-    const t = n > 1 ? t0 + (t1 - t0) * i / (n - 1) : t0;
-    await page.evaluate(([s, tt, c, g]) => window.lab.set(s, tt, c, { ghost: g, bare: true }), [scene, t, cam || 'q', ghost === 'ghost']);
+    const t = list ? list[i] : (n > 1 ? t0 + (t1 - t0) * i / (n - 1) : t0);
+    await page.evaluate(([s, tt, c, g, nl]) => window.lab.set(s, tt, c, { ghost: g, bare: true, nolog: nl }), [scene, t, cam || 'q', ghost === 'ghost', !!process.env.SHOT_NOLOG]);
     await page.waitForTimeout(30);
     const f = out.replace(/\.png$/, '') + '_' + String(i).padStart(2, '0') + '.png';
     await page.screenshot({ path: f });

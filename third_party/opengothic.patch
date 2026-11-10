@@ -5151,6 +5151,510 @@ index 0000000..1143a26
 +      }
 +  return 0;
 +  }
+diff --git a/common/game/bladework.cpp b/common/game/bladework.cpp
+new file mode 100644
+index 0000000..bc07ab0
+--- /dev/null
++++ b/common/game/bladework.cpp
+@@ -0,0 +1,355 @@
++#include "bladework.h"
++
++#include "graphics/mesh/skeleton.h"
++#include "physics/ragdoll.h"
++
++#include <algorithm>
++#include <cctype>
++#include <cmath>
++#include <string>
++
++using namespace Tempest;
++
++// Gothic II Mobile: удар клинком в бою телом (bladework.h)
++
++namespace {
++
++Vec3 lerp(const Vec3& a, const Vec3& b, float u) {
++  return a + (b-a)*u;
++  }
++
++Vec3 originOf(const Matrix4x4& m) {
++  return Vec3(m.at(3,0),m.at(3,1),m.at(3,2));
++  }
++
++Vec3 axisOf(const Matrix4x4& m, int c) {
++  const Vec3 v = Vec3(m.at(c,0),m.at(c,1),m.at(c,2));
++  const float l = v.length();
++  return l>1e-6f ? v/l : v;
++  }
++
++std::string upperName(std::string_view s) {
++  std::string n(s);
++  for(auto& c:n)
++    c = char(std::toupper(static_cast<unsigned char>(c)));
++  return n;
++  }
++
++bool has(const std::string& s, const char* what) {
++  return s.find(what)!=std::string::npos;
++  }
++
++size_t findBone(const Skeleton& sk, const char* what) {
++  for(size_t i=0; i<sk.nodes.size(); ++i)
++    if(upperName(sk.nodes[i].name)==what)
++      return i;
++  return size_t(-1);
++  }
++
++// Ближайшие точки двух отрезков: расстояние, доли s и t
++float segDist(const Vec3& p1, const Vec3& q1, const Vec3& p2, const Vec3& q2, float& s, float& t) {
++  const Vec3  d1 = q1-p1, d2 = q2-p2, r = p1-p2;
++  const float a  = Vec3::dotProduct(d1,d1), e = Vec3::dotProduct(d2,d2), f = Vec3::dotProduct(d2,r);
++  s = 0; t = 0;
++  if(a<1e-6f && e<1e-6f)
++    return (p1-p2).length();
++  if(a<1e-6f) {
++    t = std::clamp(f/e,0.f,1.f);
++    } else {
++    const float c = Vec3::dotProduct(d1,r);
++    if(e<1e-6f) {
++      s = std::clamp(-c/a,0.f,1.f);
++      } else {
++      const float b = Vec3::dotProduct(d1,d2), den = a*e-b*b;
++      s = den>1e-6f ? std::clamp((b*f-c*e)/den,0.f,1.f) : 0.f;
++      t = (b*s+f)/e;
++      if(t<0.f) {
++        t = 0;
++        s = std::clamp(-c/a,0.f,1.f);
++        } else if(t>1.f) {
++        t = 1;
++        s = std::clamp((b-c)/a,0.f,1.f);
++        }
++      }
++    }
++  return ((p1+d1*s)-(p2+d2*t)).length();
++  }
++
++// Часть тела по кости, в которую попали, и точке попадания
++uint8_t partOf(const BladeWork::Body& b, size_t bone, uint8_t zone, const Vec3& at) {
++  using namespace BladeWork;
++  if(b.sk==nullptr || bone>=b.sk->nodes.size() || bone>=b.count)
++    return zone==Ragdoll::Z_Head ? BP_Head : (zone==Ragdoll::Z_Legs ? BP_Thigh : (zone==Ragdoll::Z_Arms ? BP_Forearm : BP_Chest));
++  const std::string nm = upperName(b.sk->nodes[bone].name);
++  if(has(nm,"HEAD")) {
++    // низ головы - шея
++    const float h = Vec3::dotProduct(at-originOf(b.bones[bone]), axisOf(b.bones[bone],0));
++    return h<2.5f ? BP_Neck : BP_Head;
++    }
++  if(has(nm,"NECK"))
++    return BP_Neck;
++  if(has(nm,"UPPERARM") || has(nm,"CLAVICLE"))
++    return BP_UpperArm;
++  if(has(nm,"FOREARM"))
++    return BP_Forearm;
++  if(has(nm,"HAND") || has(nm,"FINGER"))
++    return BP_Hand;
++  if(has(nm,"THIGH"))
++    return BP_Thigh;
++  if(has(nm,"CALF"))
++    return BP_Shin;
++  if(has(nm,"FOOT") || has(nm,"TOE"))
++    return BP_Foot;
++  if(has(nm,"SPINE") || has(nm,"PELVIS")) {
++    // у основания шеи (над плечами) - шея; верхний позвонок - грудь, ниже - живот
++    const size_t neck = findBone(*b.sk,"BIP01 NECK");
++    if(neck<b.count && (at-originOf(b.bones[neck])).length()<9.f)
++      return BP_Neck;
++    bool top = has(nm,"SPINE");
++    if(top)
++      for(size_t i=0; i<b.sk->nodes.size(); ++i)
++        if(b.sk->nodes[i].parent==bone && has(upperName(b.sk->nodes[i].name),"SPINE"))
++          top = false;
++    return top ? BP_Chest : BP_Belly;
++    }
++  return zone==Ragdoll::Z_Head ? BP_Head : (zone==Ragdoll::Z_Legs ? BP_Thigh : (zone==Ragdoll::Z_Arms ? BP_Forearm : BP_Chest));
++  }
++
++// скорость удара, при которой он считается ударом в полную силу, м/с
++float refSpeed(uint8_t weapon, uint8_t kind) {
++  using namespace BladeWork;
++  if(kind==HK_Thrust)
++    return weapon==W_2H ? 5.5f : 6.5f;
++  switch(weapon) {
++    case W_Fist: return 11.f;
++    case W_2H:   return 22.f;
++    default:     return 20.f;
++    }
++  }
++
++// медленнее этого клинок не ранит, м/с
++float minSpeed(uint8_t kind) {
++  using namespace BladeWork;
++  switch(kind) {
++    case HK_Thrust: return 2.5f;
++    case HK_Punch:  return 3.f;
++    case HK_Slice:  return 5.f;
++    default:        return 4.f;
++    }
++  }
++
++}
++
++uint8_t BladeWork::bladePart(float u, uint8_t weapon) {
++  if(weapon==W_Fist)
++    return BL_Fist;
++  if(u<0.12f)
++    return BL_Hilt;
++  if(u<0.42f)
++    return BL_Forte;
++  if(u<0.86f)
++    return BL_Edge;
++  return BL_Tip;
++  }
++
++float BladeWork::bladeMul(float u, uint8_t kind, uint8_t weapon) {
++  if(weapon==W_Fist)
++    return 1.f;
++  if(kind==HK_Thrust)
++    return 1.1f;
++  if(u<0.12f)
++    return 0.3f;                              // гарда, рукоять
++  if(u<0.42f)
++    return 0.6f + 0.25f*(u-0.12f)/0.30f;      // сильная часть: рычаг короткий, скорость мала
++  if(u<0.62f)
++    return 0.85f + 0.15f*(u-0.42f)/0.20f;
++  if(u<0.80f)
++    return 1.f;                               // ударная часть
++  if(u<0.90f)
++    return 1.f - 0.25f*(u-0.80f)/0.10f;
++  return 0.75f;                               // самый конец: порез неглубокий
++  }
++
++float BladeWork::partMul(uint8_t part) {
++  switch(part) {
++    case BP_Head:     return 2.f;
++    case BP_Neck:     return 2.f;
++    case BP_Chest:    return 1.f;
++    case BP_Belly:    return 1.f;
++    case BP_UpperArm: return 0.6f;
++    case BP_Forearm:  return 0.5f;
++    case BP_Hand:     return 0.4f;
++    case BP_Thigh:    return 0.8f;
++    case BP_Shin:     return 0.65f;
++    case BP_Foot:     return 0.5f;
++    }
++  return 1.f;
++  }
++
++const char* BladeWork::partName(uint8_t part) {
++  static const char* n[] = {"chest","belly","head","neck","upper arm","forearm","hand","thigh","shin","foot"};
++  return part<10 ? n[part] : "body";
++  }
++
++const char* BladeWork::partTitle(uint8_t part) {
++  static const char* n[] = {"грудь","живот","голова","шея","плечо","предплечье","кисть","бедро","голень","стопа"};
++  return part<10 ? n[part] : "тело";
++  }
++
++const char* BladeWork::bladeName(uint8_t blade) {
++  static const char* n[] = {"hilt","forte","edge","tip","fist"};
++  return blade<5 ? n[blade] : "blade";
++  }
++
++const char* BladeWork::bladeTitle(uint8_t blade) {
++  static const char* n[] = {"гардой","сильной частью клинка","ударной частью клинка","концом клинка","кулаком"};
++  return blade<5 ? n[blade] : "клинком";
++  }
++
++const char* BladeWork::kindName(uint8_t kind) {
++  static const char* n[] = {"cut","thrust","slice","punch","touch"};
++  return kind<5 ? n[kind] : "hit";
++  }
++
++const char* BladeWork::kindTitle(uint8_t kind) {
++  static const char* n[] = {"рубящий","укол","порез","удар кулаком","касание"};
++  return kind<5 ? n[kind] : "удар";
++  }
++
++bool BladeWork::hitBody(const Sweep& s, const Body& b, BodyHit& out) {
++  if(b.sk==nullptr || b.bones==nullptr || b.count==0 || s.dt<=1e-5f)
++    return false;
++  const bool  fist = (s.to.weapon==W_Fist);
++  // шаги по пути кадра: остриё за шаг - не дальше 8 см (иначе тонкая рука окажется между положениями клинка)
++  const float travel = std::max((s.to.tip-s.from.tip).length(), (s.to.grip-s.from.grip).length());
++  const int   N      = std::clamp(int(std::ceil(travel/8.f)), 2, 12);
++  const int   M      = fist ? 3 : 10;
++  const float k0     = fist ? 0.f : 0.06f;
++  for(int i=1; i<=N; ++i) {
++    const float u0 = float(i-1)/float(N), u1 = float(i)/float(N);
++    const Vec3  g0 = lerp(s.from.grip,s.to.grip,u0), t0 = lerp(s.from.tip,s.to.tip,u0);
++    const Vec3  g1 = lerp(s.from.grip,s.to.grip,u1), t1 = lerp(s.from.tip,s.to.tip,u1);
++    bool            found = false;
++    Ragdoll::RayHit best;
++    Vec3            bv;
++    float           bk = 0;
++    for(int j=0; j<M; ++j) {
++      const float k  = k0 + (1.f-k0)*float(j)/float(M-1);
++      const Vec3  q0 = lerp(g0,t0,k), q1 = lerp(g1,t1,k);
++      const Vec3  d  = q1-q0;
++      if(d.length()<0.05f)
++        continue;
++      Ragdoll::RayHit rh;
++      if(!Ragdoll::rayTest(*b.sk, b.bones, b.count, q0, q1+d*0.2f, rh))
++        continue;
++      if(!found || rh.t<best.t) {
++        found = true;
++        best  = rh;
++        bv    = d*(float(N)/s.dt);
++        bk    = k;
++        }
++      }
++    if(!found)
++      continue;
++    const Vec3  axis = (t1-g1).length()>1e-3f ? Vec3::normalize(t1-g1) : Vec3(0,0,1);
++    const float sp   = bv.length();
++    const float par  = Vec3::dotProduct(bv,axis);
++    const float perp = (bv-axis*par).length();
++    out = BodyHit();
++    out.at    = best.at;
++    out.vel   = bv;
++    out.dir   = sp>1e-3f ? bv/sp : axis;
++    out.bone  = best.bone;
++    out.zone  = best.zone;
++    out.part  = partOf(b,best.bone,best.zone,best.at);
++    out.u     = bk;
++    out.blade = bladePart(bk,s.to.weapon);
++    float eff = 0;
++    if(fist) {
++      out.kind = HK_Punch;
++      eff      = sp;
++      }
++    else if(bk>=0.8f && par>0.7f*sp) {
++      out.kind = HK_Thrust;
++      eff      = par;
++      }
++    else if(perp>=0.5f*sp) {
++      out.kind = HK_Cut;
++      eff      = perp;
++      }
++    else {
++      out.kind = HK_Slice;
++      eff      = 0.5f*sp;
++      }
++    out.speed    = eff*0.01f;
++    out.wounds   = out.speed>=minSpeed(out.kind);
++    if(!out.wounds)
++      out.kind = HK_Touch;
++    out.mulPart  = partMul(out.part);
++    out.mulBlade = bladeMul(bk,out.kind,s.to.weapon);
++    out.mulSpeed = std::clamp(0.45f + 0.55f*out.speed/refSpeed(s.to.weapon,out.kind), 0.5f, 1.15f);
++    // толчок: по скорости и весу оружия; гардой и самым концом - слабее
++    {
++    float p = std::clamp(0.2f*out.speed + 0.8f, 1.f, 4.2f);
++    if(s.to.weapon==W_2H)
++      p *= 1.25f;
++    if(fist)
++      p *= 0.75f;
++    if(out.kind==HK_Thrust)
++      p *= 0.8f; // укол входит, а не толкает
++    out.power = p*(0.7f + 0.3f*out.mulBlade);
++    if(!out.wounds)
++      out.power = std::min(out.power, 1.f);
++    }
++    return true;
++    }
++  return false;
++  }
++
++bool BladeWork::hitBlade(const Sweep& s, const Sweep& other, BladeHit& out) {
++  if(s.to.weapon==W_Fist || other.to.weapon==W_Fist || s.dt<=1e-5f)
++    return false;
++  const float travel = std::max((s.to.tip-s.from.tip).length(), (other.to.tip-other.from.tip).length());
++  const int   N      = std::clamp(int(std::ceil(travel/6.f)), 2, 14);
++  const float k0     = 0.06f;
++  for(int i=1; i<=N; ++i) {
++    const float u  = float(i)/float(N);
++    const Vec3  g  = lerp(s.from.grip,s.to.grip,u),         t  = lerp(s.from.tip,s.to.tip,u);
++    const Vec3  og = lerp(other.from.grip,other.to.grip,u), ot = lerp(other.from.tip,other.to.tip,u);
++    float a = 0, c = 0;
++    const float d = segDist(lerp(g,t,k0),t, og,ot, a,c);
++    if(d>=s.to.radius+other.to.radius+1.f)
++      continue;
++    const float k = k0 + (1.f-k0)*a;
++    out = BladeHit();
++    out.at     = (lerp(g,t,k)+lerp(og,ot,c))*0.5f;
++    out.u      = k;
++    out.uOther = c;
++    const Vec3 v  = (lerp(s.to.grip,s.to.tip,k)-lerp(s.from.grip,s.from.tip,k))/s.dt;
++    const Vec3 vo = (lerp(other.to.grip,other.to.tip,c)-lerp(other.from.grip,other.from.tip,c))/std::max(other.dt,1e-4f);
++    out.vel    = v;
++    out.speed  = (v-vo).length()*0.01f;
++    return true;
++    }
++  return false;
++  }
++
++float BladeWork::parryKick(const BladeHit& h, uint8_t attacker, uint8_t defender) {
++  const float base  = std::clamp(h.speed/15.f, 0.3f, 1.5f);
++  const float lever = 0.6f + 0.9f*std::clamp(h.uOther,0.f,1.f);
++  float       w     = 1.f;
++  if(attacker==W_2H)
++    w *= 1.5f;
++  if(defender==W_2H)
++    w /= 1.3f;
++  return 1.8f*base*lever*w;
++  }
++
++float BladeWork::beatKeep(const BladeHit& h, uint8_t attacker, uint8_t defender) {
++  float k = 0.75f - 0.25f*(1.f-std::clamp(h.uOther,0.f,1.f));
++  if(defender==W_2H)
++    k -= 0.15f;
++  if(attacker==W_2H)
++    k += 0.1f;
++  return std::clamp(k, 0.4f, 0.9f);
++  }
+diff --git a/common/game/bladework.h b/common/game/bladework.h
+new file mode 100644
+index 0000000..8840c75
+--- /dev/null
++++ b/common/game/bladework.h
+@@ -0,0 +1,137 @@
++#pragma once
++
++#include <Tempest/Matrix4x4>
++#include <Tempest/Vec>
++
++#include <cstddef>
++#include <cstdint>
++
++class Skeleton;
++
++// Gothic II Mobile: удар клинком в бою телом - что задел клинок куклы за кадр и что из этого вышло. Один код для
++// игры (Npc::tickBlade) и стенда (tools/ragdoll-test): клинок - отрезок от хвата до острия со своей толщиной, за
++// кадр он проходит путь от прошлого положения к нынешнему.
++//
++// Что учитывается:
++//  - размер оружия: длина клинка (по модели оружия), оружие (кулак, одноручное, двуручное);
++//  - каким местом клинок задел (доля длины от хвата): рукоять и гарда не рубят, сильная часть у гарды бьёт слабо
++//    (она для блока), ударная часть (две трети длины) рубит в полную силу, самый конец режет неглубоко, но колет
++//    остриём сильнее всего;
++//  - с какой скоростью шла именно эта точка клинка (у острия она больше, чем у гарды) и как: поперёк клинка -
++//    рубящий удар, вдоль клинка остриём вперёд - укол, вдоль клинка плашмя (протяжка) - слабый порез; медленный
++//    клинок не ранит, только толкает;
++//  - куда попал: голова и шея, грудь, живот, плечо, предплечье, кисть, бедро, голень, стопа - у каждой части свой
++//    множитель урона (голова x2, корпус x1, руки x0,5, ноги x0,75 - как просил игрок, с уточнением по частям);
++//  - клинок о клинок: противник в блоке - удар остановлен (чем ближе к гарде блокирующего пришёлся удар, тем
++//    крепче блок и слабее отдача в его руку; двуручник пробивает руку сильнее); не в блоке - клинок противника
++//    сбит в сторону, удар теряет часть силы и идёт дальше.
++// Урон считает игра по своей формуле (сила, оружие, защита, умение), модуль даёт множитель по месту и качеству
++// удара и силу толчка для тела задетого (Ragdoll::Hit::power).
++namespace BladeWork {
++
++enum Weapon : uint8_t { // как FightBody::Weapon
++  W_Fist = 0,
++  W_1H   = 1,
++  W_2H   = 2,
++  };
++
++// Часть тела, куда пришёлся удар
++enum BodyPart : uint8_t {
++  BP_Chest    = 0,
++  BP_Belly    = 1,
++  BP_Head     = 2,
++  BP_Neck     = 3,
++  BP_UpperArm = 4,
++  BP_Forearm  = 5,
++  BP_Hand     = 6,
++  BP_Thigh    = 7,
++  BP_Shin     = 8,
++  BP_Foot     = 9,
++  };
++
++// Чем клинок задел
++enum BladePart : uint8_t {
++  BL_Hilt   = 0, // рукоять и гарда
++  BL_Forte  = 1, // сильная часть (у гарды)
++  BL_Edge   = 2, // ударная часть
++  BL_Tip    = 3, // конец клинка
++  BL_Fist   = 4,
++  };
++
++enum HitKind : uint8_t {
++  HK_Cut    = 0, // рубящий
++  HK_Thrust = 1, // укол
++  HK_Slice  = 2, // протяжка: клинок скользит вдоль себя
++  HK_Punch  = 3, // кулак
++  HK_Touch  = 4, // задел без силы
++  };
++
++struct Blade final {
++  Tempest::Vec3 grip   = {};   // хват, мир, см
++  Tempest::Vec3 tip    = {};   // остриё
++  float         radius = 3;    // см
++  uint8_t       weapon = W_1H;
++  };
++
++// Путь клинка за кадр: от from к to за dt секунд
++struct Sweep final {
++  Blade from, to;
++  float dt = 0.033f;
++  };
++
++// Тело противника в позе кадра: скелет и мировые матрицы всех костей
++struct Body final {
++  const Skeleton*           sk    = nullptr;
++  const Tempest::Matrix4x4* bones = nullptr;
++  size_t                    count = 0;
++  };
++
++struct BodyHit final {
++  Tempest::Vec3 at     = {};   // где клинок вошёл в тело, мир
++  Tempest::Vec3 vel    = {};   // скорость этой точки клинка, см/с
++  Tempest::Vec3 dir    = {};   // куда толкает удар (единичный)
++  size_t        bone   = size_t(-1);
++  uint8_t       zone   = 0;    // Ragdoll::Zone
++  uint8_t       part   = BP_Chest;
++  uint8_t       blade  = BL_Edge;
++  uint8_t       kind   = HK_Cut;
++  float         u      = 0;    // доля длины клинка от хвата
++  float         speed  = 0;    // м/с: скорость удара (поперёк клинка у рубящего, вдоль - у укола)
++  float         mulPart  = 1;  // множитель урона: часть тела
++  float         mulBlade = 1;  // чем задел
++  float         mulSpeed = 1;  // как сильно
++  float         power    = 0;  // м/с: толчок задетой части (Ragdoll::Hit::power)
++  bool          wounds   = false; // ранит (иначе - только толчок)
++  float         damageMul() const { return mulPart*mulBlade*mulSpeed; }
++  };
++
++struct BladeHit final {
++  Tempest::Vec3 at     = {};   // где клинки сошлись
++  Tempest::Vec3 vel    = {};   // скорость бьющего клинка в этой точке, см/с
++  float         u      = 0;    // место на бьющем клинке
++  float         uOther = 0;    // место на клинке противника (ближе к гарде - крепче блок)
++  float         speed  = 0;    // м/с
++  };
++
++// Клинок за кадр задел тело: первое касание по ходу клинка. false - мимо
++bool hitBody(const Sweep& s, const Body& b, BodyHit& out);
++
++// Клинок за кадр задел клинок противника (тот тоже двигался: other). false - мимо
++bool hitBlade(const Sweep& s, const Sweep& other, BladeHit& out);
++
++// Отдача в руку блокирующего, м/с: по скорости удара, оружию бьющего и защищающегося и месту на клинке защищающегося
++float parryKick(const BladeHit& h, uint8_t attacker, uint8_t defender);
++// Сколько скорости остаётся у удара, сбившего клинок, который не держал блок (0..1)
++float beatKeep(const BladeHit& h, uint8_t attacker, uint8_t defender);
++
++float       partMul(uint8_t part);
++float       bladeMul(float u, uint8_t kind, uint8_t weapon);
++uint8_t     bladePart(float u, uint8_t weapon);
++const char* partName(uint8_t part);      // для журнала (латиницей)
++const char* partTitle(uint8_t part);     // по-русски (площадка)
++const char* bladeName(uint8_t blade);
++const char* bladeTitle(uint8_t blade);
++const char* kindName(uint8_t kind);
++const char* kindTitle(uint8_t kind);
++
++}
 diff --git a/common/game/companions.cpp b/common/game/companions.cpp
 new file mode 100644
 index 0000000..09f7f4b
@@ -7037,10 +7541,10 @@ index b1d951f..8d5f5cd 100644
    if(hitFlg) {
 diff --git a/common/game/fightbody.cpp b/common/game/fightbody.cpp
 new file mode 100644
-index 0000000..f9711a0
+index 0000000..bc83443
 --- /dev/null
 +++ b/common/game/fightbody.cpp
-@@ -0,0 +1,1087 @@
+@@ -0,0 +1,1125 @@
 +#include "fightbody.h"
 +
 +#include "graphics/mesh/limbik.h"
@@ -7132,7 +7636,7 @@ index 0000000..f9711a0
 +  switch(w) {
 +    case FightBody::W_Fist: return 0.11f;
 +    case FightBody::W_1H:   return 0.16f;
-+    case FightBody::W_2H:   return 0.22f;
++    case FightBody::W_2H:   return 0.25f;
 +    }
 +  return 0.16f;
 +  }
@@ -7629,6 +8133,17 @@ index 0000000..f9711a0
 +  s.aimed = in.clock.t;
 +  }
 +
++void FightBody::impact(Impact kind) {
++  if(kind==I_None || strikeNo==0)
++    return;
++  if(impId==strikeNo && impKind!=I_Beat)
++    return; // удар уже упёрся
++  impKind = kind;
++  impId   = strikeNo;
++  impS    = lastS;
++  impT    = lastT;
++  }
++
 +bool FightBody::strikeAim(Vec3& at, Vec3& dir) const {
 +  if(!str.active)
 +    return false;
@@ -7655,7 +8170,7 @@ index 0000000..f9711a0
 +    ut = smooth((u-0.06f)/0.74f);
 +    ua = std::pow(sat((u-0.10f)/0.90f), 1.35f);
 +    ur = smooth((u-0.15f)/0.85f);
-+    ub = smooth((u-0.34f)/0.66f);
++    ub = smooth((u-0.18f)/0.82f);
 +    } else {
 +    const float u = sat(s-1.f);
 +    seg = 1;
@@ -7738,32 +8253,57 @@ index 0000000..f9711a0
 +  const float tr = std::min(tf + str.tRecover, std::max(b, tf+0.15f));
 +
 +  strikeNo = str.id;
++  lastT    = t;
 +  if(t<ws) {
 +    // замах: от позы начала стадии к замаху; цель ещё двигается - прицел каждый кадр
 +    aimStrike(rig,in,fr);
 +    strikePow = 0;
 +    strikeOn  = false;
++    lastS     = 0;
 +    const float u = (t-a0)/std::max(ws-a0,0.03f);
-+    // замах идёт с небольшим «перебором» назад перед самым разгоном
++    precise   = 0.35f + 0.65f*sat(u);
 +    return mix(stageKey, strikeKey(in,g,0.f), smooth(u));
 +    }
++  // где удар сейчас: 0..1 - разгон, 1..2 - проводка
++  float s = 2.f;
 +  if(t<o) {
 +    const float u = sat((t-ws)/std::max(o-ws,0.02f));
++    s = u;
 +    strikePow = sat(0.35f+0.65f*u);
 +    strikeOn  = (u>=0.3f);
-+    return strikeKey(in,g,u);
 +    }
-+  if(t<tf) {
++  else if(t<tf) {
 +    const float u = sat((t-o)/std::max(tf-o,0.02f));
++    s = 1.f+u;
 +    strikePow = std::max(0.f, 1.f-1.3f*u);
 +    strikeOn  = (u<=0.6f);
-+    return strikeKey(in,g,1.f+u);
++    }
++  else {
++    strikePow = 0;
++    strikeOn  = false;
++    }
++  // клинок встретил препятствие: в теле вязнет (проходит ещё треть оставшейся дуги и встаёт), от блока отскакивает
++  if(impId==str.id && impKind!=I_None && impKind!=I_Beat) {
++    const float dtI = std::max(t-impT, 0.f);
++    if(impKind==I_Body) {
++      const float end = impS + 0.3f*(2.f-impS);
++      s = std::min(s, impS + (end-impS)*(1.f-std::exp(-dtI/0.07f)));
++      }
++    else {
++      s = impS - 0.14f*std::sin(std::min(dtI/0.13f,1.f)*float(M_PI)*0.5f);
++      }
++    strikeOn  = false;
++    strikePow = 0;
++    }
++  lastS = s;
++  if(t<tf) {
++    precise = 1.f;
++    return strikeKey(in,g,std::max(s,0.f));
 +    }
 +  // возврат в стойку
-+  strikePow = 0;
-+  strikeOn  = false;
 +  const float u = sat((t-tf)/std::max(tr-tf,0.05f));
-+  return mix(strikeKey(in,g,2.f), g, smooth(u));
++  precise = 1.f - 0.75f*sat(u*2.f);
++  return mix(strikeKey(in,g,std::max(s,0.f)), g, smooth(u));
 +  }
 +
 +FightBody::Key FightBody::paradeKey(const BodyRig& rig, const Input& in, const Frame& fr) const {
@@ -8092,6 +8632,8 @@ index 0000000..f9711a0
 +      break;
 +    }
 +  blockW = (ck.move==M_Parade) ? std::min(1.f, blockW+dt/0.1f) : std::max(0.f, blockW-dt/0.15f);
++  if(!(ck.move==M_Attack || ck.move==M_AttackL || ck.move==M_AttackR || ck.move==M_AttackRun || ck.move==M_Finish))
++    precise = (ck.move==M_Parade) ? 0.9f : 0.25f;
 +
 +  // на ходу: корпус вперёд по скорости, таз ниже
 +  {
@@ -8130,10 +8672,10 @@ index 0000000..f9711a0
 +  }
 diff --git a/common/game/fightbody.h b/common/game/fightbody.h
 new file mode 100644
-index 0000000..30381e8
+index 0000000..54c0e6b
 --- /dev/null
 +++ b/common/game/fightbody.h
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,214 @@
 +#pragma once
 +
 +#include <Tempest/Vec>
@@ -8232,6 +8774,18 @@ index 0000000..30381e8
 +    bool          strikeAim(Tempest::Vec3& at, Tempest::Vec3& dir) const;
 +    // Блок поставлен (клинок в блоке, а не в стойке)
 +    bool          blocking()  const { return blockW>0.5f; }
++    // Клинок бьющего встретил препятствие (Npc::tickBlade, game/bladework.h): тело - клинок вязнет и проходит ещё
++    // немного (проводка обрывается); блок - клинок отскакивает назад; сбитый клинок противника - удар идёт дальше
++    enum Impact : uint8_t {
++      I_None    = 0,
++      I_Body    = 1,
++      I_Blocked = 2,
++      I_Beat    = 3,
++      };
++    void          impact(Impact kind);
++    // Насколько точно рука с оружием должна идти за позой (Ragdoll::setGripPrecision): удар и блок - точно, стойка и
++    // возврат - мягко
++    float         precision() const { return precise; }
 +    void          reset();
 +
 +    // Поза «стоит в бою» из нынешней позы тела (для начала): ступни - там, где стоят
@@ -8328,6 +8882,12 @@ index 0000000..30381e8
 +    float         bob       = 0;
 +    int           lastStep  = 1;
 +    float         life      = 0;    // с: время бойца (дыхание, покачивание)
++    float         lastS     = 0;    // где удар сейчас (0..1 - разгон, 1..2 - проводка) и время хода в этот миг
++    float         lastT     = 0;
++    float         precise   = 0;
++    Impact        impKind   = I_None;
++    uint32_t      impId     = 0;
++    float         impS      = 0, impT = 0;
 +    Tempest::Vec3 pelStep   = {};   // сдвиг таза к опорной ноге на шаге (система персонажа, см)
 +  };
 diff --git a/common/game/gamescript.cpp b/common/game/gamescript.cpp
@@ -23814,10 +24374,10 @@ index daa4a7d..455d40d 100644
  #include <BulletCollision/CollisionShapes/btBoxShape.h>
 diff --git a/common/physics/ragdoll.cpp b/common/physics/ragdoll.cpp
 new file mode 100644
-index 0000000..aab2e14
+index 0000000..abc93cd
 --- /dev/null
 +++ b/common/physics/ragdoll.cpp
-@@ -0,0 +1,6509 @@
+@@ -0,0 +1,6521 @@
 +#include "ragdoll.h"
 +
 +#include <Tempest/Log>
@@ -26619,11 +27179,14 @@ index 0000000..aab2e14
 +
 +void Ragdoll::driveGrip(float dt) {
 +  // Бой телом: руки бьют и ставят блок - быстро и точно (как у бойца: удар заучен), поэтому рука с оружием (у кулачного
-+  // боя - обе) идёт за целью хода почти как закреплённая часть: скорость, которая за 60 мс доводит часть до цели, с
-+  // долей по тонусу. Удар по руке роняет тонус - рука на миг обмякает и отлетает; клинок о клинок - отдача (nudge)
-+  // успевает показаться, прежде чем рука вернётся. Иначе лёгкая рука на быстром замахе отстаёт на десятки градусов, и
-+  // клинок смотрит не туда, куда бьёт
-+  constexpr float T = 0.06f;
++  // боя - обе) идёт за целью хода почти как закреплённая часть: скорость, которая за T доводит часть до цели, с
++  // долей по тонусу. В стойке T = 60 мс - рука мягкая, живая; в ударе и блоке (gripPrecise, FightBody::precision) -
++  // один шаг физики: клинок идёт точно по дуге удара. Раньше рука отставала на 70-100 мс при ударе в 160 мс - клинок
++  // срезал дугу и проходил перед противником. Удар по руке роняет тонус - рука на миг обмякает и отлетает; клинок
++  // встретил клинок или тело (softenGrip) - рука на 0,1-0,2 с снова мягкая: отдача и толчок успевают показаться
++  gripSoft = std::max(0.f, gripSoft-dt);
++  const float p = std::clamp(gripPrecise,0.f,1.f)*(1.f-std::clamp(gripSoft/0.1f,0.f,1.f));
++  const float T = std::max(dt, 0.06f + (dt-0.06f)*p);
 +  for(int a=0; a<2; ++a) {
 +    if(((gripHands>>a)&1)==0)
 +      continue;
@@ -26633,7 +27196,8 @@ index 0000000..aab2e14
 +      auto&              rb   = *body[i].rb;
 +      const auto&        d    = drive[i];
 +      const float        tone = toneOf(i);
-+      const float        k    = perStep(0.55f*tone*tone,dt);
++      const float        soft = perStep(0.55f*tone*tone,dt);
++      const float        k    = soft + (tone*tone-soft)*p;
 +      if(k<=0.f)
 +        continue;
 +      const btVector3    tp  = d.goal.getOrigin() + d.tLin*targetAge;
@@ -26645,6 +27209,14 @@ index 0000000..aab2e14
 +      rb.setAngularVelocity(rb.getAngularVelocity()+(wD-rb.getAngularVelocity())*k);
 +      }
 +    }
++  }
++
++void Ragdoll::setGripPrecision(float p) {
++  gripPrecise = p;
++  }
++
++void Ragdoll::softenGrip(float sec) {
++  gripSoft = std::max(gripSoft, sec);
 +  }
 +
 +void Ragdoll::setGripHands(uint8_t hands) {
@@ -30329,10 +30901,10 @@ index 0000000..aab2e14
 +  }
 diff --git a/common/physics/ragdoll.h b/common/physics/ragdoll.h
 new file mode 100644
-index 0000000..3e24352
+index 0000000..9abd5cd
 --- /dev/null
 +++ b/common/physics/ragdoll.h
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,490 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -30549,6 +31121,10 @@ index 0000000..3e24352
 +    void                  setCombat(bool on);
 +    // В бою: какие кисти держат оружие (бит 0 - левая, бит 1 - правая) - их ориентацию держит хват (driveGrip)
 +    void                  setGripHands(uint8_t hands);
++    // Насколько точно рука с оружием идёт за целью хода (0 - мягко, как в стойке; 1 - точно, как в заученном ударе;
++    // FightBody::precision) и «рука дрогнула»: клинок встретил клинок или тело - на sec секунд рука снова мягкая
++    void                  setGripPrecision(float p);
++    void                  softenGrip(float sec);
 +    bool                  isCombat() const { return fight; }
 +    // Толчок части тела у точки at (клинок о клинок, отдача удара в кисть): скорость dv, м/с - части и меньше её
 +    // родителю (рука тяжелее кисти)
@@ -30793,6 +31369,8 @@ index 0000000..3e24352
 +    bool                            balanceLost = false;
 +    bool                            fight       = false; // бой телом (setCombat)
 +    uint8_t                         gripHands   = 2;     // кисти с оружием (setGripHands)
++    float                           gripPrecise = 0;     // точность руки с оружием (setGripPrecision)
++    float                           gripSoft    = 0;     // с: рука ещё мягкая после встречи клинка (softenGrip)
 +    float                           targetAge   = 0; // с, с последней цели (setTarget): цель продолжается по скорости
 +    uint64_t                        airTime     = 0; // мс живой падает без опоры (машет руками)
 +    uint64_t                        groundTime  = 0; // мс живой лежит на земле после падения (корчится)

@@ -387,7 +387,7 @@ window.lab = {
     const s = SCENES.find(x => x.name === name); if (!s) return false;
     if (cur !== s) load(s);
     setPlaying(false); $('ghost').checked = !!(opts && opts.ghost); $('dbg').checked = !(opts && opts.nodbg);
-    $('bar').style.display = (opts && opts.bare) ? 'none' : ''; t = time; focus(true); setCam(cam || 'q', true); resize(); draw(); return true;
+    $('bar').style.display = (opts && opts.bare) ? 'none' : ''; $('log').style.display = (opts && opts.nolog) ? 'none' : ''; $('tags').style.display = (opts && opts.nolog) ? 'none' : ''; $('title').lastChild.style.display = (opts && opts.nolog) ? 'none' : ''; t = time; focus(true); setCam(cam || 'q', true); resize(); draw(); return true;
   },
 };
 </script>

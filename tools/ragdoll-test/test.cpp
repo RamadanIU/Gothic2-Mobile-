@@ -1878,7 +1878,7 @@ static int duelScene(const std::string& name, const char* out, DuelResult* res =
           gRec->blade(who,h,b1);
           }
         for(; fg->recLog<fg->fx.size(); ++fg->recLog)
-          gRec->event(t, fg->fx[fg->recLog].second=='y' ? "block" : "hit", fg->fx[fg->recLog].first,
+          gRec->event(t, fg->fx[fg->recLog].second=='y' ? "block" : (fg->fx[fg->recLog].second=='o' ? "note" : "hit"), fg->fx[fg->recLog].first,
                       std::string(who==0 ? "A: " : "B: ") + (fg->recLog<fg->log.size() ? fg->log[fg->recLog] : ""), who);
         ++who;
         }
