@@ -47,6 +47,7 @@ struct Fighter {
   int                 hits = 0, blocks = 0;
   std::vector<std::pair<Vec3,char>> fx; // вспышки: попадания (r), блоки (y)
   std::vector<std::string>          log;
+  size_t                            recLog = 0; // сколько событий уже отдано записи площадки
   float               dmg = 0.12f;
 
   Fighter(DynamicWorld& dw, const Skeleton& sk, Vec3 at, float rotY):a(dw,sk,at,rotY), yaw(rotY) {
@@ -61,10 +62,13 @@ struct Fighter {
   void blade(Vec3& b0, Vec3& b1, bool target = false) const {
     const auto& d = target ? a.anim : a.disp;
     if(weapon==FightBody::W_Fist) {
-      const size_t h = rig->handBone(1);
-      const size_t f = bone(a.sk,"BIP01 R FINGER1");
-      b0 = org(d[h]);
-      b1 = f!=size_t(-1) ? org(d[f]) : org(d[h]);
+      // как Npc::bladeSegment: от запястья по предплечью до костяшек
+      const size_t h  = rig->handBone(1);
+      const size_t el = a.sk.nodes[h].parent;
+      Vec3 dir = org(d[h])-org(d[el]);
+      dir = dir.length()>1.f ? Vec3::normalize(dir) : Vec3(0,0,1);
+      b0 = org(d[h]) - dir*4.f;
+      b1 = org(d[h]) + dir*9.f;
       return;
       }
     const size_t h  = rig->handBone(1), sl = rig->slotBone(1);
@@ -86,6 +90,7 @@ struct Fighter {
     in.fwd      = fwd();
     in.vel      = vel;
     in.bladeLen = bladeLen;
+    in.seed     = a.id*7919u;
     if(foe) {
       in.target = true;
       in.tChest = org(foe->a.disp[bone(a.sk,"BIP01 SPINE2")]);

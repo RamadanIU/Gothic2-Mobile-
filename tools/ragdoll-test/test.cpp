@@ -7,6 +7,8 @@
 #include "graphics/mesh/animmath.h"
 #include "game/rangedaim.h"
 #include "actor.h"
+#include "gothicskel.h"
+#include "rec.h"
 
 #include <zenkit/Mesh.hh>
 #include <chrono>
@@ -17,9 +19,13 @@
 #include <vector>
 
 using namespace Tempest;
+using bench::refPose;
 
 extern float waterLevel;
 extern bool  meshGround;
+
+// запись сцены для 3D-площадки (./ragtest rec <сцена> out.json)
+static bench::Recorder* gRec = nullptr;
 
 struct Bone { const char* name; int parent; Vec3 at; };
 
@@ -90,6 +96,13 @@ static std::vector<Bone> human() {
   return b;
   }
 
+// Человек стенда - настоящий скелет Gothic (gothicskel.h); OLDSKEL=1 - прежний самодельный (T-поза, оси по костям)
+static std::shared_ptr<Skeleton> mkHuman() {
+  if(std::getenv("OLDSKEL"))
+    return mkSkeleton(human(),"HUMANS.MDH");
+  return gothic::human();
+  }
+
 static std::vector<Bone> wolf() {
   std::vector<Bone> b = {
     {"BIP01",-1,{0,60,0}}, {"BIP01 PELVIS",0,{0,60,-30}}, {"BIP01 SPINE",1,{0,62,-20}}, {"BIP01 SPINE1",2,{0,63,0}},
@@ -114,9 +127,9 @@ struct Result {
 // сгиб колена/локтя: + в сторону, куда сгибается сустав (bend), относительно позы привязки
 static float flexOf(const Skeleton& sk, const std::vector<Matrix4x4>& w, size_t a, size_t b, size_t c, Vec3 bendObj) {
   // ось шарнира в системе кости a: cross(dP, bend) в позе привязки
-  const Vec3 dP0 = Vec3::normalize(org(sk.tr[b])-org(sk.tr[a]));
+  const Vec3 dP0 = Vec3::normalize(org(refPose(sk)[b])-org(refPose(sk)[a]));
   Vec3 ax0 = Vec3::normalize(Vec3::crossProduct(dP0,bendObj));
-  const auto& ra = sk.tr[a];
+  const auto& ra = refPose(sk)[a];
   Vec3 axL = Vec3(Vec3::dotProduct(Vec3::normalize(col(ra,0)),ax0),Vec3::dotProduct(Vec3::normalize(col(ra,1)),ax0),Vec3::dotProduct(Vec3::normalize(col(ra,2)),ax0));
   Vec3 axW = Vec3::normalize(col(w[a],0))*axL.x + Vec3::normalize(col(w[a],1))*axL.y + Vec3::normalize(col(w[a],2))*axL.z;
   Vec3 dP = Vec3::normalize(org(w[b])-org(w[a]));
@@ -126,11 +139,11 @@ static float flexOf(const Skeleton& sk, const std::vector<Matrix4x4>& w, size_t 
 
 static Result run(DynamicWorld& dw, const Skeleton& sk, const char* title, Vec3 lift, Vec3 vel, Ragdoll::Hit hit,
                   float seconds, bool human, int fps, Ragdoll::State st = Ragdoll::S_Dead) {
-  std::vector<Matrix4x4> bones(sk.tr.size());
+  std::vector<Matrix4x4> bones(refPose(sk).size());
   Matrix4x4 obj = Matrix4x4::mkIdentity();
   obj.translate(lift);
   for(size_t i=0;i<bones.size();++i)
-    bones[i] = obj*sk.tr[i];
+    bones[i] = obj*refPose(sk)[i];
   auto r = Ragdoll::create(dw,sk,bones.data(),bones.size(),st);
   Result res;
   if(!r) { std::printf("%s: create failed\n",title); res.ok=false; return res; }
@@ -142,7 +155,7 @@ static Result run(DynamicWorld& dw, const Skeleton& sk, const char* title, Vec3 
 
   const uint64_t dt = uint64_t(1000/fps);
   // все кости по иерархии: ведомые - из куклы, прочие - локально от родителя (поза привязки)
-  std::vector<Matrix4x4> w(sk.tr.size());
+  std::vector<Matrix4x4> w(refPose(sk).size());
   std::vector<Matrix4x4> prev;
   auto& drv = r->driven();
   for(float t=0; t<seconds; t+=float(dt)/1000.f) {
@@ -169,8 +182,8 @@ static Result run(DynamicWorld& dw, const Skeleton& sk, const char* title, Vec3 
             continue;
           if(drv[p]) { pb = p; break; }
           }
-      Matrix4x4 inv = sk.tr[pb]; inv.inverse();
-      Matrix4x4 pred = w[pb]*inv*sk.tr[i];
+      Matrix4x4 inv = refPose(sk)[pb]; inv.inverse();
+      Matrix4x4 pred = w[pb]*inv*refPose(sk)[i];
       float sep = (org(pred)-org(w[i])).length();
       res.maxSep = std::max(res.maxSep,sep);
       }
@@ -214,8 +227,8 @@ static zenkit::AnimationSample toSampleCopy(const Matrix4x4& m);
 
 // ---- активный регдолл: цель - поза привязки (T-поза), объект - сдвиг и поворот
 static std::vector<Matrix4x4> poseAt(const Skeleton& sk, const Matrix4x4& obj) {
-  std::vector<Matrix4x4> w(sk.tr.size());
-  for(size_t i=0;i<w.size();++i) w[i] = obj*sk.tr[i];
+  std::vector<Matrix4x4> w(refPose(sk).size());
+  for(size_t i=0;i<w.size();++i) w[i] = obj*refPose(sk)[i];
   return w;
   }
 
@@ -228,10 +241,10 @@ static Matrix4x4 objAt(Vec3 at, float rotY = 0) {
 
 // Поза с замахом правой рукой: плечо и всё ниже поворачиваются вокруг плечевого сустава (вверх-вниз), рад
 static std::vector<Matrix4x4> poseSwing(const Skeleton& sk, const Matrix4x4& obj, float angle) {
-  std::vector<Matrix4x4> w(sk.tr.size());
+  std::vector<Matrix4x4> w(refPose(sk).size());
   size_t arm = 0;
   for(size_t i=0;i<sk.nodes.size();++i) if(sk.nodes[i].name=="BIP01 R UPPERARM") arm = i;
-  const Vec3 sh = org(sk.tr[arm]);
+  const Vec3 sh = org(refPose(sk)[arm]);
   Matrix4x4 rot = Matrix4x4::mkIdentity();
   rot.translate(sh);
   rot.rotate(angle*180.f/float(M_PI), 0, 0, 1);
@@ -239,7 +252,7 @@ static std::vector<Matrix4x4> poseSwing(const Skeleton& sk, const Matrix4x4& obj
   for(size_t i=0;i<w.size();++i) {
     bool sub = false;
     for(size_t p=i; p<sk.nodes.size(); p=sk.nodes[p].parent) if(p==arm) { sub = true; break; }
-    w[i] = sub ? obj*rot*sk.tr[i] : obj*sk.tr[i];
+    w[i] = sub ? obj*rot*refPose(sk)[i] : obj*refPose(sk)[i];
     }
   return w;
   }
@@ -377,7 +390,7 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
     benchBoxes.push_back({Vec3(0,110,-100), Vec3(160,110,10)});
   DynamicWorld dw(nullptr,mesh);
   benchBoxes.clear();
-  auto hum = mkSkeleton(human(),"HUMANS.MDH");
+  auto hum = mkHuman();
   FILE* f = out!=nullptr ? std::fopen(out,"w") : nullptr;
   if(f==nullptr && out!=nullptr)
     return 1;
@@ -770,7 +783,7 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
       const float d = shownDeviation(a);
       if(d>peakDev) { peakDev = d; *peakT = t-0.3f; }
       }
-    if(f==nullptr)
+    if(f==nullptr && gRec==nullptr)
       continue;
     char label[96];
     std::snprintf(label,sizeof(label),"%s show=%.2f",name.c_str(),a.r ? double(a.r->showWeight()) : 0.0);
@@ -786,6 +799,25 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
       std::snprintf(label,sizeof(label),"%s getup (anim)",name.c_str());
     else if(a.recovered)
       std::snprintf(label,sizeof(label),"%s %s",name.c_str(),a.riseResult<0 ? "RISE FAILED" : "recovered");
+    if(gRec!=nullptr) {
+      if(gRec->frames.empty()) {
+        gRec->begin(name,name,other ? std::vector<std::string>{"A","B"} : std::vector<std::string>{"A"});
+        if(name=="shove_wall")
+          gRec->box(Vec3(0,110,-100), Vec3(160,110,10));
+        }
+      gRec->frame(t,label+name.size()+1);
+      gRec->body(a);
+      if(other)
+        gRec->body(*other);
+      if(a.r && a.r->risePose())
+        gRec->ghost(a.sk,*a.r->risePose());
+      else if(a.r && a.r->isSimulated())
+        gRec->ghost(a.sk,a.anim);
+      for(auto& m:a.marks)
+        gRec->dot(m.first,m.second);
+      }
+    if(f==nullptr)
+      continue;
     a.dump(f,label);
     if(other)
       other->dump(f,"",true);
@@ -802,7 +834,7 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
 static float injuryJump(const char* boneName, Vec3 off, bool print) {
   zenkit::Mesh mesh;
   DynamicWorld dw(nullptr,mesh);
-  auto hum = mkSkeleton(human(),"HUMANS.MDH");
+  auto hum = mkHuman();
   auto rig = InjuryRig::of(*hum);
   auto base = bench::stancePose(*hum);
   InjuryRig::Wound w;
@@ -843,7 +875,7 @@ static ThroesRun throesRun(uint32_t seed, float life, bool front, Ragdoll::State
                            const char* dump = nullptr) {
   zenkit::Mesh mesh;
   DynamicWorld dw(nullptr,mesh);
-  auto hum = mkSkeleton(human(),"HUMANS.MDH");
+  auto hum = mkHuman();
   bench::Actor a(dw,*hum,Vec3(0,0,0));
   a.throesLife = life;
   a.throesSeed = seed;
@@ -976,12 +1008,12 @@ static int throesTests() {
   {
     zenkit::Mesh mesh;
     DynamicWorld dw(nullptr,mesh);
-    auto hum = mkSkeleton(human(),"HUMANS.MDH");
-    std::vector<Matrix4x4> bones(hum->tr.size());
+    auto hum = mkHuman();
+    std::vector<Matrix4x4> bones(refPose(*hum).size());
     Matrix4x4 obj = Matrix4x4::mkIdentity();
     obj.translate(0,15,0);
     obj.rotateOX(-90); // лежит на спине
-    for(size_t k=0;k<bones.size();++k) bones[k] = obj*hum->tr[k];
+    for(size_t k=0;k<bones.size();++k) bones[k] = obj*refPose(*hum)[k];
     auto r = Ragdoll::create(dw,*hum,bones.data(),bones.size(),Ragdoll::S_Unconscious);
     r->freeze();
     auto base = r->world(), in = r->world(), gasp = r->world();
@@ -1003,7 +1035,7 @@ static int throesTests() {
   {
     zenkit::Mesh mesh;
     DynamicWorld dw(nullptr,mesh);
-    auto hum = mkSkeleton(human(),"HUMANS.MDH");
+    auto hum = mkHuman();
     bench::Actor a(dw,*hum,Vec3(0,0,0));
     a.throesLife = 0.9f;
     a.throesSeed = 1;
@@ -1501,11 +1533,11 @@ static int activeTests(DynamicWorld& dw, const Skeleton& hum, const Skeleton& wl
 
 static std::unique_ptr<Ragdoll> spawn(DynamicWorld& dw, const Skeleton& sk, Vec3 at, float rotY, Ragdoll::State st,
                                       Vec3 hitDir, float power) {
-  std::vector<Matrix4x4> bones(sk.tr.size());
+  std::vector<Matrix4x4> bones(refPose(sk).size());
   Matrix4x4 obj = Matrix4x4::mkIdentity();
   obj.translate(at);
   obj.rotateOY(rotY);
-  for(size_t k=0;k<bones.size();++k) bones[k] = obj*sk.tr[k];
+  for(size_t k=0;k<bones.size();++k) bones[k] = obj*refPose(sk)[k];
   auto r = Ragdoll::create(dw,sk,bones.data(),bones.size(),st);
   if(r && power>0) {
     Ragdoll::Hit h; h.at = org(bones[12]); h.dir = hitDir; h.power = power;
@@ -1519,7 +1551,7 @@ static std::unique_ptr<Ragdoll> spawn(DynamicWorld& dw, const Skeleton& sk, Vec3
 static int perf() {
   zenkit::Mesh mesh;
   DynamicWorld dw(nullptr,mesh);
-  auto hum = mkSkeleton(human(),"HUMANS.MDH");
+  auto hum = mkHuman();
   auto wlf = mkSkeleton(wolf(),"WOLF.MDH");
   auto bench = [&](const char* title, int n, float dist) {
     std::vector<std::unique_ptr<Ragdoll>> rs;
@@ -1552,7 +1584,7 @@ static int perf() {
   auto benchActive = [&](const char* title, int n) {
     std::vector<std::unique_ptr<Ragdoll>> rs;
     for(int i=0;i<n;++i)
-      rs.push_back(Ragdoll::create(dw,*hum,poseAt(*hum,objAt(Vec3(float(i)*200.f-300.f,0,-1500))).data(),hum->tr.size(),
+      rs.push_back(Ragdoll::create(dw,*hum,poseAt(*hum,objAt(Vec3(float(i)*200.f-300.f,0,-1500))).data(),refPose(*hum).size(),
                                    Ragdoll::S_Active,500,false));
     double total = 0, worst = 0;
     for(int f=0; f<90; ++f) {
@@ -1759,7 +1791,7 @@ static int duelScene(const std::string& name, const char* out, DuelResult* res =
   zenkit::Mesh mesh;
   benchBoxes.clear();
   DynamicWorld dw(nullptr,mesh);
-  auto hum = mkSkeleton(human(),"HUMANS.MDH");
+  auto hum = mkHuman();
   FILE* f = out!=nullptr ? std::fopen(out,"w") : nullptr;
   float dist = 165;
   bench::Fighter A(dw,*hum,Vec3(0,0,0),0.f);
@@ -1823,13 +1855,36 @@ static int duelScene(const std::string& name, const char* out, DuelResult* res =
     if(res!=nullptr && ((A.a.r && A.a.r->state()==Ragdoll::S_Fall) || (B.a.r && B.a.r->state()==Ragdoll::S_Fall)))
       res->fell = true;
     const int frame = int(t/0.033f+1e-4f);
-    if(frame==lastFrame || f==nullptr)
+    if(frame==lastFrame || (f==nullptr && gRec==nullptr))
       continue;
     lastFrame = frame;
     char label[96];
     static const char* mv[] = {"guard","attack","attackL","attackR","run","finish","parade","jump","draw","sheath","hit"};
     std::snprintf(label,sizeof(label),"%s A:%s%s B:%s%s",name.c_str(),mv[A.clock.move],A.fb.striking()?"*":"",
                   mv[B.clock.move],B.fb.striking()?"*":"");
+    if(gRec!=nullptr) {
+      if(gRec->frames.empty())
+        gRec->begin(name,name,{"A","B"});
+      gRec->frame(t,label+name.size()+1);
+      gRec->body(A.a);
+      gRec->body(B.a);
+      gRec->ghost(A.a.sk,A.a.anim);
+      gRec->ghost(B.a.sk,B.a.anim);
+      int who = 0;
+      for(auto* fg:{&A,&B}) {
+        if(fg->hasPrev && fg->weapon!=FightBody::W_Fist) {
+          Vec3 b0, b1; fg->blade(b0,b1);
+          const Vec3 h = org(fg->a.disp[fg->rig->slotBone(1)<fg->a.disp.size() ? fg->rig->slotBone(1) : fg->rig->handBone(1)]);
+          gRec->blade(who,h,b1);
+          }
+        for(; fg->recLog<fg->fx.size(); ++fg->recLog)
+          gRec->event(t, fg->fx[fg->recLog].second=='y' ? "block" : "hit", fg->fx[fg->recLog].first,
+                      std::string(who==0 ? "A: " : "B: ") + (fg->recLog<fg->log.size() ? fg->log[fg->recLog] : ""), who);
+        ++who;
+        }
+      }
+    if(f==nullptr)
+      continue;
     A.a.marks.clear();
     for(auto& m:A.fx) A.a.marks.push_back(m);
     for(auto& m:B.fx) A.a.marks.push_back(m);
@@ -1890,7 +1945,51 @@ static int fightTests() {
   return fail;
   }
 
+#include "lab.h"
+
+// все сцены площадки - в каталог (и scenes.json с группами и заголовками для pack.py)
+static int labAll(const std::string& dir) {
+  auto hum = mkHuman();
+  std::string meta = "{";
+  for(auto& sc:lab::scenes()) {
+    bench::Recorder rec;
+    if(lab::run(sc.name,*hum,&rec,nullptr)!=0 || !rec.save(dir+"/"+sc.name+".json"))
+      return 1;
+    meta += (meta.size()>1 ? ",\n" : "\n") + std::string(" \"") + sc.name + "\": {\"group\": \"" + bench::Recorder::esc(sc.group) +
+            "\", \"title\": \"" + bench::Recorder::esc(sc.title) + "\", \"note\": \"" + bench::Recorder::esc(sc.note) + "\"}";
+    }
+  meta += "\n}\n";
+  FILE* f = std::fopen((dir+"/scenes.json").c_str(),"w");
+  if(f==nullptr)
+    return 1;
+  std::fputs(meta.c_str(),f);
+  std::fclose(f);
+  return 0;
+  }
+
 int main(int argc, char** argv) {
+  if(argc>3 && std::string(argv[1])=="lab") {
+    bench::Recorder rec;
+    auto hum = mkHuman();
+    if(lab::run(argv[2],*hum,&rec,nullptr)!=0)
+      return 1;
+    return rec.save(argv[3]) ? 0 : 1;
+    }
+  if(argc>2 && std::string(argv[1])=="labs")
+    return labAll(argv[2]);
+  if(argc>3 && std::string(argv[1])=="rec") {
+    // запись сцены для 3D-площадки
+    bench::Recorder rec;
+    gRec = &rec;
+    const std::string nm = argv[2];
+    const int r = (nm.rfind("duel",0)==0 || nm=="draw") ? duelScene(nm,nullptr) : visScene(nm,nullptr);
+    gRec = nullptr;
+    if(r!=0 || rec.frames.empty())
+      return 1;
+    if(argc>4)
+      rec.title = argv[4];
+    return rec.save(argv[3]) ? 0 : 1;
+    }
   if(argc>3 && std::string(argv[1])=="vis" && (std::string(argv[2]).rfind("duel",0)==0 || std::string(argv[2])=="draw"))
     return duelScene(argv[2],argv[3]);
   if(argc>3 && std::string(argv[1])=="vis")
@@ -1926,7 +2025,7 @@ int main(int argc, char** argv) {
     }
   zenkit::Mesh mesh;
   DynamicWorld dw(nullptr,mesh);
-  auto hum = mkSkeleton(human(),"HUMANS.MDH");
+  auto hum = mkHuman();
   auto wlf = mkSkeleton(wolf(),"WOLF.MDH");
 
   Ragdoll::Hit none;
@@ -1963,11 +2062,11 @@ int main(int argc, char** argv) {
   {
     std::vector<std::unique_ptr<Ragdoll>> rs;
     for(int i=0;i<8;++i) {
-      std::vector<Matrix4x4> bones(hum->tr.size());
+      std::vector<Matrix4x4> bones(refPose(*hum).size());
       Matrix4x4 obj = Matrix4x4::mkIdentity();
       obj.translate(float(i%3)*40.f, float(i/3)*60.f, float(i%2)*30.f);
       obj.rotateOY(float(i)*45.f);
-      for(size_t k=0;k<bones.size();++k) bones[k] = obj*hum->tr[k];
+      for(size_t k=0;k<bones.size();++k) bones[k] = obj*refPose(*hum)[k];
       auto r = Ragdoll::create(dw,*hum,bones.data(),bones.size(),Ragdoll::S_Dead);
       if(r==nullptr)
         continue; // в физике нет места: это тело упало бы анимацией игры
@@ -2000,10 +2099,10 @@ int main(int argc, char** argv) {
   // бюджет: место новому телу освобождает дальнее уже упавшее; падающее ещё - не трогается; герой - сверх бюджета
   {
     auto mk = [&](float x, float dist, bool keep) {
-      std::vector<Matrix4x4> bones(hum->tr.size());
+      std::vector<Matrix4x4> bones(refPose(*hum).size());
       Matrix4x4 obj = Matrix4x4::mkIdentity();
       obj.translate(x,0,300);
-      for(size_t k=0;k<bones.size();++k) bones[k] = obj*hum->tr[k];
+      for(size_t k=0;k<bones.size();++k) bones[k] = obj*refPose(*hum)[k];
       return Ragdoll::create(dw,*hum,bones.data(),bones.size(),Ragdoll::S_Dead,dist,keep);
       };
     std::vector<std::unique_ptr<Ragdoll>> rs;

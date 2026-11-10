@@ -8,6 +8,7 @@
 #include "physics/dynamicworld.h"
 #include "graphics/mesh/skeleton.h"
 #include "graphics/mesh/injury.h"
+#include "graphics/mesh/humancanon.h"
 #include "graphics/mesh/limbik.h"
 
 #include <algorithm>
@@ -23,6 +24,9 @@ using namespace Tempest;
 namespace bench {
 
 inline Vec3 org(const Matrix4x4& m) { return Vec3(m.at(3,0),m.at(3,1),m.at(3,2)); }
+
+// Опорная поза скелета стенда: каноническая у человека (как в игре: кукла и позы строятся от неё), иначе поза привязки
+inline const std::vector<Matrix4x4>& refPose(const Skeleton& sk) { return HumanCanon::reference(sk); }
 
 inline Matrix4x4 objAt(Vec3 at, float rotY = 0) {
   Matrix4x4 m = Matrix4x4::mkIdentity();
@@ -72,7 +76,7 @@ inline void aim(const Skeleton& sk, std::vector<Matrix4x4>& w, const char* name,
 
 // Стойка с оружием: руки опущены и согнуты вперёд, колени чуть согнуты (система модели: вперёд +Z, влево +X)
 inline std::vector<Matrix4x4> stancePose(const Skeleton& sk) {
-  std::vector<Matrix4x4> w(sk.tr.begin(), sk.tr.end());
+  std::vector<Matrix4x4> w = refPose(sk);
   aim(sk,w,"BIP01 L UPPERARM","BIP01 L FOREARM",Vec3( 0.25f,-0.93f, 0.2f));
   aim(sk,w,"BIP01 L FOREARM", "BIP01 L HAND",   Vec3( 0.05f,-0.45f, 0.9f));
   aim(sk,w,"BIP01 R UPPERARM","BIP01 R FOREARM",Vec3(-0.25f,-0.93f, 0.25f));
@@ -89,7 +93,7 @@ inline std::vector<Matrix4x4> stancePose(const Skeleton& sk) {
 
 // Ходьба: цикл 1,1 с, шаг 60 см (корень идёт вперёд сам, actor.speed), ноги - маятник с подъёмом ступни
 inline std::vector<Matrix4x4> walkPose(const Skeleton& sk, float t) {
-  std::vector<Matrix4x4> w(sk.tr.begin(), sk.tr.end());
+  std::vector<Matrix4x4> w = refPose(sk);
   const float ph = t/1.1f*2.f*float(M_PI);
   aim(sk,w,"BIP01 L UPPERARM","BIP01 L FOREARM",Vec3( 0.15f,-1.f, 0.35f*std::sin(ph+float(M_PI))));
   aim(sk,w,"BIP01 L FOREARM", "BIP01 L HAND",   Vec3( 0.05f,-0.8f,0.5f));
@@ -145,7 +149,7 @@ inline std::vector<Matrix4x4> getUpPose(const Skeleton& sk, float t, bool back) 
   auto lv = [u](Vec3 x, Vec3 y) { return Vec3::normalize(x*(1.f-u) + y*u); };
   const float pitch = (a.pitch*(1.f-u) + b.pitch*u)*float(M_PI)/180.f;
   const Vec3  P     = a.P*(1.f-u) + b.P*u;
-  std::vector<Matrix4x4> w(sk.tr.begin(), sk.tr.end());
+  std::vector<Matrix4x4> w = refPose(sk);
   const size_t pel = bone(sk,"BIP01 PELVIS");
   const Vec3   at  = org(w[pel]);
   for(auto& m:w)
