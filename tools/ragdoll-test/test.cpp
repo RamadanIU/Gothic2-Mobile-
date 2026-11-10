@@ -1972,6 +1972,37 @@ static int labAll(const std::string& dir) {
     meta += (meta.size()>1 ? ",\n" : "\n") + std::string(" \"") + sc.name + "\": {\"group\": \"" + bench::Recorder::esc(sc.group) +
             "\", \"title\": \"" + bench::Recorder::esc(sc.title) + "\", \"note\": \"" + bench::Recorder::esc(sc.note) + "\"}";
     }
+  // равновесие и отклик на удары - сцены прежнего набора (visScene), один человек
+  struct V { const char* name; const char* title; const char* note; float spd; };
+  const V vis[] = {
+    {"shove_front","Толчок спереди 1,8 м/с","Ловит равновесие шагами назад, руки в стороны.",1.8f},
+    {"shove_front","Толчок спереди 3 м/с","Шаги не успевают - падает.",3.0f},
+    {"shove_side", "Толчок сбоку 1,8 м/с","Шаг через ногу, корпус против падения.",1.8f},
+    {"shove_wall", "Толчок к стене","Упирается спиной и рукой в стену.",2.2f},
+    {"stagger",    "Сильный удар в грудь","Пошатывается и устаивает.",0},
+    {"side",       "Удар в плечо сбоку","Корпус разворачивает от удара.",0},
+    {"knock",      "Удар, сбивающий с ног","",0},
+    };
+  int vi = 0;
+  for(auto& v:vis) {
+    bench::Recorder rec;
+    gRec = &rec;
+    if(v.spd>0.f) {
+      char b[16]; std::snprintf(b,sizeof(b),"%.2f",double(v.spd)); setenv("SPD",b,1);
+      } else {
+      unsetenv("SPD");
+      }
+    const int r = visScene(v.name,nullptr);
+    gRec = nullptr;
+    unsetenv("SPD");
+    char nm[48];
+    std::snprintf(nm,sizeof(nm),"bal%d_%s",vi++,v.name);
+    rec.name = nm;
+    if(r!=0 || rec.frames.empty() || !rec.save(dir+"/"+nm+".json"))
+      return 1;
+    meta += std::string(",\n \"") + nm + "\": {\"group\": \"Равновесие и отклик на удар\", \"title\": \"" + bench::Recorder::esc(v.title) +
+            "\", \"note\": \"" + bench::Recorder::esc(v.note) + "\"}";
+    }
   meta += "\n}\n";
   FILE* f = std::fopen((dir+"/scenes.json").c_str(),"w");
   if(f==nullptr)

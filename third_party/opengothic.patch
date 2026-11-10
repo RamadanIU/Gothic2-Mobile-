@@ -41031,10 +41031,10 @@ index 7309936..ba8b3ba 100644
      float                          angleY   = 0.f;
 diff --git a/common/world/objects/npcfight.cpp b/common/world/objects/npcfight.cpp
 new file mode 100644
-index 0000000..eeec2ef
+index 0000000..e11d9f8
 --- /dev/null
 +++ b/common/world/objects/npcfight.cpp
-@@ -0,0 +1,599 @@
+@@ -0,0 +1,600 @@
 +#include "npc.h"
 +
 +#include <Tempest/Log>
@@ -41568,8 +41568,9 @@ index 0000000..eeec2ef
 +  BladeWork::Blade guard;
 +  Vec3  nearG;
 +  float uG = 0;
-+  const Vec3 toMe = position()-n.position();
-+  const bool front = Vec3::dotProduct(Vec3(toMe.x,0,toMe.z), n.direction())>0.f;
++  const Vec3  toMe = position()-n.position();
++  const float na   = n.rotationRad();
++  const bool  front = Vec3::dotProduct(Vec3(toMe.x,0,toMe.z), Vec3(std::cos(na),0,std::sin(na)))>0.f;
 +  if(fightWeapon!=FightBody::W_Fist && front && n.isParrying() && n.weaponState()!=WeaponState::Fist && n.bladeNow(guard) &&
 +     BladeWork::parryCatches(h,guard,nearG,uG)) {
 +    BladeWork::BladeHit bh;
