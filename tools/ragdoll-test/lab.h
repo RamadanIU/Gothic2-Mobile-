@@ -73,6 +73,8 @@ inline const std::vector<Scene>& scenes() {
     {"fistblock",  "Кулаки", "Кулаки: защита", "", 4.5f},
     {"knockout",   "Потеря сознания и подъём", "Серия до потери сознания, подъём", "Синий получает удары, пока не потеряет сознание, падает, лежит и встаёт сам.", 14.f},
     {"knockfists", "Потеря сознания и подъём", "Нокаут кулаками, подъём", "", 12.f},
+    {"riseback",   "Потеря сознания и подъём", "Подъём со спины", "Удар в грудь валит на спину; встаёт через перекат на бок и на живот.", 12.f},
+    {"risebelly",  "Потеря сознания и подъём", "Подъём с живота", "Удар в спину валит лицом вниз.", 10.f},
     };
   return s;
   }
@@ -163,6 +165,21 @@ inline int run(const std::string& name, const Skeleton& hum, bench::Recorder* re
     dist = 100; B.a.at = Vec3(0,0,dist);
     sa = {{0.7f,FightBody::M_Attack,3,0.75f,0.2f}};
     B.hp = 0.25f;
+    }
+  else if(name=="riseback" || name=="risebelly") {
+    // синий один: удар спереди в грудь (падает на спину) или сзади в спину (падает на живот)
+    dist = 320; B.a.at = Vec3(0,0,dist);
+    const bool back = (name=="riseback");
+    script = [&A,&B,back](float t) {
+      if(t>=0.4f && B.hp>0.f) {
+        const Vec3 f  = B.fwd();
+        const Vec3 ch = bench::org(B.a.disp[bench::bone(B.a.sk,"BIP01 SPINE2")]);
+        A.lastHit.at    = ch + f*(back ? 12.f : -12.f);
+        A.lastHit.dir   = f*(back ? -1.f : 1.f);
+        A.lastHit.power = 3.6f;
+        B.hp = 0;
+        }
+      };
     }
   else if(name=="fists") {
     arm(FightBody::W_Fist,0);
@@ -284,8 +301,8 @@ inline int run(const std::string& name, const Skeleton& hum, bench::Recorder* re
     rec->frame(t,label);
     rec->body(A.a);
     rec->body(B.a);
-    rec->ghost(A.a.sk,A.a.anim);
-    rec->ghost(B.a.sk,B.a.anim);
+    for(auto* fg:{&A,&B})
+      rec->ghost(fg->a.sk, (fg->a.r && fg->a.r->risePose() && fg->a.r->risePose()->size()==fg->a.anim.size()) ? *fg->a.r->risePose() : fg->a.anim);
     int who = 0;
     for(auto* fg:{&A,&B}) {
       if(fg->hasPrev && fg->weapon!=FightBody::W_Fist) {

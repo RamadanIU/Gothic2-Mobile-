@@ -8672,10 +8672,10 @@ index 0000000..bc83443
 +  }
 diff --git a/common/game/fightbody.h b/common/game/fightbody.h
 new file mode 100644
-index 0000000..54c0e6b
+index 0000000..4973697
 --- /dev/null
 +++ b/common/game/fightbody.h
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,216 @@
 +#pragma once
 +
 +#include <Tempest/Vec>
@@ -8768,6 +8768,8 @@ index 0000000..54c0e6b
 +    // Клинок сейчас разит: попадание засчитывается одно на удар (strikeId)
 +    bool          striking()  const { return strikeOn; }
 +    uint32_t      strikeId()  const { return strikeNo; }
++    // Какой рукой бьёт (кулаки: 0 - левая, 1 - правая; с оружием - всегда правая)
++    int           strikeHand() const { return str.arm; }
 +    // Насколько удар сейчас разгонён (0..1): сила попадания и отдача
 +    float         strikePower() const { return strikePow; }
 +    // Куда придётся удар (мир) и куда идёт кисть в миг удара - для блока противника; false - не бьёт
@@ -19643,10 +19645,10 @@ index dadfd6d..6afd8d0 100644
      bool                           hnpcFlagGhost = false;
 diff --git a/common/graphics/mesh/bodyrig.cpp b/common/graphics/mesh/bodyrig.cpp
 new file mode 100644
-index 0000000..c8a1b0c
+index 0000000..fa76df7
 --- /dev/null
 +++ b/common/graphics/mesh/bodyrig.cpp
-@@ -0,0 +1,634 @@
+@@ -0,0 +1,643 @@
 +#include "bodyrig.h"
 +
 +#include "humancanon.h"
@@ -20139,6 +20141,15 @@ index 0000000..c8a1b0c
 +void BodyRig::solveLeg(std::vector<Matrix4x4>& W, int k, const Leg& s, const Vec3& pelFwd, float scale) const {
 +  const size_t t = thigh[k], c = calf[k], f = foot[k];
 +  solvePole(W[t],W[c],W[f],s.ankle,s.pole,flexLeg[k]);
++  if(!s.flat) {
++    // стопа - за голенью (лежит, на колене)
++    for(auto d:desc[t]) {
++      if(d==c || d==f)
++        continue;
++      W[d] = W[parent[d]]*local[d];
++      }
++    return;
++    }
 +  // стопа: носок по направлению, подошва - к земле (наклон носка и ребро - поверх)
 +  Vec3 T = horizontal(s.toe.length()>1e-4f ? s.toe : pelFwd);
 +  if(T.length()<0.5f)
@@ -20283,10 +20294,10 @@ index 0000000..c8a1b0c
 +  }
 diff --git a/common/graphics/mesh/bodyrig.h b/common/graphics/mesh/bodyrig.h
 new file mode 100644
-index 0000000..0f8e8c8
+index 0000000..9e3aea1
 --- /dev/null
 +++ b/common/graphics/mesh/bodyrig.h
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,151 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -20324,6 +20335,9 @@ index 0000000..0f8e8c8
 +      Tempest::Vec3 toe   = {};  // куда носок (по горизонтали, мир); 0 - вперёд таза
 +      float         pitch = 0;   // носок вниз (+) или вверх (-), рад
 +      float         roll  = 0;   // стопа на ребро (+ - наружу), рад
++      // стопа стоит подошвой на земле (носок по toe). Нет (лежит, стоит на колене) - стопа как продолжение голени, под
++      // прямым углом к ней
++      bool          flat  = true;
 +      };
 +    struct Spec final {
 +      Tempest::Vec3 pelvis = {};            // начало кости таза, мир
@@ -24374,10 +24388,10 @@ index daa4a7d..455d40d 100644
  #include <BulletCollision/CollisionShapes/btBoxShape.h>
 diff --git a/common/physics/ragdoll.cpp b/common/physics/ragdoll.cpp
 new file mode 100644
-index 0000000..abc93cd
+index 0000000..73d792c
 --- /dev/null
 +++ b/common/physics/ragdoll.cpp
-@@ -0,0 +1,6521 @@
+@@ -0,0 +1,6519 @@
 +#include "ragdoll.h"
 +
 +#include <Tempest/Log>
@@ -24949,6 +24963,11 @@ index 0000000..abc93cd
 +  Vec3                                        pelvisFrontLocal = {}; // и в системе кости таза
 +  float                                       size       = 0;  // размер модели, см
 +  bool                                        humanoid   = false;
++  // Gothic II Mobile: с какой стороны левые конечности (номер 0): 1 - со стороны «вверх x вперёд», -1 - с другой
++  // (левая тройка модели, как у людей Gothic). Всё, что различает «свою» и «другую» сторону по номеру конечности
++  // (шаг вбок, колено наружу, руки в стороны, отведение бедра), - с этим знаком; раньше стороны были перепутаны:
++  // при толчке спереди нога шагала вперёд и накрест, и человек падал
++  float                                       sideSign   = 1;
 +
 +  // активный регдолл у людей: руки и ноги по сторонам (0 - левая, 1 - правая), позвоночник от таза к груди
 +  bool                                        stance     = false; // шаги и IK ног (есть схема InjuryRig)
@@ -25177,6 +25196,7 @@ index 0000000..abc93cd
 +  struct Rise final {
 +    bool      on      = false;
 +    bool      back    = true;
++    bool      mir     = false;            // план зеркально: перекат в другую сторону, первой - другая нога
 +    float     t       = 0;
 +    float     real    = 0;
 +    btVector3 O       = btVector3(0,0,0); // точка на земле под тазом, м
@@ -25926,6 +25946,14 @@ index 0000000..abc93cd
 +                   Vec3::dotProduct(Vec3::normalize(axisOf(m,2)),f));
 +    lay->pelvisFrontLocal = Vec3::normalize(fl);
 +    }
++    if(lay->thigh[0]!=size_t(-1) && lay->thigh[1]!=size_t(-1)) {
++      const Vec3 d = pos[lay->parts[lay->thigh[0]].bone]-pos[lay->parts[lay->thigh[1]].bone];
++      lay->sideSign = Vec3::dotProduct(d,lft)>=0.f ? 1.f : -1.f;
++      }
++    else if(lay->upper[0]!=size_t(-1) && lay->upper[1]!=size_t(-1)) {
++      const Vec3 d = pos[lay->parts[lay->upper[0]].bone]-pos[lay->parts[lay->upper[1]].bone];
++      lay->sideSign = Vec3::dotProduct(d,lft)>=0.f ? 1.f : -1.f;
++      }
 +    bool limbs = humanoid && InjuryRig::of(sk)!=nullptr;
 +    for(int s=0; s<2; ++s)
 +      limbs &= lay->upper[s]!=size_t(-1) && lay->fore[s]!=size_t(-1) && lay->thigh[s]!=size_t(-1) &&
@@ -26394,7 +26422,7 @@ index 0000000..abc93cd
 +  float roll = 0;
 +  for(int k=0; k<2; ++k) {
 +    drop += 0.11f*buckle[k];
-+    roll += deg(10.f)*buckle[k]*(k==0 ? 1.f : -1.f);
++    roll += deg(10.f)*buckle[k]*(k==0 ? 1.f : -1.f)*lay->sideSign;
 +    }
 +  // поворот вокруг «вперёд»: положительный поднимает левую сторону (left), значит больная - вниз.
 +  // От удара откликается всё тело, а не только корпус на неподвижных ногах: таз уходит по удару, наклоняется и
@@ -26435,7 +26463,7 @@ index 0000000..abc93cd
 +      const bool isUp = (i==lay->upper[a]), isFore = (i==lay->fore[a]);
 +      if(!isUp && !isFore)
 +        continue;
-+      const float     sideS = (a==0 ? 1.f : -1.f);
++      const float     sideS = (a==0 ? 1.f : -1.f)*lay->sideSign;
 +      const btVector3 sideV = b.left*sideS;
 +      btVector3 want(0,0,0);
 +      float     w = 0;
@@ -28082,7 +28110,7 @@ index 0000000..abc93cd
 +    if(ov.length()>1e-3f)
 +      xl += ov.normalized()*(0.05f*k);
 +    }
-+    const float sideS = (s==0 ? 1.f : -1.f);
++    const float sideS = (s==0 ? 1.f : -1.f)*lay->sideSign;
 +    xl += hl*(sideS*0.06f*k);
 +    btVector3 rel = xl - bl.leg[o].anchor;
 +    rel.setY(0);
@@ -28308,7 +28336,7 @@ index 0000000..abc93cd
 +      }
 +    const float l1 = 2.f*lay->parts[th].segHalf*0.01f, l2 = 2.f*lay->parts[ca].segHalf*0.01f;
 +    // колено - вперёд по направлению тела до толчка: по повёрнутому тазу колени крутили бы таз дальше
-+    const btVector3 pole = hf + hl*(0.15f*(s==0 ? 1.f : -1.f));
++    const btVector3 pole = hf + hl*(0.15f*(s==0 ? 1.f : -1.f)*lay->sideSign);
 +    btVector3 du, df;
 +    armDirs(hip, to, l1, l2, pole, du, df);
 +    // стоящая нога - мягко: её положение задают ступня и таз (вес и равновесие держит driveBalance), мышцы только
@@ -28346,7 +28374,7 @@ index 0000000..abc93cd
 +    const size_t u = lay->upper[a], f = lay->fore[a];
 +    if(u>=body.size() || f>=body.size())
 +      continue;
-+    const btVector3 sideV = b.left*(a==0 ? 1.f : -1.f);
++    const btVector3 sideV = b.left*((a==0 ? 1.f : -1.f)*lay->sideSign);
 +    // вбок: >0 - валится в сторону этой руки
 +    const float     side  = float(fall.dot(sideV));
 +    const float     ph    = bl.flail + (a==0 ? 0.f : 2.4f);
@@ -28386,7 +28414,7 @@ index 0000000..abc93cd
 +    const float     lh = lay->hand[a]<body.size() ? 2.f*lay->parts[lay->hand[a]].segHalf*0.01f*0.4f : 0.f;
 +    const float     reach = l1+l2+lh;
 +    const btVector3 sh = body[u].rb->getWorldTransform()*pivotOf(u);
-+    const btVector3 sideV = b.left*(a==0 ? 1.f : -1.f);
++    const btVector3 sideV = b.left*((a==0 ? 1.f : -1.f)*lay->sideSign);
 +
 +    if(hd.gripAt>=0.f) {
 +      // держится: опора-человек двигается - рука с ним; устоял - отпускает
@@ -28872,65 +28900,87 @@ index 0000000..abc93cd
 +
 +namespace {
 +
-+// Позы подъёма в системе «встанет лицом»: x - влево, y - вверх, z - вперёд; см человека с тазом на высоте 95 см.
++// Подъём телом - как встают люди после потери сознания. С живота: руки под плечи, грудь вверх на руках, таз назад и
++// вверх - на четвереньки, одна ступня вперёд - на колено (рука на колене), встать, выпрямиться. Со спины: согнуть
++// колено, плечи и рука идут первыми - перекат на бок и на живот, дальше так же. Позы - в системе «встанет лицом»:
++// x - влево, y - вверх, z - вперёд (лёжа - туда, где голова); см человека Gothic с тазом на высоте 98,8 см.
 +// t - к какому времени плана поза достигнута (с); между позами - плавно, кисти и ступни - дугой над землёй
 +struct RiseKey final {
-+  float t;
-+  Vec3  pel, up, fwd;
-+  float flex;
-+  Vec3  hand[2], hpole[2];
-+  Vec3  ankle[2], kpole[2], toe[2];
-+  float pitch[2];
-+  Vec3  look;
++  float   t;
++  Vec3    pel, up, fwd;
++  float   flex, twist;
++  Vec3    hand[2], hpole[2];
++  Vec3    ankle[2], kpole[2];
++  uint8_t flat;   // стопа стоит подошвой на земле: бит 0 - левая, бит 1 - правая
++  Vec3    look;
 +  };
 +
-+// со спины: ноги - к +z (сядет лицом к ногам)
-+const RiseKey riseBack[] = {
-+  // собраться: колени вверх, ступни к ягодицам, ладони на земле у бёдер, подбородок к груди
-+  {0.55f, {0,13,0},  {0,0.25f,-1},     {0,1,0.25f},     0.35f,
-+   {{32,4,-6},{-32,4,-6}},   {{0.6f,1,-0.3f},{-0.6f,1,-0.3f}},
-+   {{13,9,40},{-13,9,40}},   {{0,1,0.3f},{0,1,0.3f}},  {{0,0,1},{0,0,1}}, {0,0}, {0,1,0.6f}},
-+  // сесть, опираясь руками сзади
-+  {1.15f, {0,13,0},  {0,0.85f,-0.55f}, {0,0.55f,0.85f}, 0.4f,
-+   {{24,3,-26},{-24,3,-26}}, {{0.4f,0.3f,-1},{-0.4f,0.3f,-1}},
-+   {{14,9,36},{-14,9,36}},   {{0,1,0.3f},{0,1,0.3f}},  {{0,0,1},{0,0,1}}, {0,0}, {0,0.3f,1}},
-+  // наклониться к коленям: правая рука толкает сзади, левая - к колену
-+  {1.75f, {0,14,4},  {0,1,-0.15f},     {0,0.15f,1},     0.75f,
-+   {{15,40,34},{-22,3,-16}}, {{1,-0.5f,0},{-0.3f,0.2f,-1}},
-+   {{14,9,30},{-14,9,30}},   {{0,1,0.4f},{0,1,0.4f}},  {{0,0,1},{0,0,1}}, {0,0}, {0,0,1}},
-+  // присесть: таз над ступнями, руки вперёд для равновесия
-+  {2.35f, {0,48,22}, {0,1,-0.2f},      {0,0.2f,1},      0.8f,
-+   {{18,95,58},{-18,95,58}}, {{1,-0.8f,0},{-1,-0.8f,0}},
-+   {{15,9,30},{-15,9,30}},   {{0.2f,0.3f,1},{-0.2f,0.3f,1}}, {{0,0,1},{0,0,1}}, {0,0}, {0,0,1}},
-+  // встать
-+  {3.0f,  {0,92,26}, {0,1,0},          {0,0,1},         0.1f,
-+   {{21,93,30},{-21,93,30}}, {{0.4f,0,-1},{-0.4f,0,-1}},
-+   {{13,9,30},{-13,9,30}},   {{0,0,1},{0,0,1}},        {{0,0,1},{0,0,1}}, {0,0}, {0,0,1}},
-+  };
-+
-+// с живота: голова - к +z
++// с живота
 +const RiseKey riseBelly[] = {
-+  // ладони под плечи, локти вверх
-+  {0.5f, {0,13,0},   {0,0.1f,1},       {0,-1,0.1f},     -0.1f,
-+   {{24,3,44},{-24,3,44}},   {{1,1,-0.5f},{-1,1,-0.5f}},
-+   {{12,9,-80},{-12,9,-80}}, {{0,-1,0},{0,-1,0}},      {{0,0,-1},{0,0,-1}}, {0.9f,0.9f}, {0,0.3f,1}},
-+  // отжаться: грудь вверх
-+  {1.0f, {0,16,-2},  {0,0.55f,0.83f},  {0,-0.83f,0.55f},-0.25f,
-+   {{24,3,44},{-24,3,44}},   {{1,0.3f,-0.6f},{-1,0.3f,-0.6f}},
-+   {{12,9,-80},{-12,9,-80}}, {{0,-1,0},{0,-1,0}},      {{0,0,-1},{0,0,-1}}, {0.9f,0.9f}, {0,0.3f,1}},
-+  // на четвереньки: таз назад и вверх, колени под себя
-+  {1.6f, {0,55,-18}, {0,0.25f,1},      {0,-1,0.25f},    0.2f,
-+   {{22,3,38},{-22,3,38}},   {{1,0.2f,-0.4f},{-1,0.2f,-0.4f}},
-+   {{12,9,-58},{-12,9,-58}}, {{0,-1,0.2f},{0,-1,0.2f}},{{0,0,-1},{0,0,-1}}, {0.9f,0.9f}, {0,-0.2f,1}},
-+  // на колено: корпус прямо, левая ступня вперёд, левая рука - на колено
-+  {2.2f, {0,55,-8},  {0,1,0.1f},       {0,-0.1f,1},     0.25f,
-+   {{15,52,24},{-22,60,0}},  {{1,-0.3f,0.2f},{-0.6f,0,-1}},
-+   {{15,9,28},{-12,9,-50}},  {{0,0.4f,1},{0,-1,0.3f}}, {{0,0,1},{0,0,-1}}, {0,0.9f}, {0,0,1}},
-+  // встать: правая нога подшагивает
-+  {2.9f, {0,92,10},  {0,1,0},          {0,0,1},         0.08f,
-+   {{21,93,14},{-21,93,14}}, {{0.4f,0,-1},{-0.4f,0,-1}},
-+   {{14,9,26},{-13,9,8}},    {{0,0,1},{0,0,1}},        {{0,0,1},{0,0,1}}, {0,0}, {0,0,1}},
++  // лежит: руки у головы, локти в стороны
++  {0.0f, {0,11,0},   {0,0.05f,1},     {0,-1,0.05f},    0.00f, 0,
++   {{30,4,44},{-30,4,44}},   {{1,0.6f,-0.4f},{-1,0.6f,-0.4f}},
++   {{12,8,-86},{-12,8,-86}}, {{0,-1,0.1f},{0,-1,0.1f}}, 0, {0,0.1f,1}},
++  // ладони под плечи, голова приподнимается
++  {0.7f, {0,11,0},   {0,0.06f,1},     {0,-1,0.06f},   -0.10f, 0,
++   {{23,3,40},{-23,3,40}},   {{1,0.9f,-0.5f},{-1,0.9f,-0.5f}},
++   {{12,8,-86},{-12,8,-86}}, {{0,-1,0.1f},{0,-1,0.1f}}, 0, {0,0.35f,1}},
++  // грудь вверх на руках
++  {1.4f, {0,13,-3},  {0,0.5f,0.87f},  {0,-0.87f,0.5f},-0.35f, 0,
++   {{23,3,40},{-23,3,40}},   {{1,0.2f,-0.6f},{-1,0.2f,-0.6f}},
++   {{12,7,-85},{-12,7,-85}}, {{0,-1,0.1f},{0,-1,0.1f}}, 0, {0,0.2f,1}},
++  // на четвереньки: таз назад и вверх, колени под бёдрами
++  {2.2f, {0,46,-38}, {0,0.16f,0.99f}, {0,-0.99f,0.16f},0.12f, 0,
++   {{23,3,40},{-23,3,40}},   {{1,0.1f,-0.4f},{-1,0.1f,-0.4f}},
++   {{12,7,-84},{-12,7,-84}}, {{0,-1,0.25f},{0,-1,0.25f}}, 0, {0,-0.3f,1}},
++  // переводит дух
++  {2.5f, {1,45,-38}, {0,0.14f,0.99f}, {0,-0.99f,0.14f},0.16f, 0,
++   {{23,3,40},{-23,3,40}},   {{1,0.1f,-0.4f},{-1,0.1f,-0.4f}},
++   {{12,7,-84},{-12,7,-84}}, {{0,-1,0.25f},{0,-1,0.25f}}, 0, {0,-0.45f,1}},
++  // на колено: левая ступня вперёд, корпус поднимается, левая рука - на колено
++  {3.3f, {3,50,-36}, {0,0.82f,0.57f}, {0,-0.57f,0.82f},0.20f, 0,
++   {{15,63,6},{-18,48,-14}}, {{1,-0.3f,0.2f},{-0.6f,0,-1}},
++   {{15,12.6f,3},{-12,7,-84}}, {{0.1f,0.5f,1},{0,-1,0.3f}}, 1, {0,0,1}},
++  {3.6f, {3,50,-36}, {0,0.80f,0.60f}, {0,-0.60f,0.80f},0.24f, 0,
++   {{15,63,6},{-18,48,-14}}, {{1,-0.3f,0.2f},{-0.6f,0,-1}},
++   {{15,12.6f,3},{-12,7,-84}}, {{0.1f,0.5f,1},{0,-1,0.3f}}, 1, {0,-0.1f,1}},
++  // встаёт: вес на левую ногу, правая подшагивает, рука толкается от бедра
++  {4.3f, {6,78,-10}, {0,0.90f,0.43f}, {0,-0.43f,0.90f},0.25f, 0,
++   {{14,68,8},{-22,70,-4}},  {{1,-0.3f,0},{-1,-0.4f,-0.3f}},
++   {{15,12.6f,3},{-13,12.6f,-16}}, {{0.1f,0.3f,1},{0,0.3f,1}}, 3, {0,0,1}},
++  // выпрямляется
++  {5.0f, {0,96,-6},  {0,1,0.03f},     {0,-0.03f,1},    0.12f, 0,
++   {{24,84,8},{-24,84,8}},   {{0.4f,0,-1},{-0.4f,0,-1}},
++   {{14,12.6f,3},{-13,12.6f,-14}}, {{0,0.2f,1},{0,0.2f,1}}, 3, {0,0,1}},
++  {5.4f, {0,97,-6},  {0,1,0},         {0,0,1},         0.06f, 0,
++   {{24,84,8},{-24,84,8}},   {{0.4f,0,-1},{-0.4f,0,-1}},
++   {{14,12.6f,3},{-13,12.6f,-14}}, {{0,0.2f,1},{0,0.2f,1}}, 3, {0,0,1}},
 +  };
++
++// со спины: перекат на правый бок и на живот (на спине левая сторона тела - по -x), дальше - как с живота со сдвигом
++// RiseRollShift по x и RiseRollTime по времени
++constexpr float RiseRollShift = 28.f;
++constexpr float RiseRollTime  = 2.0f;
++const RiseKey riseRoll[] = {
++  // лежит на спине, руки вдоль тела
++  {0.0f, {0,11,0},   {0,0.04f,1},     {0,1,-0.04f},    0.00f, 0,
++   {{-30,5,-2},{30,5,-2}},   {{-1,0.3f,0},{1,0.3f,0}},
++   {{-12,9,-86},{12,9,-86}}, {{0,1,0.1f},{0,1,0.1f}}, 0, {0,1,0.2f}},
++  // левое колено вверх, левая рука идёт через грудь, плечи начинают перекат
++  {0.9f, {2,11,0},   {0,0.05f,1},     {0.25f,0.97f,0}, 0.10f, -0.35f,
++   {{2,24,22},{36,4,24}},    {{-0.5f,0.6f,-0.5f},{1,0.2f,-0.5f}},
++   {{-16,9,-46},{12,9,-86}}, {{0.2f,1,0.3f},{0,1,0.1f}}, 0, {0.4f,0.8f,0.5f}},
++  // на правом боку: левая ладонь - в землю перед грудью, левое колено - через правую ногу
++  {1.8f, {15,17,0},  {0,0.08f,1},     {1,0.05f,0},     0.25f, -0.30f,
++   {{48,3,36},{22,3,44}},    {{0.2f,1,-0.4f},{-0.3f,0.3f,-1}},
++   {{38,9,-60},{16,8,-86}},  {{1,0.3f,0.6f},{1,0,0.2f}}, 0, {0.8f,0,0.6f}},
++  // на животе, ладони под плечами (дальше - riseBelly со второй позы)
++  {2.7f, {28,11,0},  {0,0.06f,1},     {0,-1,0.06f},   -0.10f, 0,
++   {{51,3,40},{5,3,40}},     {{1,0.9f,-0.5f},{-1,0.9f,-0.5f}},
++   {{40,8,-86},{16,8,-86}},  {{0,-1,0.1f},{0,-1,0.1f}}, 0, {0,0.35f,1}},
++  };
++
++constexpr float RiseRate = 1.3f; // во сколько раз подъём идёт быстрее времени плана
 +
 +Vec3 nlerp3(const Vec3& a, const Vec3& b, float u) {
 +  Vec3 v = a*(1.f-u) + b*u;
@@ -28945,17 +28995,57 @@ index 0000000..abc93cd
 +  d.y = 0;
 +  const float len = d.length();
 +  if(len>10.f)
-+    v.y += 0.3f*len*std::sin(float(M_PI)*u);
++    v.y += std::min(0.3f*len, 16.f)*std::sin(float(M_PI)*u);
 +  return v;
 +  }
 +
-+const RiseKey* risePlan(bool back, size_t& n) {
++// поза плана в момент t (время плана, с): со спины - перекат, потом riseBelly со сдвигом
++RiseKey riseKeyAt(bool back, float t, float& tEnd) {
++  constexpr size_t nB = sizeof(riseBelly)/sizeof(riseBelly[0]);
++  constexpr size_t nR = sizeof(riseRoll)/sizeof(riseRoll[0]);
++  RiseKey keys[nB+nR];
++  size_t  n = 0;
 +  if(back) {
-+    n = sizeof(riseBack)/sizeof(riseBack[0]);
-+    return riseBack;
++    for(size_t i=0; i<nR; ++i)
++      keys[n++] = riseRoll[i];
++    for(size_t i=2; i<nB; ++i) {
++      RiseKey k = riseBelly[i];
++      k.t     += RiseRollTime;
++      k.pel.x += RiseRollShift;
++      for(int s=0; s<2; ++s) {
++        k.hand[s].x  += RiseRollShift;
++        k.ankle[s].x += RiseRollShift;
++        }
++      keys[n++] = k;
++      }
++    } else {
++    for(size_t i=0; i<nB; ++i)
++      keys[n++] = riseBelly[i];
 +    }
-+  n = sizeof(riseBelly)/sizeof(riseBelly[0]);
-+  return riseBelly;
++  tEnd = keys[n-1].t;
++  size_t i = 0;
++  while(i+1<n && t>keys[i].t)
++    ++i;
++  const RiseKey& b = keys[i];
++  const RiseKey& a = i>0 ? keys[i-1] : keys[0];
++  const float    u = (i>0 && b.t>a.t) ? smooth((t-a.t)/(b.t-a.t)) : 1.f;
++  RiseKey r = b;
++  r.t     = t;
++  r.pel   = a.pel + (b.pel-a.pel)*u;
++  r.up    = nlerp3(a.up,b.up,u);
++  r.fwd   = nlerp3(a.fwd,b.fwd,u);
++  r.flex  = a.flex  + (b.flex -a.flex )*u;
++  r.twist = a.twist + (b.twist-a.twist)*u;
++  r.look  = nlerp3(a.look,b.look,u);
++  for(int s=0; s<2; ++s) {
++    r.hand[s]  = arcLerp(a.hand[s],b.hand[s],u);
++    r.hpole[s] = nlerp3(a.hpole[s],b.hpole[s],u);
++    r.ankle[s] = arcLerp(a.ankle[s],b.ankle[s],u);
++    r.kpole[s] = nlerp3(a.kpole[s],b.kpole[s],u);
++    }
++  // стопа встаёт подошвой, когда поза с ней уже достигнута наполовину
++  r.flat = (u>0.5f) ? b.flat : a.flat;
++  return r;
 +  }
 +
 +}
@@ -29020,8 +29110,11 @@ index 0000000..abc93cd
 +    axis = horizontal(body[0].rb->getWorldTransform().getBasis()*btv(lay->pelvisFrontLocal));
 +  if(axis.length()<0.5f)
 +    axis = btVector3(0,0,1);
-+  r.F = r.back ? -axis : axis;
++  // встанет лицом туда, где голова (и со спины: перекатывается на живот)
++  r.F = axis;
 +  r.O = btVector3(pel.x(), groundAt(pel, float(pel.y())-0.12f), pel.z());
++  // у каждого по-своему: в какую сторону перекат и какая нога первой (зеркало плана)
++  r.mir = ((int(std::floor(pel.x()*7.f)) + int(std::floor(pel.z()*13.f)))&1)!=0;
 +  simTime    = 0;
 +  calmTime   = 0;
 +  damping    = 0;
@@ -29067,8 +29160,8 @@ index 0000000..abc93cd
 +  }
 +
 +void Ragdoll::tickRise(uint64_t dtMs) {
-+  // Цель мышц - поза плана; время плана идёт медленнее, если тело отстаёт (центр масс дальше 8 см от цели); не
-+  // встало за 2,4 срока плана - не вышло (Npc доводит анимацией)
++  // Цель - поза плана; время плана идёт медленнее, если тело отстаёт (центр масс дальше 10 см от цели); не встало
++  // за два срока плана - не вышло (Npc доводит анимацией)
 +  if(beh==nullptr || !beh->rise.on || st!=S_GetUp || !isSimulated())
 +    return;
 +  auto&       r   = beh->rise;
@@ -29078,108 +29171,52 @@ index 0000000..abc93cd
 +    r.failed = true;
 +    return;
 +    }
-+  size_t nKey = 0;
-+  const RiseKey* key  = risePlan(r.back,nKey);
-+  const float    tEnd = key[nKey-1].t;
-+
-+  int npts = 0;
-+  r.support = approach(r.support, groundSupport(nullptr,npts), dt, 0.06f);
-+  r.real   += dt;
++  float tEnd = 0;
++  riseKeyAt(r.back,0.f,tEnd);
++  r.real += dt;
 +  {
-+  const float rate = (r.err<0.08f ? 1.f : std::clamp(1.f-(r.err-0.08f)/0.14f*0.65f, 0.35f, 1.f))*(r.support>0.2f ? 1.f : 0.5f);
-+  r.t = std::min(r.t + dt*rate, tEnd);
++  const float rate = (r.err<0.10f ? 1.f : std::clamp(1.f-(r.err-0.10f)/0.18f*0.7f, 0.3f, 1.f));
++  r.t = std::min(r.t + dt*rate*RiseRate, tEnd);
 +  }
++  const RiseKey key = riseKeyAt(r.back,r.t,tEnd);
 +
-+  // поза плана в мире
-+  size_t i = 0;
-+  while(i+1<nKey && r.t>key[i].t)
-+    ++i;
-+  const RiseKey& b = key[i];
-+  const RiseKey& a = i>0 ? key[i-1] : key[0];
-+  const float    u = (i>0 && b.t>a.t) ? smooth((r.t-a.t)/(b.t-a.t)) : 1.f;
-+  const Vec3     F = Vec3(float(r.F.x()),0,float(r.F.z()));
-+  const Vec3     U = Vec3(0,1,0);
-+  const Vec3     L = Vec3::normalize(Vec3::crossProduct(U,F))*rig->handedness(); // туда, где левые кости
-+  const Vec3     O = cmv(r.O);
-+  const float    k = r.scale*rig->pelvisHeight()/95.f;
-+  auto toW  = [&](const Vec3& v) { return O + (L*v.x + U*v.y + F*v.z)*k; };
-+  auto dirW = [&](const Vec3& v) { return L*v.x + U*v.y + F*v.z; };
++  // поза плана в мире: зеркало - x наоборот и стороны местами
++  const float    mx = r.mir ? -1.f : 1.f;
++  const Vec3     F  = Vec3(float(r.F.x()),0,float(r.F.z()));
++  const Vec3     U  = Vec3(0,1,0);
++  const Vec3     L  = Vec3::normalize(Vec3::crossProduct(U,F))*rig->handedness(); // туда, где левые кости стоящего
++  const Vec3     O  = cmv(r.O);
++  const float    k  = r.scale*rig->pelvisHeight()/98.8f;
++  auto toW  = [&](const Vec3& v) { return O + (L*(v.x*mx) + U*v.y + F*v.z)*k; };
++  auto dirW = [&](const Vec3& v) { return L*(v.x*mx) + U*v.y + F*v.z; };
 +  BodyRig::Spec sp;
-+  sp.pelvis = toW(a.pel + (b.pel-a.pel)*u);
-+  sp.up     = dirW(nlerp3(a.up,b.up,u));
-+  sp.fwd    = dirW(nlerp3(a.fwd,b.fwd,u));
-+  sp.flex   = a.flex + (b.flex-a.flex)*u;
-+  sp.look   = dirW(nlerp3(a.look,b.look,u));
++  sp.pelvis = toW(key.pel);
++  sp.up     = dirW(key.up);
++  sp.fwd    = dirW(key.fwd);
++  sp.flex   = key.flex;
++  sp.twist  = key.twist*mx;
++  sp.look   = dirW(key.look);
++  const float ankH = rig->ankleHeight()*r.scale;
 +  for(int s=0; s<2; ++s) {
-+    sp.arm[s].grip = toW(arcLerp(a.hand[s],b.hand[s],u));
-+    sp.arm[s].pole = dirW(nlerp3(a.hpole[s],b.hpole[s],u));
-+    sp.arm[s].hinge = false;
-+    sp.leg[s].ankle = toW(arcLerp(a.ankle[s],b.ankle[s],u));
-+    sp.leg[s].pole  = dirW(nlerp3(a.kpole[s],b.kpole[s],u));
-+    sp.leg[s].toe   = dirW(nlerp3(a.toe[s],b.toe[s],u));
-+    sp.leg[s].pitch = a.pitch[s] + (b.pitch[s]-a.pitch[s])*u;
++    const int q = r.mir ? 1-s : s; // сторона плана для этой стороны тела
++    sp.arm[s].grip  = toW(key.hand[q]);
++    sp.arm[s].pole  = dirW(key.hpole[q]);
++    // рука, которая упирается в землю или лежит, - без шарнирного локтя (плечо перекрутилось бы)
++    sp.arm[s].hinge = key.hand[q].y>30.f;
++    sp.leg[s].ankle = toW(key.ankle[q]);
++    sp.leg[s].pole  = dirW(key.kpole[q]);
++    sp.leg[s].toe   = F;
++    sp.leg[s].flat  = ((key.flat>>q)&1)!=0;
++    if(sp.leg[s].flat) {
++      // стоящая ступня - на землю под ней (склон, кочка)
++      const btVector3 a = btv(sp.leg[s].ankle);
++      sp.leg[s].ankle.y = groundAt(a, float(r.O.y()))*100.f + ankH;
++      }
 +    }
 +  rig->build(sp,r.scale,r.pose);
-+  // Опоры: ступня или ладонь, которая по плану стоит на земле и уже у земли рядом со своим местом, - стоит (трение
-+  // подошвы и ладони; иначе толчок рук и ног только проскальзывал бы, а сгиб бедра поднимал ноги вместо корпуса).
-+  // План уводит её - отрывается
-+  {
-+  const float g0 = float(r.O.y())*100.f;
-+  for(int s=0; s<2; ++s) {
-+    const Vec3  want  = sp.leg[s].ankle;
-+    const bool  plant = (want.y-g0)<20.f*k;
-+    r.footT[s]     = btv(want);
-+    r.footPlant[s] = plant;
-+    const btVector3 ph = anklePos(s);
-+    const float gy  = groundAt(ph, float(ph.y())-0.1f);
-+    Vec3 dh = cmv(ph)-want;
-+    dh.y = 0;
-+    auto& lg = beh->bal.leg[s];
-+    if(lg.pin==nullptr) {
-+      if(plant && float(ph.y())-gy<0.13f && dh.length()<25.f*k)
-+        setAnchor(s,ph);
-+      } else {
-+      Vec3 da = cmv(lg.anchor)-want;
-+      da.y = 0;
-+      if(!plant || da.length()>15.f*k)
-+        freeAnchor(s);
-+      }
-+    }
-+  for(int s=0; s<2; ++s) {
-+    const size_t part = lay->hand[s]<body.size() ? lay->hand[s] : lay->fore[s];
-+    const Vec3   want = sp.arm[s].grip;
-+    const bool   plant = (want.y-g0)<12.f*k;
-+    r.handT[s]     = btv(want);
-+    r.handPlant[s] = plant;
-+    const btVector3 ph = handPos(s);
-+    const float gy  = groundAt(ph, float(ph.y())-0.1f);
-+    Vec3 dh = cmv(ph)-want;
-+    dh.y = 0;
-+    auto& pin = r.handPin[s];
-+    if(pin==nullptr) {
-+      if(plant && float(ph.y())-gy<0.09f && dh.length()<25.f*k) {
-+        auto& rb = *body[part].rb;
-+        const btVector3 local = rb.getWorldTransform().inverse()*ph;
-+        auto c = std::make_unique<btPoint2PointConstraint>(rb, local);
-+        c->setPivotB(ph);
-+        c->setOverrideNumSolverIterations(solverIt);
-+        owner->world->addConstraint(c.get(),true);
-+        pin = std::move(c);
-+        r.handAt[s] = ph;
-+        }
-+      } else {
-+      Vec3 da = cmv(r.handAt[s])-want;
-+      da.y = 0;
-+      if(!plant || da.length()>15.f*k) {
-+        owner->world->removeConstraint(pin.get());
-+        pin.reset();
-+        }
-+      }
-+    }
-+  }
 +  setTarget(r.pose,dtMs);
 +
-+  // цель центра масс - по целям частей
++  // насколько тело отстало: центр масс от центра масс цели
 +  {
 +  btVector3 c(0,0,0), v(0,0,0);
 +  float     M = 0;
@@ -29203,63 +29240,38 @@ index 0000000..abc93cd
 +  if(r.calm>=0.2f)
 +    r.done = true;
 +  }
-+  if(!r.done && r.real>2.4f*tEnd+0.5f)
++  if(!r.done && r.real>2.f*tEnd/RiseRate+1.5f)
 +    r.failed = true;
 +  }
 +
 +void Ragdoll::driveRise(float dt) {
-+  // Вес держит опора о землю: центр масс всего тела - к цели позы (одинаковая добавка скорости всем частям, как от
-+  // реакции опоры), таз и грудь - к ориентации цели; только пока тело на что-то опирается (support). Позу собирают
-+  // мышцы (driveMuscles), поднимается тело - как целое, а не тянется за голову
-+  auto&       r = beh->rise;
-+  const float S = r.support;
-+  if(S<=0.01f || !hasTarget)
++  // Тело идёт за позой плана всеми частями: каждая получает скорость, которая за T доводит её до места в позе
++  // (как «pin weight» в PuppetMaster). Первые 0,9 с T велико - тело мягко собирается из того, как лежало (руки и
++  // ноги не дёргаются к плану), потом 90 мс - тело держит позу; землю, склон и тела рядом по-прежнему решает физика.
++  // Раньше поднимался только центр масс, а части тянули мышцы - ноги взлетали, тело «висело»
++  auto& r = beh->rise;
++  if(!hasTarget)
 +    return;
-+  btVector3 com, vel;
-+  massCenter(com,vel);
-+  const btVector3 tp = r.comT + r.comV*targetAge;
-+  btVector3 a = (tp-com)*40.f + (r.comV-vel)*11.f;
-+  a.setX(a.x()*0.6f);
-+  a.setZ(a.z()*0.6f);
-+  if(a.length()>12.f)
-+    a = a.normalized()*12.f;
-+  const btVector3 dv = (a*S + btVector3(0,0.9f*DynamicWorld::gravityMS*S,0))*dt;
-+  for(auto& bd:body) {
-+    bd.rb->setLinearVelocity(bd.rb->getLinearVelocity()+dv);
-+    bd.rb->activate(true);
-+    }
-+  for(size_t i:{size_t(0), lay->chest}) {
-+    if(i>=body.size())
-+      continue;
-+    auto&              rb = *body[i].rb;
-+    const auto&        d  = drive[i];
-+    const btQuaternion tq = rotOf(d.tAng*targetAge)*d.goal.getRotation();
-+    btVector3 aw = rotErr(rb.getWorldTransform().getRotation(),tq)*60.f + (d.tAng-rb.getAngularVelocity())*14.f;
-+    if(aw.length()>40.f)
-+      aw = aw.normalized()*40.f;
-+    rb.setAngularVelocity(rb.getAngularVelocity() + aw*(dt*S));
-+    }
-+  // ступня и ладонь, которые по плану на земле, - к своему месту по земле (их ведёт и прижимает нога или рука; без
-+  // этого сгиб бедра поднимал бы ступни в воздух, а не подтягивал по земле)
-+  for(int s=0; s<2; ++s) {
-+    for(int e=0; e<2; ++e) {
-+      const bool      leg  = (e==0);
-+      const btVector3 want = leg ? r.footT[s] : r.handT[s];
-+      if(!(leg ? r.footPlant[s] : r.handPlant[s]))
-+        continue;
-+      if(leg && beh->bal.leg[s].pin!=nullptr)
-+        continue;
-+      if(!leg && r.handPin[s]!=nullptr)
-+        continue;
-+      const size_t part = leg ? lay->calf[s] : (lay->hand[s]<body.size() ? lay->hand[s] : lay->fore[s]);
-+      auto&           rb  = *body[part].rb;
-+      const btVector3 at  = leg ? anklePos(s) : handPos(s);
-+      const btVector3 vel = rb.getVelocityInLocalPoint(at-rb.getCenterOfMassPosition());
-+      btVector3 a = (want-at)*25.f - vel*8.f;
-+      if(a.length()>8.f)
-+        a = a.normalized()*8.f;
-+      rb.setLinearVelocity(rb.getLinearVelocity()+a*dt);
-+      }
++  const float in = smooth(r.real/0.9f);
++  const float T  = std::max(dt, 0.35f + (0.09f-0.35f)*in);
++  const float w  = 0.35f + 0.5f*in;
++  const float k  = perStep(w,dt);
++  for(size_t i=0; i<body.size(); ++i) {
++    auto&              rb  = *body[i].rb;
++    const auto&        d   = drive[i];
++    const btVector3    tp  = d.goal.getOrigin() + d.tLin*targetAge;
++    const btQuaternion tq  = rotOf(d.tAng*targetAge)*d.goal.getRotation();
++    const btTransform& cur = rb.getWorldTransform();
++    btVector3 vD = d.tLin + (tp-cur.getOrigin())/T;
++    btVector3 wD = d.tAng + rotErr(cur.getRotation(),tq)/T;
++    // не быстрее, чем двигается человек, встающий с земли
++    if(vD.length()>2.2f)
++      vD = vD*(2.2f/vD.length());
++    if(wD.length()>7.f)
++      wD = wD*(7.f/wD.length());
++    rb.setLinearVelocity (rb.getLinearVelocity() +(vD-rb.getLinearVelocity())*k);
++    rb.setAngularVelocity(rb.getAngularVelocity()+(wD-rb.getAngularVelocity())*k);
++    rb.activate(true);
 +    }
 +  }
 +
@@ -30522,7 +30534,7 @@ index 0000000..abc93cd
 +  for(int s=0; s<2; ++s) {
 +    const float wave = 0.5f + 0.5f*std::sin(w2 + th.ph[0] + (s==0 ? 0.f : 2.4f));
 +    const bool  hurt = (woundLeg==s);
-+    const float outS = (s==0 ? 1.f : -1.f); // отведение наружу: у левой ноги +, у правой -
++    const float outS = (s==0 ? 1.f : -1.f)*lay->sideSign; // отведение наружу: у ноги со стороны «влево» +, у другой -
 +    // подтянутое колено - чуть наружу: ноги не ложатся одна на другую (придавленная нога не поднимется)
 +    // пятка - у ягодицы: колено сгибается сильнее бедра, стопа скользит по земле, а не висит в воздухе
 +    float cHf = 20.f + 55.f*wave + (hurt ? 15.f : 0.f), cKf = 55.f + 65.f*wave + (hurt ? 15.f : 0.f);
@@ -30625,7 +30637,7 @@ index 0000000..abc93cd
 +    const btVector3 sh = body[u].rb->getWorldTransform()*pivotOf(u);
 +    btVector3 out = sh - chest;
 +    out = out - up*out.dot(up);
-+    out = out.length()>1e-3f ? out.normalized() : left*(s==0 ? 1.f : -1.f);
++    out = out.length()>1e-3f ? out.normalized() : left*((s==0 ? 1.f : -1.f)*lay->sideSign);
 +    const float l1 = 2.f*lay->parts[u].segHalf*0.01f, l2 = 2.f*lay->parts[f].segHalf*0.01f;
 +    const bool  support = wR>0.f && (!th.back || th.both || th.prop==s);
 +    if(support) {

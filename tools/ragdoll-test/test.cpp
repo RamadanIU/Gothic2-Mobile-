@@ -192,8 +192,12 @@ static Result run(DynamicWorld& dw, const Skeleton& sk, const char* title, Vec3 
       if(!std::isfinite(o.x) || !std::isfinite(o.y) || !std::isfinite(o.z)) res.ok=false;
       }
     if(human) {
-      float kl = flexOf(sk,w,3,4,5,Vec3(0,0,-1)), kr = flexOf(sk,w,7,8,9,Vec3(0,0,-1));
-      float el = flexOf(sk,w,17,18,19,Vec3(0,0,1)), er = flexOf(sk,w,23,24,25,Vec3(0,0,1));
+      // кости - по именам: у настоящего скелета Gothic номера другие, чем у самодельного
+      auto B = [&](const char* nm) { return bench::bone(sk,nm); };
+      float kl = flexOf(sk,w,B("BIP01 L THIGH"),B("BIP01 L CALF"),B("BIP01 L FOOT"),Vec3(0,0,-1));
+      float kr = flexOf(sk,w,B("BIP01 R THIGH"),B("BIP01 R CALF"),B("BIP01 R FOOT"),Vec3(0,0,-1));
+      float el = flexOf(sk,w,B("BIP01 L UPPERARM"),B("BIP01 L FOREARM"),B("BIP01 L HAND"),Vec3(0,0,1));
+      float er = flexOf(sk,w,B("BIP01 R UPPERARM"),B("BIP01 R FOREARM"),B("BIP01 R HAND"),Vec3(0,0,1));
       res.kneeMin = std::min({res.kneeMin,kl,kr});  res.kneeMax = std::max({res.kneeMax,kl,kr});
       res.elbowMin = std::min({res.elbowMin,el,er}); res.elbowMax = std::max({res.elbowMax,el,er});
       }
@@ -498,7 +502,7 @@ static int visScene(const std::string& name, const char* out, Shake* shake = nul
   // переходит в анимацию подъёма)
   // подъём телом без анимации (Ragdoll::startRise): сбит с ног на спину или на живот, лежит, встаёт
   else if(name=="rise_back" || name=="rise_belly") {
-    len = 7.5f;
+    len = 10.5f; // со спины - через перекат: до 6,5 с
     const bool belly = (name=="rise_belly");
     ev.push_back({0.1f,[&,belly]{
       if(belly)
@@ -1915,7 +1919,7 @@ static int riseTests() {
       if(mirror) setenv("MIRROR","1",1); else unsetenv("MIRROR");
       SceneResult r;
       visScene(nm,nullptr,nullptr,nullptr,&r);
-      const bool ok = r.recoveredAt>0.f && !r.riseFailed && r.recoveredAt-2.4f<5.f && r.pelvisY>80.f;
+      const bool ok = r.recoveredAt>0.f && !r.riseFailed && r.recoveredAt-2.4f<7.5f && r.pelvisY>80.f;
       std::printf("rise: %-10s%s DT=%-2s %s at %.2f s, pelvis %.0f cm %s\n",nm,mirror ? " (mirror)" : "",dt,r.riseFailed ? "FAILED" : (r.recoveredAt>0.f ? "stood" : "still lying"),
                   double(r.recoveredAt),double(r.pelvisY),ok ? "" : "<- BAD");
       if(!ok)

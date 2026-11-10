@@ -71,8 +71,8 @@ struct Fighter {
   void blade(Vec3& b0, Vec3& b1, bool target = false) const {
     const auto& d = target ? a.anim : a.disp;
     if(weapon==FightBody::W_Fist) {
-      // как Npc::bladeSegment: от запястья по предплечью до костяшек
-      const size_t h  = rig->handBone(1);
+      // как Npc::bladeSegment: от запястья по предплечью до костяшек - той рукой, которой бьёт
+      const size_t h  = rig->handBone(fb.strikeHand()==0 ? 0 : 1);
       const size_t el = a.sk.nodes[h].parent;
       Vec3 dir = org(d[h])-org(d[el]);
       dir = dir.length()>1.f ? Vec3::normalize(dir) : Vec3(0,0,1);
