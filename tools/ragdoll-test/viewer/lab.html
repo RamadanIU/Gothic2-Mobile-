@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Площадка боя телом</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alegreya+SC:wght@500;700&family=Alegreya+Sans:wght@400;500;700&display=swap">
+<style>
+  /* Один экран: 3D-сцена во весь экран, подписи поверх, управление - полосой снизу. Одна тёмная тема намеренно:
+     цвета интерфейса игры (тьма, кожа, бронза, золото) */
+  :root {
+    --bg: #171513; --stage: #2b2925; --panel: rgba(27,24,21,0.9); --line: #4a4237; --text: #ece4d2; --dim: #b0a48c;
+    --accent: #d6a33f; --hit: #e2543f; --block: #e8c84a; --chip: #2c2822; --chipOn: #3d362c;
+    --tagBg: rgba(0,0,0,0.62); --hitText: #ffb8aa; --blockText: #fff0a8; --noteText: #f3dca6;
+    --display: "Alegreya SC", Georgia, "Times New Roman", serif;
+    --ui: "Alegreya Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.35 var(--ui); overflow: hidden; }
+  #view { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .hud { position: fixed; pointer-events: none; text-shadow: 0 1px 2px #000; }
+  #title { left: max(16px, env(safe-area-inset-left, 0px)); top: calc(10px + env(safe-area-inset-top, 0px)); right: 150px; }
+  #title b { font: 700 19px/1.15 var(--display); letter-spacing: 0.01em; text-wrap: balance; }
+  #title div { color: var(--dim); font-size: 13.5px; margin-top: 3px; max-width: 60ch; }
+  #clock { right: max(16px, env(safe-area-inset-right, 0px)); top: calc(10px + env(safe-area-inset-top, 0px)); text-align: right;
+    font-variant-numeric: tabular-nums; }
+  #clock b { font-size: 17px; }
+  #clock div { color: var(--dim); font-size: 13px; }
+  #log { left: max(16px, env(safe-area-inset-left, 0px)); bottom: calc(118px + env(safe-area-inset-bottom, 0px));
+    max-width: min(88vw, 540px); font-size: 13.5px; }
+  #log div { margin-top: 3px; padding: 2px 7px; border-left: 3px solid var(--line); background: var(--tagBg);
+    border-radius: 0 4px 4px 0; opacity: 0.55; }
+  #log div.now { opacity: 1; }
+  #log div.hit { border-color: var(--hit); }
+  #log div.block { border-color: var(--block); }
+  #log div.note { border-color: var(--accent); }
+  .tag { position: fixed; transform: translate(-50%,-120%); padding: 2px 7px; border-radius: 4px; font-size: 12.5px;
+    font-weight: 600; pointer-events: none; white-space: nowrap; background: var(--tagBg); }
+  .tag.hit { color: var(--hitText); border: 1px solid var(--hit); }
+  .tag.block { color: var(--blockText); border: 1px solid var(--block); }
+  .tag.note { color: var(--noteText); border: 1px solid var(--accent); }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0;
+    padding-top: 8px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+    background: var(--panel); border-top: 1px solid var(--line); display: grid; gap: 7px; }
+  #row1, #row2 { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+  #row1 select#scene { flex: 1 1 200px; min-width: 0; }
+  button, select { font: inherit; color: var(--text); background: var(--chip); border: 1px solid var(--line);
+    border-radius: 7px; padding: 8px 10px; min-height: 40px; }
+  button { min-width: 44px; cursor: pointer; }
+  button:active { background: var(--chipOn); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  input[type=range] { flex: 1 1 160px; min-width: 120px; accent-color: var(--accent); height: 30px; }
+  label.chk { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); font-size: 13px; padding: 0 2px; }
+  #empty { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; color: var(--dim);
+    padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div id="title" class="hud"><b></b><div></div></div>
+<div id="clock" class="hud"><b></b><div></div></div>
+<div id="log" class="hud"></div>
+<div id="tags"></div>
+<div id="empty">Сцен нет: соберите страницу через tools/ragdoll-test/pack.py</div>
+<div id="bar">
+  <div id="row1">
+    <select id="scene" aria-label="Сцена"></select>
+    <select id="cam" aria-label="Камера">
+      <option value="q">Вид: вполоборота</option>
+      <option value="side">Вид: сбоку</option>
+      <option value="front">Вид: спереди</option>
+      <option value="back">Вид: сзади</option>
+      <option value="top">Вид: сверху</option>
+    </select>
+    <select id="speed" aria-label="Скорость">
+      <option value="1">1×</option>
+      <option value="0.5">0,5×</option>
+      <option value="0.25">0,25×</option>
+      <option value="0.1">0,1×</option>
+    </select>
+  </div>
+  <div id="row2">
+    <button id="prev" aria-label="Кадр назад">◀</button>
+    <button id="play" aria-label="Пуск и пауза">❚❚</button>
+    <button id="next" aria-label="Кадр вперёд">▶</button>
+    <input id="seek" type="range" min="0" max="1000" value="0" aria-label="Время">
+    <label class="chk"><input id="ghost" type="checkbox"> цель</label>
+    <label class="chk"><input id="dbg" type="checkbox" checked> метки</label>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+// Gothic II Mobile: площадка регдолла - просмотр сцен стенда (tools/ragdoll-test). Сцены вставляет pack.py.
+const SCENES = /*SCENES*/[];
+const NP = 26;
+const P = { PEL:0, SP:1, SP1:2, SP2:3, NECK:4, HEAD:5, LUA:6, LFA:7, LH:8, LF:9, RUA:10, RFA:11, RH:12, RF:13,
+            LTH:14, LCA:15, LFT:16, LTO:17, RTH:18, RCA:19, RFT:20, RTO:21, TOP:22, NOSE:23, LPALM:24, RPALM:25 };
+const SEG = [ // [от, до, радиус, тон]
+  [P.PEL,P.SP1,9.5,0],[P.SP1,P.SP2,10,0],[P.SP2,P.NECK,9,0],[P.NECK,P.HEAD,4.6,1],
+  [P.LUA,P.LFA,5.1,0],[P.LFA,P.LH,4.2,1],[P.LH,P.LF,3.5,2],
+  [P.RUA,P.RFA,5.1,0],[P.RFA,P.RH,4.2,1],[P.RH,P.RF,3.5,2],
+  [P.LTH,P.LCA,7.6,0],[P.LCA,P.LFT,5.4,1],[P.LFT,P.LTO,4.0,2],
+  [P.RTH,P.RCA,7.6,0],[P.RCA,P.RFT,5.4,1],[P.RFT,P.RTO,4.0,2],
+  [P.LTH,P.RTH,9.2,0],[P.LUA,P.RUA,7.2,0],
+];
+const BONES = [[0,1],[1,2],[2,3],[3,4],[4,5],[5,22],[3,6],[6,7],[7,8],[8,9],[3,10],[10,11],[11,12],[12,13],
+               [0,14],[14,15],[15,16],[16,17],[0,18],[18,19],[19,20],[20,21]];
+const TONES = [
+  [0xc79a6b, 0xb98858, 0xe0c39a],  // первый: кожа
+  [0x7f93b8, 0x6c80a6, 0xb4c2dc],  // второй: сталь
+  [0x8fae7c, 0x7b9a68, 0xbfd3ae],
+];
+const COL = { r:0xe2543f, y:0xe8c84a, g:0x62c36b, b:0x5b8fe6, w:0xf2efe6, o:0xe08a3a, p:0xb07fd6, k:0x777268 };
+
+const $ = id => document.getElementById(id);
+const view = $('view');
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+view.appendChild(renderer.domElement);
+const scene3 = new THREE.Scene();
+scene3.background = new THREE.Color(0x2b2925);
+scene3.fog = new THREE.Fog(0x2b2925, 2200, 5200);
+const camera = new THREE.PerspectiveCamera(34, 1, 10, 9000);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.12;
+controls.maxPolarAngle = Math.PI*0.495; controls.minDistance = 120; controls.maxDistance = 1800;
+scene3.add(new THREE.HemisphereLight(0xfff4e0, 0x3a3630, 0.78));
+const sun = new THREE.DirectionalLight(0xfff1dc, 0.95);
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -420; sun.shadow.camera.right = 420; sun.shadow.camera.top = 420; sun.shadow.camera.bottom = -420;
+sun.shadow.camera.near = 50; sun.shadow.camera.far = 1600; sun.shadow.bias = -0.0006; sun.shadow.normalBias = 1.2;
+scene3.add(sun); scene3.add(sun.target);
+// мир стенда - левая тройка, как у Gothic (левые кости по -X): на экране - зеркально по X, как в игре
+const world = new THREE.Group(); world.scale.x = -1; scene3.add(world);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(8000, 8000), new THREE.MeshStandardMaterial({ color: 0x45413a, roughness: 1 }));
+ground.rotation.x = -Math.PI/2; ground.receiveShadow = true; world.add(ground);
+const grid = new THREE.GridHelper(4000, 80, 0x6a6458, 0x524d44); grid.position.y = 0.2;
+grid.material.transparent = true; grid.material.opacity = 0.55; world.add(grid);
+const fine = new THREE.GridHelper(4000, 8, 0x8a8170, 0x8a8170); fine.position.y = 0.3;
+fine.material.transparent = true; fine.material.opacity = 0.5; world.add(fine);
+
+const UNIT_CYL = new THREE.CylinderGeometry(1, 1, 1, 18, 1, true);
+const UNIT_SPH = new THREE.SphereGeometry(1, 18, 12);
+const UP = new THREE.Vector3(0, 1, 0);
+class Capsule {
+  constructor(parent, mat) {
+    this.cyl = new THREE.Mesh(UNIT_CYL, mat); this.s0 = new THREE.Mesh(UNIT_SPH, mat); this.s1 = new THREE.Mesh(UNIT_SPH, mat);
+    for (const m of [this.cyl, this.s0, this.s1]) { m.castShadow = true; m.receiveShadow = true; parent.add(m); }
+    this.d = new THREE.Vector3();
+  }
+  set(a, b, r) {
+    this.d.subVectors(b, a); const len = this.d.length();
+    this.s0.position.copy(a); this.s1.position.copy(b); this.s0.scale.setScalar(r); this.s1.scale.setScalar(r);
+    this.cyl.position.addVectors(a, b).multiplyScalar(0.5);
+    this.cyl.scale.set(r, Math.max(len, 0.001), r);
+    if (len > 1e-4) this.cyl.quaternion.setFromUnitVectors(UP, this.d.multiplyScalar(1/len));
+  }
+  show(v) { this.cyl.visible = this.s0.visible = this.s1.visible = v; }
+}
+class Body {
+  constructor(k) {
+    this.g = new THREE.Group(); world.add(this.g);
+    const t = TONES[k % TONES.length];
+    this.mats = t.map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.82, metalness: 0.02 }));
+    this.caps = SEG.map(s => new Capsule(this.g, this.mats[s[3]]));
+    this.chest = new Capsule(this.g, this.mats[0]); this.waist = new Capsule(this.g, this.mats[0]);
+    this.head = new THREE.Mesh(UNIT_SPH, this.mats[2]); this.head.castShadow = true; this.g.add(this.head);
+    this.nose = new THREE.Mesh(UNIT_SPH, this.mats[1]); this.g.add(this.nose);
+    this.palm = [0,1].map(() => { const m = new THREE.Mesh(UNIT_SPH, new THREE.MeshStandardMaterial({ color: 0xf2e6cf, roughness: 0.9 })); this.g.add(m); return m; });
+    const gm = new THREE.LineBasicMaterial({ color: k ? 0x9db4e6 : 0xf0c58e, transparent: true, opacity: 0.75, depthTest: false });
+    this.ghostGeo = new THREE.BufferGeometry();
+    this.ghostGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(BONES.length*6), 3));
+    this.ghost = new THREE.LineSegments(this.ghostGeo, gm); this.ghost.frustumCulled = false; this.ghost.renderOrder = 5; world.add(this.ghost);
+    this.p = Array.from({ length: NP }, () => new THREE.Vector3());
+    this.tmp = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  }
+  set(pts) {
+    const p = this.p;
+    for (let i = 0; i < NP; i++) p[i].set(pts[i*3], pts[i*3+1], pts[i*3+2]);
+    SEG.forEach((s, i) => this.caps[i].set(p[s[0]], p[s[1]], s[2]));
+    const [a, b, c, d] = this.tmp;
+    d.subVectors(p[P.LUA], p[P.RUA]); const sw = d.length(); if (sw > 1e-3) d.multiplyScalar(1/sw);
+    c.lerpVectors(p[P.SP2], p[P.NECK], 0.52);
+    a.copy(c).addScaledVector(d, 12.5); b.copy(c).addScaledVector(d, -12.5); this.chest.set(a, b, 10.8);
+    const h = this.tmp[3].clone().subVectors(p[P.LTH], p[P.RTH]); const hw = h.length(); if (hw > 1e-3) h.multiplyScalar(1/hw);
+    h.add(d).normalize(); c.copy(p[P.SP1]);
+    a.copy(c).addScaledVector(h, 9.5); b.copy(c).addScaledVector(h, -9.5); this.waist.set(a, b, 9.6);
+    this.head.position.lerpVectors(p[P.HEAD], p[P.TOP], 0.5); this.head.scale.setScalar(10.6);
+    this.nose.position.copy(p[P.NOSE]); this.nose.scale.setScalar(2.4);
+    this.palm[0].position.copy(p[P.LPALM]); this.palm[0].scale.setScalar(2.2);
+    this.palm[1].position.copy(p[P.RPALM]); this.palm[1].scale.setScalar(2.2);
+  }
+  setGhost(pts) {
+    const arr = this.ghostGeo.attributes.position.array;
+    BONES.forEach((bn, i) => { for (let e = 0; e < 2; e++) for (let c = 0; c < 3; c++) arr[i*6+e*3+c] = pts[bn[e]*3+c]; });
+    this.ghostGeo.attributes.position.needsUpdate = true;
+  }
+  dispose() { world.remove(this.g); world.remove(this.ghost); }
+}
+class Blade {
+  constructor(k) {
+    this.mat = new THREE.MeshStandardMaterial({ color: 0xe9ecef, roughness: 0.25, metalness: 0.85, emissive: 0x30343a });
+    this.cap = new Capsule(world, this.mat);
+    this.guard = new Capsule(world, new THREE.MeshStandardMaterial({ color: 0x6b5a3c, roughness: 0.6, metalness: 0.4 }));
+    const N = 14; this.N = N;
+    this.geo = new THREE.BufferGeometry();
+    this.geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N*6*3), 3));
+    this.trail = new THREE.Mesh(this.geo, new THREE.MeshBasicMaterial({ color: k ? 0xa9c2ff : 0xffd9a0, transparent: true, opacity: 0.26, side: THREE.DoubleSide, depthWrite: false }));
+    this.trail.frustumCulled = false; world.add(this.trail);
+  }
+  show(v) { this.cap.show(v); this.guard.show(v); this.trail.visible = v; }
+  dispose() { for (const c of [this.cap, this.guard]) for (const m of [c.cyl, c.s0, c.s1]) world.remove(m); world.remove(this.trail); }
+}
+
+let cur = null, bodies = [], blades = [], t = 0, playing = true, speed = 1, lastTs = 0, follow = new THREE.Vector3(0, 95, 0), camKey = 'q';
+const lineGeo = new THREE.BufferGeometry(); lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(600*6), 3));
+lineGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(600*6), 3));
+const lines = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false, transparent: true, opacity: 0.95 }));
+lines.frustumCulled = false; lines.renderOrder = 6; world.add(lines);
+const dotPool = [], boxPool = [];
+const ringPool = [];
+// числа кадра: массив мм или строка base64 с int16 (pack.py) -> см
+function unpack(a) {
+  if (typeof a !== 'string') return Float32Array.from(a, v => v*0.1);
+  const bin = atob(a), n = bin.length >> 1, out = new Float32Array(n);
+  for (let i = 0; i < n; i++) { let v = bin.charCodeAt(2*i) | (bin.charCodeAt(2*i+1) << 8); if (v > 32767) v -= 65536; out[i] = v*0.1; }
+  return out;
+}
+function prep(sc) {
+  if (sc._prep) return sc;
+  sc.T0 = sc.frames[0].t; sc.T1 = sc.frames[sc.frames.length-1].t;
+  for (const f of sc.frames) {
+    f.b = f.b.map(unpack);
+    if (f.g) f.g = f.g.map(unpack);
+    if (f.w) f.w = f.w.map(a => ({ who: a[0], p: a.length === 2 && typeof a[1] === 'string' ? unpack(a[1]) : unpack(a.slice(1)) }));
+  }
+  for (const e of sc.events) e.p = e.p.map(v => v*0.1);
+  sc._prep = true; return sc;
+}
+function load(sc) {
+  cur = prep(sc);
+  bodies.forEach(b => b.dispose()); blades.forEach(b => b.dispose());
+  bodies = cur.actors.map((_, k) => new Body(k)); blades = cur.actors.map((_, k) => new Blade(k));
+  boxPool.forEach(m => world.remove(m)); boxPool.length = 0;
+  for (const bx of cur.boxes || []) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(bx[3]*0.2, bx[4]*0.2, bx[5]*0.2), new THREE.MeshStandardMaterial({ color: 0x5a554c, roughness: 1 }));
+    m.position.set(bx[0]*0.1, bx[1]*0.1, bx[2]*0.1); m.castShadow = true; m.receiveShadow = true; world.add(m); boxPool.push(m);
+  }
+  $('title').firstChild.textContent = cur.title || cur.name;
+  $('title').lastChild.textContent = cur.note || '';
+  t = cur.T0; focus(true); setCam(camKey, true); draw();
+}
+function frameAt(time) {
+  const fr = cur.frames; let lo = 0, hi = fr.length-1;
+  while (hi-lo > 1) { const m = (lo+hi) >> 1; if (fr[m].t <= time) lo = m; else hi = m; }
+  const a = fr[lo], b = fr[hi]; const u = b.t > a.t ? Math.min(Math.max((time-a.t)/(b.t-a.t), 0), 1) : 0;
+  return { a, b, u, i: lo };
+}
+const mixBuf = [];
+function mix(x, y, u, k) {
+  const out = mixBuf[k] || (mixBuf[k] = new Float32Array(x.length));
+  for (let i = 0; i < x.length; i++) out[i] = x[i] + (y[i]-x[i])*u;
+  return out;
+}
+function focus(snap) {
+  if (!cur) return;
+  const { a } = frameAt(t); let x = 0, y = 0, z = 0;
+  for (const b of a.b) { x += b[0]; y += b[1]; z += b[2]; }
+  const n = a.b.length || 1; const c = new THREE.Vector3(-x/n, Math.max(y/n, 45)*0.9 + 12, z/n);
+  if (snap) follow.copy(c); else follow.lerp(c, 0.08);
+}
+function setCam(key, snap) {
+  camKey = key; $('cam').value = key;
+  let spread = 0;
+  if (cur) { const a = frameAt(t).a.b; if (a.length > 1) spread = Math.hypot(a[0][0]-a[1][0], a[0][2]-a[1][2]); }
+  const d = (cur && cur.actors.length > 1 ? 300 : 420) + spread*0.95;
+  const off = { q: [0.62*d, 0.36*d, 0.78*d], side: [d, 0.22*d, 0], front: [0, 0.22*d, d], back: [0, 0.22*d, -d], top: [0, 1.15*d, 1] }[key] || [d, 0.3*d, d];
+  camera.position.set(follow.x + off[0], follow.y + off[1], follow.z + off[2]);
+  controls.target.copy(follow); controls.update();
+}
+function screen(v) {
+  const p = new THREE.Vector3(-v[0], v[1], v[2]).project(camera);
+  return { x: (p.x*0.5+0.5)*view.clientWidth, y: (-p.y*0.5+0.5)*view.clientHeight, ok: p.z < 1 };
+}
+function draw() {
+  if (!cur) return;
+  const { a, b, u } = frameAt(t);
+  const prevTarget = follow.clone(); focus(false);
+  const shift = follow.clone().sub(prevTarget); camera.position.add(shift); controls.target.copy(follow);
+  sun.position.set(follow.x - 260, 620, follow.z + 300); sun.target.position.copy(follow); sun.target.updateMatrixWorld();
+  const showGhost = $('ghost').checked, showDbg = $('dbg').checked;
+  bodies.forEach((bd, k) => {
+    if (!a.b[k]) return;
+    bd.set(mix(a.b[k], (b.b[k] || a.b[k]), u, k));
+    const g = showGhost && a.g && a.g[k];
+    bd.ghost.visible = !!g; if (g) bd.setGhost(mix(a.g[k], (b.g && b.g[k]) || a.g[k], u, 40+k));
+  });
+  // клинки и их след
+  blades.forEach((bl, k) => {
+    const wa = (a.w || []).find(w => w.who === k), wb = (b.w || []).find(w => w.who === k);
+    bl.show(!!wa); if (!wa) return;
+    const p = mix(wa.p, (wb || wa).p, u, 60+k);
+    const A = new THREE.Vector3(p[0], p[1], p[2]), B = new THREE.Vector3(p[3], p[4], p[5]);
+    bl.cap.set(A, B, 1.25);
+    const dir = B.clone().sub(A).normalize(); const side = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0));
+    if (side.lengthSq() < 1e-4) side.set(1, 0, 0); side.normalize();
+    bl.guard.set(A.clone().addScaledVector(dir, 2).addScaledVector(side, 7), A.clone().addScaledVector(dir, 2).addScaledVector(side, -7), 1.3);
+    const arr = bl.geo.attributes.position.array; const N = bl.N; let prev = null, q = 0;
+    for (let i = 0; i <= N; i++) {
+      const tt = t - (N-i)*0.014; const f = frameAt(Math.max(tt, cur.T0));
+      const x = (f.a.w || []).find(w => w.who === k), y = (f.b.w || []).find(w => w.who === k);
+      const pp = x ? Array.from(x.p, (v, j) => v + (((y || x).p[j]) - v)*f.u) : null;
+      if (prev && pp) {
+        const v = [[prev[0],prev[1],prev[2]],[prev[3],prev[4],prev[5]],[pp[3],pp[4],pp[5]],[prev[0],prev[1],prev[2]],[pp[3],pp[4],pp[5]],[pp[0],pp[1],pp[2]]];
+        for (const w of v) { arr[q++] = w[0]; arr[q++] = w[1]; arr[q++] = w[2]; }
+      }
+      prev = pp;
+    }
+    for (; q < arr.length; q++) arr[q] = arr[q-3] || 0;
+    bl.geo.attributes.position.needsUpdate = true;
+  });
+  // отрезки и точки отладки
+  {
+    const pos = lineGeo.attributes.position.array, col = lineGeo.attributes.color.array; let n = 0; const c = new THREE.Color();
+    if (showDbg) for (const l of a.ln || []) {
+      if (n >= 600) break;
+      for (let j = 0; j < 6; j++) pos[n*6+j] = l[j]*0.1;
+      c.setHex(COL[l[6]] || 0xffffff); for (let e = 0; e < 2; e++) { col[n*6+e*3] = c.r; col[n*6+e*3+1] = c.g; col[n*6+e*3+2] = c.b; }
+      n++;
+    }
+    lineGeo.setDrawRange(0, n*2); lineGeo.attributes.position.needsUpdate = true; lineGeo.attributes.color.needsUpdate = true;
+    const dots = showDbg ? (a.d || []) : [];
+    while (dotPool.length < dots.length) { const m = new THREE.Mesh(UNIT_SPH, new THREE.MeshBasicMaterial({ depthTest: false, transparent: true, opacity: 0.9 })); m.renderOrder = 7; world.add(m); dotPool.push(m); }
+    dotPool.forEach((m, i) => { m.visible = i < dots.length; if (m.visible) { const d = dots[i]; m.position.set(d[0]*0.1, d[1]*0.1, d[2]*0.1); m.scale.setScalar(d[4]*0.1); m.material.color.setHex(COL[d[3]] || 0xffffff); } });
+  }
+  // события: вспышка в мире, подпись на экране, журнал
+  const tags = $('tags'); tags.textContent = ''; const log = $('log'); log.textContent = '';
+  let ri = 0;
+  const past = cur.events.filter(e => e.t <= t + 1e-4);
+  for (const e of past.slice(-4)) {
+    const row = document.createElement('div'); row.className = e.k + (t - e.t < 1.2 ? ' now' : '');
+    row.textContent = e.t.toFixed(2) + ' с  ' + e.s; log.appendChild(row);
+  }
+  for (const e of past) {
+    const age = t - e.t; if (age > 0.9) continue;
+    let ring = ringPool[ri]; if (!ring) { ring = new THREE.Mesh(UNIT_SPH, new THREE.MeshBasicMaterial({ transparent: true, depthTest: false })); ring.renderOrder = 8; world.add(ring); ringPool.push(ring); }
+    ri++; ring.visible = true; ring.position.set(e.p[0], e.p[1], e.p[2]); ring.scale.setScalar(3 + 16*Math.min(age/0.35, 1));
+    ring.material.color.setHex(e.k === 'hit' ? 0xff5a3c : e.k === 'block' ? 0xffe066 : 0xe6b85c); ring.material.opacity = Math.max(0, 0.85*(1 - age/0.5));
+    if (showDbg) { const s = screen(e.p); if (s.ok) { const d = document.createElement('div'); d.className = 'tag ' + e.k; d.style.left = s.x + 'px'; d.style.top = s.y + 'px'; d.style.opacity = String(Math.max(0, 1 - age/0.9)); d.textContent = e.s; tags.appendChild(d); } }
+  }
+  for (; ri < ringPool.length; ri++) ringPool[ri].visible = false;
+  $('clock').firstChild.textContent = t.toFixed(2) + ' с';
+  $('clock').lastChild.textContent = stateText(a.l || '');
+  if (document.activeElement !== $('seek')) $('seek').value = String(Math.round(1000*(t-cur.T0)/Math.max(cur.T1-cur.T0, 1e-3)));
+  controls.update(); renderer.render(scene3, camera);
+}
+// подписи сцен прежнего набора стенда (visScene) - по-русски
+function stateText(l) {
+  const words = { balance: 'ловит равновесие', fall: 'падает', rise: 'встаёт', recovered: 'стоит', 'RISE FAILED': 'не встал' };
+  l = l.replace(/show=[0-9.]+/, '').replace(/getup err=[0-9]+/, 'встаёт').replace(/getup \(anim\)/, 'встаёт');
+  for (const k in words) l = l.replace(k, words[k]);
+  return l.trim() || 'стоит';
+}
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight; renderer.setSize(w, h, false); camera.aspect = w/h;
+  camera.fov = w < h ? 46 : 34; camera.updateProjectionMatrix(); draw();
+}
+function tick(ts) {
+  const dt = Math.min((ts - lastTs)/1000, 0.1); lastTs = ts;
+  if (cur && playing) { t += dt*speed; if (t > cur.T1 + 0.6) t = cur.T0; }
+  if (cur) { const tt = Math.min(t, cur.T1); const keep = t; t = tt; draw(); t = keep; }
+  requestAnimationFrame(tick);
+}
+function setPlaying(v) { playing = v; $('play').textContent = v ? '❚❚' : '▶︎'; $('play').classList.toggle('on', !v); }
+$('play').onclick = () => setPlaying(!playing);
+$('prev').onclick = () => { setPlaying(false); const i = frameAt(Math.min(t, cur.T1)).i; t = cur.frames[Math.max(i - (t > cur.frames[i].t + 1e-4 ? 0 : 1), 0)].t; };
+$('next').onclick = () => { setPlaying(false); const i = frameAt(Math.min(t, cur.T1)).i; t = cur.frames[Math.min(i+1, cur.frames.length-1)].t; };
+$('seek').oninput = e => { t = cur.T0 + (cur.T1-cur.T0)*Number(e.target.value)/1000; };
+$('speed').onchange = e => { speed = Number(e.target.value); };
+$('cam').onchange = e => setCam(e.target.value, true);
+$('scene').onchange = e => { load(SCENES[Number(e.target.value)]); setPlaying(true); };
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') { setPlaying(!playing); e.preventDefault(); }
+  if (e.code === 'ArrowRight') $('next').click();
+  if (e.code === 'ArrowLeft') $('prev').click();
+});
+window.addEventListener('resize', resize);
+if (!SCENES.length) { $('empty').style.display = 'flex'; $('bar').style.display = 'none'; }
+else {
+  let group = null, sel = $('scene');
+  SCENES.forEach((s, i) => {
+    const g = s.group || 'Сцены';
+    if (!group || group.label !== g) { group = document.createElement('optgroup'); group.label = g; sel.appendChild(group); }
+    const o = document.createElement('option'); o.value = String(i); o.textContent = s.title || s.name; group.appendChild(o);
+  });
+  const q = new URLSearchParams(location.search); const want = q.get('scene');
+  let i0 = Math.max(0, SCENES.findIndex(s => s.name === want)); sel.value = String(i0);
+  resize(); load(SCENES[i0]); requestAnimationFrame(tick);
+}
+// для снимков (tools/ragdoll-test/viewer/shots.js): сцена, время, камера - без анимации
+window.lab = {
+  names: () => SCENES.map(s => s.name),
+  info: name => { const s = prep(SCENES.find(x => x.name === name)); return { t0: s.T0, t1: s.T1, events: s.events.map(e => ({ t: e.t, k: e.k, s: e.s })) }; },
+  set: (name, time, cam, opts) => {
+    const s = SCENES.find(x => x.name === name); if (!s) return false;
+    if (cur !== s) load(s);
+    setPlaying(false); $('ghost').checked = !!(opts && opts.ghost); $('dbg').checked = !(opts && opts.nodbg);
+    $('bar').style.display = (opts && opts.bare) ? 'none' : ''; $('log').style.display = (opts && opts.nolog) ? 'none' : ''; $('tags').style.display = (opts && opts.nolog) ? 'none' : ''; $('title').lastChild.style.display = (opts && opts.nolog) ? 'none' : ''; t = time; focus(true); setCam(cam || 'q', true); resize(); draw(); return true;
+  },
+};
+</script>
+</body>
+</html>

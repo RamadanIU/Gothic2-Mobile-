@@ -22,11 +22,11 @@ if [ ! -f "$OUT/bullet/src/BulletDynamics/libBulletDynamics.a" ]; then
 fi
 
 EXTRA=""
-[ -n "${RAGDOLL_TRACE:-}" ] && EXTRA="-DRAGDOLL_TRACE"
-g++ -std=c++20 -O2 -g -Wall -Wconversion $EXTRA -I"$O/common" -I"$O/lib/bullet3/src" -I"$O/lib/Tempest/Engine/include" \
+[ -n "${RAGDOLL_TRACE:-}" ] && EXTRA="-DRAGDOLL_TRACE -DBODYRIG_TRACE"
+g++ -std=c++20 -O2 -g -Wall -Wconversion $EXTRA -DZENKIT_SAMPLES="\"$O/lib/ZenKit/tests/samples\"" -I"$O/common" -I"$O/lib/bullet3/src" -I"$O/lib/Tempest/Engine/include" \
     -I"$O/lib/Tempest/Engine" -I"$O/lib/ZenKit/include" \
     "$HERE/test.cpp" "$HERE/stubs.cpp" "$O/common/physics/ragdoll.cpp" "$O/common/graphics/mesh/animmath.cpp" \
-    "$O/common/graphics/mesh/injury.cpp" "$O/common/graphics/mesh/bodyrig.cpp" "$O/common/game/fightbody.cpp" \
+    "$O/common/graphics/mesh/injury.cpp" "$O/common/graphics/mesh/bodyrig.cpp" "$O/common/graphics/mesh/humancanon.cpp" "$O/common/game/fightbody.cpp" "$O/common/game/bladework.cpp" \
     "$O/lib/Tempest/Engine/math/matrix.cpp" "$O/lib/Tempest/Engine/utility/log.cpp" \
     "$OUT/bullet/src/BulletDynamics/libBulletDynamics.a" "$OUT/bullet/src/BulletCollision/libBulletCollision.a" \
     "$OUT/bullet/src/LinearMath/libLinearMath.a" -o "$OUT/ragtest"

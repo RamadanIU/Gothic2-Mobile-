@@ -5,6 +5,7 @@
 
 #include "actor.h"
 #include "game/fightbody.h"
+#include "game/bladework.h"
 #include "graphics/mesh/bodyrig.h"
 
 namespace bench {
@@ -44,9 +45,18 @@ struct Fighter {
   Vec3                pA = {}, pB = {};
   bool                hasPrev = false;
   uint32_t            spent = 0;      // удар, который уже попал или упёрся
+  uint32_t            beat  = 0;      // удар, который сбил клинок противника (и идёт дальше)
+  float               keep  = 1;      // доля силы после сбива
+  int                 beats = 0;
+  float               hp    = 1;      // здоровье, доля
+  bool                down  = false, rising = false, stood = false;
+  float               downAt = 0;
+  BladeWork::Blade    prevBlade;
+  BladeWork::BodyHit  lastHit;
   int                 hits = 0, blocks = 0;
   std::vector<std::pair<Vec3,char>> fx; // вспышки: попадания (r), блоки (y)
   std::vector<std::string>          log;
+  size_t                            recLog = 0; // сколько событий уже отдано записи площадки
   float               dmg = 0.12f;
 
   Fighter(DynamicWorld& dw, const Skeleton& sk, Vec3 at, float rotY):a(dw,sk,at,rotY), yaw(rotY) {
@@ -61,10 +71,13 @@ struct Fighter {
   void blade(Vec3& b0, Vec3& b1, bool target = false) const {
     const auto& d = target ? a.anim : a.disp;
     if(weapon==FightBody::W_Fist) {
-      const size_t h = rig->handBone(1);
-      const size_t f = bone(a.sk,"BIP01 R FINGER1");
-      b0 = org(d[h]);
-      b1 = f!=size_t(-1) ? org(d[f]) : org(d[h]);
+      // как Npc::bladeSegment: от запястья по предплечью до костяшек - той рукой, которой бьёт
+      const size_t h  = rig->handBone(fb.strikeHand()==0 ? 0 : 1);
+      const size_t el = a.sk.nodes[h].parent;
+      Vec3 dir = org(d[h])-org(d[el]);
+      dir = dir.length()>1.f ? Vec3::normalize(dir) : Vec3(0,0,1);
+      b0 = org(d[h]) - dir*4.f;
+      b1 = org(d[h]) + dir*9.f;
       return;
       }
     const size_t h  = rig->handBone(1), sl = rig->slotBone(1);
@@ -86,6 +99,7 @@ struct Fighter {
     in.fwd      = fwd();
     in.vel      = vel;
     in.bladeLen = bladeLen;
+    in.seed     = a.id*7919u;
     if(foe) {
       in.target = true;
       in.tChest = org(foe->a.disp[bone(a.sk,"BIP01 SPINE2")]);
@@ -95,18 +109,21 @@ struct Fighter {
       if(foe->fb.strikeAim(aAt,aDir)) {
         in.threatAimed = true; in.threatAt = aAt; in.threatDir = aDir;
         }
-      if(foe->hasPrev && foe->fb.striking()) {
-        Vec3 b0, b1; foe->blade(b0,b1);
-        in.threat = true; in.threatA = b0; in.threatB = b1;
-        in.threatVel = ((b0+b1)*0.5f - (foe->pA+foe->pB)*0.5f)/(float(a.dt)/1000.f);
-        } else if(foe->hasPrev) {
-        Vec3 b0, b1; foe->blade(b0,b1);
-        in.threat = true; in.threatA = b0; in.threatB = b1;
+      if(foe->hasPrev) {
+        // клинок противника и его скорость (как Npc::tickFightBody)
+        const BladeWork::Blade bn = foe->bladeNow();
+        in.threat  = true;
+        in.threatA = bn.grip;
+        in.threatB = bn.tip;
+        if(foe->fb.striking())
+          in.threatVel = ((bn.grip+bn.tip)*0.5f - (foe->prevBlade.grip+foe->prevBlade.tip)*0.5f)/(float(a.dt)/1000.f);
         }
       }
     BodyRig::Spec sp;
     fb.tick(*rig,in,float(a.dt)/1000.f,sp);
     rig->build(sp,1.f,out);
+    if(a.r)
+      a.r->setGripPrecision(fb.precision());
     }
 
   // перед кадром: часы и перемещение
@@ -115,70 +132,133 @@ struct Fighter {
     clock.t += dts;
     }
 
-  // после кадра: клинок прошёл от прошлого места к нынешнему - касание клинка противника (блок) или тела (удар)
-  void sweep() {
+  // клинок в позе тела - как Npc::bladeSegment: от хвата (слот кисти) до острия; кулак - от запястья до костяшек
+  BladeWork::Blade bladeNow() const {
+    BladeWork::Blade bl;
+    bl.weapon = uint8_t(weapon);
+    if(weapon==FightBody::W_Fist) {
+      blade(bl.grip,bl.tip);
+      bl.radius = 5.f;
+      return bl;
+      }
     Vec3 b0, b1;
     blade(b0,b1);
-    if(std::getenv("FTRACE") && fb.striking() && foe) {
-      const Vec3 h  = org(a.disp[rig->handBone(1)]), ht = org(a.anim[rig->handBone(1)]);
-      const Vec3 c  = org(foe->a.disp[bone(a.sk,"BIP01 SPINE2")]);
-      Vec3 t0, t1; blade(t0,t1,true);
-      std::printf("  %c t=%.2f stage=%d hand=(%.0f %.0f %.0f) want=(%.0f %.0f %.0f) tip=(%.0f %.0f %.0f) foeChest=(%.0f %.0f %.0f) tgtTip=(%.0f %.0f %.0f)\n",
-        a.id==100?'A':'B',double(a.time),clock.stage,double(h.x),double(h.y),double(h.z),double(ht.x),double(ht.y),double(ht.z),
-        double(b1.x),double(b1.y),double(b1.z),double(c.x),double(c.y),double(c.z),double(t1.x),double(t1.y),double(t1.z));
-      }
-    if(!hasPrev) { pA = b0; pB = b1; hasPrev = true; return; }
-    if(foe!=nullptr && fb.striking() && fb.strikeId()!=spent && foe->a.r) {
-      Vec3 f0, f1; foe->blade(f0,f1);
-      Vec3 fp0 = foe->hasPrev ? foe->pA : f0, fp1 = foe->hasPrev ? foe->pB : f1;
-      const int N = 4;
-      for(int s=1; s<=N && fb.strikeId()!=spent; ++s) {
-        const float u0 = float(s-1)/N, u1 = float(s)/N;
-        const Vec3 m0 = pA+(b0-pA)*u1, m1 = pB+(b1-pB)*u1;
-        const Vec3 o0 = fp0+(f0-fp0)*u1, o1 = fp1+(f1-fp1)*u1;
-        Vec3 at;
-        const float r = weapon==FightBody::W_Fist ? 5.f : 3.f;
-        const float rr= foe->weapon==FightBody::W_Fist ? 5.f : 3.f;
-        if(segSegDist(m0,m1,o0,o1,&at)<r+rr+1.f) {
-          // блок: клинок о клинок
-          const float dts = float(a.dt)/1000.f;
-          const Vec3 v = ((b0+b1)*0.5f-(pA+pB)*0.5f)/dts*0.01f; // м/с
-          if(a.r)   a.r->nudge(org(a.disp[rig->handBone(1)]), v*-0.7f);
-          foe->a.r->nudge(org(foe->a.disp[foe->rig->handBone(1)]), v*0.35f);
-          spent = fb.strikeId();
-          blocks++;
-          fx.push_back({at,'y'});
-          char buf[96]; std::snprintf(buf,sizeof(buf),"t=%.2f block %.1f m/s",double(a.time),double(v.length()));
-          log.push_back(buf);
-          break;
+    const size_t sl = rig->slotBone(1);
+    bl.grip   = org(a.disp[sl<a.disp.size() ? sl : rig->handBone(1)]);
+    bl.tip    = b1;
+    bl.radius = 3.f;
+    return bl;
+    }
+
+  // после кадра: клинок прошёл от прошлого места к нынешнему - что он задел, считает game/bladework (тот же код, что
+  // в игре): клинок противника (блок или сбив) или тело (удар по месту)
+  void sweep() {
+    const BladeWork::Blade cur = bladeNow();
+    const float dts = float(a.dt)/1000.f;
+    if(!hasPrev) { prevBlade = cur; pA = cur.grip; pB = cur.tip; hasPrev = true; return; }
+    if(foe!=nullptr && !down && !foe->down && fb.striking() && fb.strikeId()!=spent && foe->a.r) {
+      const uint32_t id = fb.strikeId();
+      BladeWork::Sweep sw;
+      sw.from = prevBlade; sw.to = cur; sw.dt = dts;
+      char buf[200];
+      if(foe->hasPrev && id!=beat) {
+        BladeWork::Sweep so;
+        so.from = foe->prevBlade; so.to = foe->bladeNow(); so.dt = dts;
+        BladeWork::BladeHit bh;
+        if(BladeWork::hitBlade(sw,so,bh)) {
+          const Vec3 vd = bh.vel.length()>1e-3f ? Vec3::normalize(bh.vel) : fwd();
+          if(foe->fb.blocking()) {
+            // блок: удар остановлен, клинок отскакивает; рука блокирующего получает отдачу
+            const float kick = BladeWork::parryKick(bh,uint8_t(weapon),uint8_t(foe->weapon));
+            if(a.r) { a.r->softenGrip(0.16f); a.r->nudge(org(a.disp[rig->handBone(1)]), vd*(-0.25f*bh.speed)); }
+            foe->a.r->softenGrip(0.14f);
+            foe->a.r->nudge(org(foe->a.disp[foe->rig->handBone(1)]), vd*kick);
+            fb.impact(FightBody::I_Blocked);
+            spent = id;
+            blocks++;
+            fx.push_back({bh.at,'y'});
+            std::snprintf(buf,sizeof(buf),"блок: клинок о клинок (%.0f%% от гарды), %.0f м/с",double(bh.uOther*100.f),double(bh.speed));
+            log.push_back(buf);
+            } else {
+            // клинок противника не в блоке: сбит в сторону, удар идёт дальше слабее
+            keep = BladeWork::beatKeep(bh,uint8_t(weapon),uint8_t(foe->weapon));
+            foe->a.r->softenGrip(0.3f);
+            foe->a.r->nudge(org(foe->a.disp[foe->rig->handBone(1)]), vd*(0.22f*bh.speed));
+            if(a.r) a.r->softenGrip(0.05f);
+            fb.impact(FightBody::I_Beat);
+            beat = id;
+            beats++;
+            fx.push_back({bh.at,'o'});
+            std::snprintf(buf,sizeof(buf),"клинок противника сбит, %.0f м/с (удар теряет %.0f%%)",double(bh.speed),double((1.f-keep)*100.f));
+            log.push_back(buf);
+            }
           }
-        for(int j=0; j<=5; ++j) {
-          const float k = 0.15f + 0.85f*float(j)/5.f;
-          const Vec3 q0 = (pA+(pB-pA)*k)*(1.f-u0) + (b0+(b1-b0)*k)*u0;
-          const Vec3 q1 = (pA+(pB-pA)*k)*(1.f-u1) + (b0+(b1-b0)*k)*u1;
-          Ragdoll::RayHit rh;
-          if(!Ragdoll::rayTest(foe->a.sk, foe->a.disp.data(), foe->a.disp.size(), q0, q1+(q1-q0)*0.2f, rh))
-            continue;
-          const float dts = float(a.dt)/1000.f;
-          const Vec3  v   = (q1-q0)*float(N)/dts; // см/с
-          if(v.length()<400.f)
-            continue; // медленный клинок не ранит
-          const float pw  = FightBody::hitPower(weapon, v.length());
-          static const char* zn[] = {"body","head","legs","arms"};
-          const float mul = rh.zone==1 ? 2.f : (rh.zone==2 ? 0.75f : (rh.zone==3 ? 0.5f : 1.f));
-          foe->a.hit(rh.at, Vec3::normalize(v), pw, dmg*mul);
-          if(a.r) a.r->nudge(rh.at, v*-0.0035f);
-          spent = fb.strikeId();
-          hits++;
-          fx.push_back({rh.at,'r'});
-          char buf[128]; std::snprintf(buf,sizeof(buf),"t=%.2f hit %s x%.2f %.1f m/s power %.1f",double(a.time),zn[rh.zone<4?rh.zone:0],
-                                       double(mul),double(v.length()/100.f),double(pw));
-          log.push_back(buf);
-          break;
+        }
+      if(spent!=id) {
+        BladeWork::Body body;
+        body.sk = &foe->a.sk; body.bones = foe->a.disp.data(); body.count = foe->a.disp.size();
+        BladeWork::BodyHit h;
+        Vec3  nearG;
+        float uG = 0;
+        if(BladeWork::hitBody(sw,body,h)) {
+          const bool armPart = (h.part==BladeWork::BP_Forearm || h.part==BladeWork::BP_Hand || h.part==BladeWork::BP_UpperArm);
+          if(weapon==FightBody::W_Fist && armPart && foe->fb.blocking()) {
+            // кулаком в поставленные предплечья - блок
+            foe->a.r->nudge(h.at, h.dir*(0.12f*h.speed));
+            fb.impact(FightBody::I_Blocked);
+            blocks++;
+            fx.push_back({h.at,'y'});
+            std::snprintf(buf,sizeof(buf),"блок: кулак в предплечья, %.0f м/с",double(h.speed));
+            log.push_back(buf);
+            }
+          else if(weapon!=FightBody::W_Fist && foe->fb.blocking() && foe->weapon!=FightBody::W_Fist &&
+                  BladeWork::parryCatches(h,foe->bladeNow(),nearG,uG)) {
+            // клинок дошёл до тела, но защищающийся в блоке и его клинок рядом: принял на клинок или гарду
+            BladeWork::BladeHit bh;
+            bh.at = nearG; bh.vel = h.vel; bh.u = h.u; bh.uOther = uG; bh.speed = h.speed;
+            const float kick = BladeWork::parryKick(bh,uint8_t(weapon),uint8_t(foe->weapon));
+            if(a.r) { a.r->softenGrip(0.16f); a.r->nudge(org(a.disp[rig->handBone(1)]), h.dir*(-0.25f*h.speed)); }
+            foe->a.r->softenGrip(0.14f);
+            foe->a.r->nudge(org(foe->a.disp[foe->rig->handBone(1)]), h.dir*kick);
+            fb.impact(FightBody::I_Blocked);
+            blocks++;
+            fx.push_back({nearG,'y'});
+            std::snprintf(buf,sizeof(buf),"блок в последний миг: принял на клинок (%.0f%% от гарды), %.0f м/с",double(uG*100.f),double(h.speed));
+            log.push_back(buf);
+            }
+          else if(h.wounds) {
+            if(std::getenv("PARRYTRACE") && foe->fb.blocking()) {
+              Vec3 nG; float uu = 0;
+              BladeWork::parryCatches(h,foe->bladeNow(),nG,uu);
+              std::printf("  parry missed: hit %s at u=%.2f, guard blade nearest %.0f cm (u=%.2f)\n",BladeWork::partTitle(h.part),
+                          double(h.u),double((h.at-nG).length()),double(uu));
+              }
+            const float k    = (beat==id ? keep : 1.f);
+            const float loss = dmg*h.damageMul()*k;
+            foe->hp = std::max(0.f, foe->hp-loss);
+            foe->a.hit(h.at, h.dir, h.power*(0.6f+0.4f*k), loss);
+            if(a.r) { a.r->softenGrip(0.14f); a.r->nudge(h.at, h.dir*(-0.12f*h.speed)); }
+            fb.impact(FightBody::I_Body);
+            hits++;
+            lastHit = h;
+            fx.push_back({h.at,'r'});
+            std::snprintf(buf,sizeof(buf),"%s %s: %s x%.1f, %.0f м/с, урон %.0f%% (x%.2f)",BladeWork::kindTitle(h.kind),BladeWork::bladeTitle(h.blade),
+                          BladeWork::partTitle(h.part),double(h.mulPart),double(h.speed),double(loss*100.f),double(h.damageMul()*k));
+            log.push_back(buf);
+            }
+          else {
+            // задел без силы: толкнул
+            foe->a.r->nudge(h.at, h.dir*0.4f);
+            fx.push_back({h.at,'o'});
+            std::snprintf(buf,sizeof(buf),"касание без силы: %s, %.1f м/с",BladeWork::partTitle(h.part),double(h.speed));
+            log.push_back(buf);
+            }
+          spent = id;
           }
         }
       }
-    pA = b0; pB = b1;
+    prevBlade = cur;
+    pA = cur.grip; pB = cur.tip;
     }
 
   void dumpBlade(FILE* f, char kind) const {
