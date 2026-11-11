@@ -1873,6 +1873,142 @@ static int riseTests() {
   }
 
 // Бой телом: удары доходят (клинок касается тела), блок ловит удар, никто не падает от обычных ударов
+// Ноги по рельефу (InjuryRig::applyPlant, Npc::tickFootPlant): ступня встаёт на свою землю, колено гнётся вперёд,
+// таз - к нижней ступне, другая ступня на месте; доля слоя и высота земли меняются - кости без рывков
+struct FootIkRes {
+  Vec3  ankle[2], toe[2], knee[2], pelvis;
+  bool  finite = true;
+  };
+
+static FootIkRes footIkApply(const Skeleton& sk, const FootPlant& fp, const char* label = nullptr) {
+  auto rig = InjuryRig::of(sk);
+  auto p   = bench::stancePose(sk);
+  rig->applyPlant(fp,Matrix4x4::mkIdentity(),p.data(),p.size());
+  // FDUMP=файл - позы глазами: python3 render.py файл out.png (метки - земля под лодыжкой и носком)
+  if(static FILE* f = getenv("FDUMP") ? std::fopen(getenv("FDUMP"),"w") : nullptr; f!=nullptr && label!=nullptr) {
+    static float t = 0;
+    std::fprintf(f,"F %.2f %s\n",double(t),label);
+    t += 1.f;
+    for(size_t i=0;i<sk.nodes.size() && i<p.size();++i) {
+      const size_t par = sk.nodes[i].parent;
+      if(par>=p.size())
+        continue;
+      const std::string& nm = sk.nodes[i].name;
+      const char c = nm.find("THIGH")!=std::string::npos || nm.find("CALF")!=std::string::npos || nm.find("FOOT")!=std::string::npos ||
+                     nm.find("TOE")!=std::string::npos ? 'l' : (nm.find("ARM")!=std::string::npos || nm.find("HAND")!=std::string::npos ? 'a' : 'p');
+      const Vec3 a = org(p[par]), b = org(p[i]);
+      std::fprintf(f,"B %.1f %.1f %.1f %.1f %.1f %.1f 4 %c\n",double(a.x),double(a.y),double(a.z),double(b.x),double(b.y),double(b.z),c);
+      }
+    const char* an[2] = {"BIP01 L FOOT","BIP01 R FOOT"};
+    const char* tn[2] = {"BIP01 L TOE0","BIP01 R TOE0"};
+    auto base = bench::stancePose(sk);
+    for(int i=0;i<2;++i) {
+      const Vec3 a = org(base[bench::bone(sk,an[i])]), tt = org(base[bench::bone(sk,tn[i])]);
+      std::fprintf(f,"M %.1f %.1f %.1f g\n",double(a.x),double(fp.ankle[i]),double(a.z));
+      std::fprintf(f,"M %.1f %.1f %.1f y\n",double(tt.x),double(fp.toe[i]),double(tt.z));
+      }
+    std::fflush(f);
+    }
+  FootIkRes r;
+  const char* an[2] = {"BIP01 L FOOT","BIP01 R FOOT"};
+  const char* tn[2] = {"BIP01 L TOE0","BIP01 R TOE0"};
+  const char* kn[2] = {"BIP01 L CALF","BIP01 R CALF"};
+  for(int i=0;i<2;++i) {
+    r.ankle[i] = org(p[bench::bone(sk,an[i])]);
+    r.toe[i]   = org(p[bench::bone(sk,tn[i])]);
+    r.knee[i]  = org(p[bench::bone(sk,kn[i])]);
+    }
+  r.pelvis = org(p[bench::bone(sk,"BIP01 PELVIS")]);
+  for(auto& m:p)
+    for(int x=0;x<4;++x) for(int y=0;y<4;++y) r.finite &= std::isfinite(m.at(x,y));
+  return r;
+  }
+
+static int footIkTests() {
+  int  fail = 0;
+  auto hum  = mkSkeleton(human(),"HUMANS.MDH");
+  auto check = [&](bool ok, const char* what) {
+    std::printf("footik: %-58s %s\n",what,ok ? "ok" : "<- BAD");
+    if(!ok) fail++;
+    };
+  FootPlant none; none.weight = 1;
+  const FootIkRes a0 = footIkApply(*hum,none);
+
+  // правая ступня на камне 20 см: лодыжка выше на 20, колено вперёд (сгиб), левая и таз на месте
+  {
+  FootPlant fp; fp.weight = 1; fp.ankle[1] = 20; fp.toe[1] = 20;
+  footIkApply(*hum,none,"flat");
+  auto r = footIkApply(*hum,fp,"stone_R_20cm");
+  std::printf("footik: stone 20 cm: R ankle +%.1f, R knee fwd %+.1f, L ankle %+.1f, pelvis %+.1f\n",
+              double(r.ankle[1].y-a0.ankle[1].y),double(r.knee[1].z-a0.knee[1].z),double(r.ankle[0].y-a0.ankle[0].y),double(r.pelvis.y-a0.pelvis.y));
+  check(r.finite && std::abs(r.ankle[1].y-a0.ankle[1].y-20.f)<1.f, "stone: right ankle up 20 cm");
+  check(r.knee[1].z-a0.knee[1].z>5.f, "stone: right knee bends forward");
+  check((r.ankle[0]-a0.ankle[0]).length()<0.5f && std::abs(r.pelvis.y-a0.pelvis.y)<0.5f, "stone: left foot and pelvis stay");
+  check(std::abs(r.ankle[1].x-a0.ankle[1].x)<1.f && std::abs(r.ankle[1].z-a0.ankle[1].z)<1.f, "stone: ankle straight up, no slide");
+  }
+  // левая ступня в ямке 15 см: таз ниже на 15, левая лодыжка ниже на 15, правая на месте с согнутым коленом
+  {
+  FootPlant fp; fp.weight = 1; fp.ankle[0] = -15; fp.toe[0] = -15;
+  auto r = footIkApply(*hum,fp,"pit_L_15cm");
+  std::printf("footik: pit 15 cm: L ankle %+.1f, pelvis %+.1f, R ankle %+.1f, R knee fwd %+.1f\n",
+              double(r.ankle[0].y-a0.ankle[0].y),double(r.pelvis.y-a0.pelvis.y),double(r.ankle[1].y-a0.ankle[1].y),double(r.knee[1].z-a0.knee[1].z));
+  check(r.finite && std::abs(r.ankle[0].y-a0.ankle[0].y+15.f)<1.f, "pit: left ankle down 15 cm");
+  check(std::abs(r.pelvis.y-a0.pelvis.y+15.f)<0.5f, "pit: pelvis down to the lower foot");
+  check((r.ankle[1]-a0.ankle[1]).length()<1.f && r.knee[1].z-a0.knee[1].z>4.f, "pit: right foot stays, knee bends");
+  }
+  // носок упёрся в ступеньку (земля под носком на 25 см выше): стопа носком вверх, носок не в ступеньке
+  {
+  FootPlant fp; fp.weight = 1; fp.toe[1] = 25;
+  auto r = footIkApply(*hum,fp,"riser_R_toe_25cm");
+  const float toeUp = r.toe[1].y-a0.toe[1].y;
+  std::printf("footik: riser under toe: R toe %+.1f, R ankle %+.1f\n",double(toeUp),double(r.ankle[1].y-a0.ankle[1].y));
+  check(r.finite && toeUp>=24.f, "riser: toe not inside the step");
+  }
+  // край ступеньки под носком (вниз на 25): стопа ровно, лодыжка на месте
+  {
+  FootPlant fp; fp.weight = 1; fp.toe[1] = -25;
+  auto r = footIkApply(*hum,fp);
+  check(r.finite && std::abs(r.toe[1].y-a0.toe[1].y)<1.f && std::abs(r.ankle[1].y-a0.ankle[1].y)<0.5f, "edge: foot flat on the step edge");
+  }
+  // склон поперёк (roll) и вдоль: стопа наклоняется, лодыжка на земле
+  {
+  FootPlant fp; fp.weight = 1; fp.ankle[0] = 4; fp.toe[0] = 9; fp.roll[0] = 0.25f;
+  auto r = footIkApply(*hum,fp,"slope_L");
+  check(r.finite && r.toe[0].y-a0.toe[0].y>4.f, "slope: toe follows the slope");
+  }
+  {
+  FootPlant fp; fp.weight = 1; fp.ankle[1] = -25; fp.toe[1] = -25; fp.ankle[0] = 0; fp.toe[0] = 0;
+  footIkApply(*hum,fp,"stairs_R_down_25cm");
+  }
+  // без рывков: доля слоя и высота земли малыми шагами - кости сдвигаются малыми шагами (колено не перещёлкивает)
+  {
+  float jump = 0;
+  FootIkRes prev;
+  for(int k=0;k<=200;++k) {
+    FootPlant fp;
+    fp.weight   = LimbIk::smooth(float(k)/50.f); // как в игре (Npc::tickFootPlant): доля - по плавной кривой
+    fp.ankle[1] = -30.f + 60.f*float(k)/200.f;
+    fp.toe[1]   = fp.ankle[1] + 10.f*std::sin(float(k)*0.05f);
+    fp.ankle[0] = 10.f*std::sin(float(k)*0.03f);
+    fp.toe[0]   = fp.ankle[0];
+    auto r = footIkApply(*hum,fp);
+    if(!r.finite) { jump = 1e9f; break; }
+    if(k>0)
+      for(int i=0;i<2;++i) {
+        const float j = std::max({(r.knee[i]-prev.knee[i]).length(),(r.ankle[i]-prev.ankle[i]).length(),(r.toe[i]-prev.toe[i]).length()});
+        if(getenv("FTRACE") && j>1.f)
+          std::printf("  k=%d leg %d: knee %.2f ankle %.2f toe %.2f\n",k,i,double((r.knee[i]-prev.knee[i]).length()),
+                      double((r.ankle[i]-prev.ankle[i]).length()),double((r.toe[i]-prev.toe[i]).length()));
+        jump = std::max(jump,j);
+        }
+    prev = r;
+    }
+  std::printf("footik: sweep: max bone step %.2f cm\n",double(jump));
+  check(jump<2.f, "sweep: no jumps (knees, ankles, toes)");
+  }
+  return fail;
+  }
+
 static int fightTests() {
   int fail = 0;
   for(int mirror=0; mirror<2; ++mirror)
@@ -1911,6 +2047,8 @@ int main(int argc, char** argv) {
     return riseTests();
   if(argc>1 && std::string(argv[1])=="fight")
     return fightTests();
+  if(argc>1 && std::string(argv[1])=="footik")
+    return footIkTests();
   if(argc>1 && std::string(argv[1])=="injury") {
     injuryJump("BIP01 HEAD",Vec3(0,8,10),true);
     injuryJump("BIP01 SPINE2",Vec3(0,0,12),true);
@@ -2069,6 +2207,7 @@ int main(int argc, char** argv) {
   fail += contactTests();
   fail += riseTests();
   fail += fightTests();
+  fail += footIkTests();
 
   std::printf(fail==0 ? "ALL OK\n" : "FAILED: %d\n",fail);
   return fail;

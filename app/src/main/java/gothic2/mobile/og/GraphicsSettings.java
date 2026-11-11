@@ -135,7 +135,15 @@ final class GraphicsSettings {
     static final Option LIGHTING = new Option("gfx_lighting", "lighting", "Освещение",
         new String[]{"мягкое — тени видны", "светлое — тени ещё светлее", "контрастное — тёмные тени, как раньше"},
         new String[]{"1", "2", "0"});
-    static final Option[] EXTRA = {LIGHTING, SHOW_FPS, RAGDOLL, RAGDOLL_FALL, RAGDOLL_ACTIVE, RAGDOLL_KNOCKDOWN,
+    /**
+     * Ноги по рельефу: герой, остановившись, ставит каждую ступню на свою землю — на камень, ступеньку, в ямку, на
+     * лежащее тело: колено сгибается, таз опускается к нижней ступне, стопа ложится по склону; нога не уходит в землю и
+     * не висит над ней. Только герой и только стоя (на бегу — анимация игры), стоит пару лучей на кадр.
+     */
+    static final Option FOOT_IK = new Option("gfx_foot_ik", "footIk",
+        "Ноги по рельефу: герой стоя ставит ступни на камни и ступеньки",
+        new String[]{"включено", "выключено"}, new String[]{"1", "0"}, true);
+    static final Option[] EXTRA = {LIGHTING, SHOW_FPS, FOOT_IK, RAGDOLL, RAGDOLL_FALL, RAGDOLL_ACTIVE, RAGDOLL_KNOCKDOWN,
         RAGDOLL_THROES, RAGDOLL_SHOVE, RAGDOLL_RISE, RAGDOLL_COMBAT, OCCLUSION};
 
     /**

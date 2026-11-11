@@ -185,6 +185,18 @@ public class GraphicsSettingsTest {
     }
 
     @Test
+    public void footIkIsOnByDefault() {
+        GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
+        // ключ footIk читает Gothic::Gothic: ноги героя по рельефу (Npc::tickFootPlant)
+        assertTrue(g.iniText().contains("\nfootIk=1\n"));
+        assertTrue(g.isAvailable(GraphicsSettings.FOOT_IK));
+        g.setOn(GraphicsSettings.RAGDOLL, false);
+        assertTrue(g.isAvailable(GraphicsSettings.FOOT_IK));
+        g.setOn(GraphicsSettings.FOOT_IK, false);
+        assertTrue(g.iniText().contains("\nfootIk=0\n"));
+    }
+
+    @Test
     public void combatIsOnByDefaultAndNeedsActiveRagdoll() {
         GraphicsSettings g = new GraphicsSettings(new MemoryPrefs());
         // ключ ragdollCombat читает Gothic::Gothic: бой телом (game/fightbody.h)
