@@ -132,7 +132,10 @@ limits`; docs/PROGRESS.md, последний раздел; ждут прове�
 рубящий/укол/порез, скорость; блок, сбив клинка, «принял на клинок»), удар всем телом по кинетической цепи, поза без
 скачков, **подъём как у людей** (с живота — четвереньки и колено, со спины — перекат), **3D-площадка**
 (`tools/ragdoll-test/viewer/lab.html`; опубликована: https://claude.ai/artifact/KcydiKcPyaaVLwapuituvL) — docs/PROGRESS.md,
-последний раздел; docs/TEST_PLAN.md, пункт 18; ждёт проверки на телефоне.
+последний раздел; docs/TEST_PLAN.md, пункт 19; ждёт проверки на телефоне. 2026-11-11: **ноги по рельефу** (foot IK) — герой стоя
+ставит каждую ступню на свою землю (камень, ступенька, ямка, склон, лежащее тело): колено гнётся, таз опускается к нижней
+ступне, стопа по наклону, сглажено без рывков; только герой, четыре луча на кадр; галочка «Ноги по рельефу»
+(docs/PROGRESS.md, последний раздел; ждёт проверки).
 
 - **Приложение** (`app/`, Java, пакет `gothic2.mobile.og`): `LauncherActivity` — разрешение «Файлы», поиск
   папки игры (`GameFolder`), «Играть»; настройки — страницы разделов (`showPage`: «Графика», «Управление» — настройка
@@ -219,6 +222,10 @@ limits`; docs/PROGRESS.md, последний раздел; ждут прове�
     `AI_UseItemToState`) при падении, толчке, оглушении — на землю: `Npc::dropHandItem`, `Pose::cancelItemState`;
     галочки `ragdoll`, `ragdollFall`, `ragdollActive`, `ragdollKnockdown`, `ragdollThroes`, `ragdollShove`, `ragdollRise` в
     `g2m.ini` (экран запуска, «Графика» → «Дополнительно»);
+  - **ноги по рельефу** (foot IK, `[GRAPHICS] footIk`): `Npc::tickFootPlant` (только герой стоя; лучи `DynamicWorld::ray`
+    под лодыжкой и носком, тела лежащих — `Ragdoll::rayTest`; сглаживание `smoothDamp`) → `FootPlant` (`injury.h`) →
+    `Pose::setFootPlant` → `InjuryRig::applyPlant` (последний слой позы: таз к нижней ступне, IK ног, стопа по склону);
+    стенд — `./ragtest footik`;
   - **бой телом** (`game/fightbody.*`, `world/objects/npcfight.cpp`, docs/CONTROLS.md, «Бой телом»): кукла боя — активный
     регдолл в режиме боя (`Ragdoll::setCombat`, `Npc::startFightBody/tickFightBody`, `fightBodyWanted`), цель мышц —
     процедурная поза хода (`FightBody` по часам анимации `Npc::fightClock`: стадия серии — `HIT_END`, удар — `OPTIMAL_FRAME`;
