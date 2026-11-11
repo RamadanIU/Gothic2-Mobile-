@@ -18238,7 +18238,7 @@ index 8c65c25..7a1a578 100644
 +    float                volumeMul = 1.f;
    };
 diff --git a/common/gothic.cpp b/common/gothic.cpp
-index 56c5d58..889b7d3 100644
+index 56c5d58..978d540 100644
 --- a/common/gothic.cpp
 +++ b/common/gothic.cpp
 @@ -18,6 +18,7 @@
@@ -18299,7 +18299,7 @@ index 56c5d58..889b7d3 100644
  Gothic::Gothic(GameModDescriptor desc) {
    instance = this;
  
-@@ -149,6 +177,57 @@ Gothic::Gothic(GameModDescriptor desc) {
+@@ -149,6 +177,58 @@ Gothic::Gothic(GameModDescriptor desc) {
      iniFile->set("INTERNAL", "vidResIndex", 0); // full-res
      }
    {
@@ -18328,6 +18328,7 @@ index 56c5d58..889b7d3 100644
 +    opts.ragdollRise      = opts.ragdollFall && g2m.getI("GRAPHICS","ragdollRise",1)!=0;
 +    opts.ragdollCombat    = opts.ragdollActive && g2m.getI("GRAPHICS","ragdollCombat",1)!=0;
 +    opts.occlusion        = g2m.getI("GRAPHICS","occlusion",1)!=0;
++    opts.footIk           = g2m.getI("GRAPHICS","footIk",1)!=0;
 +    // Освещение: в движке тени почти чёрные (рассеянный свет слабый, а кривая ACES ещё и давит тёмные тона),
 +    // а солнечное - очень яркое. Мягкое и светлое - подсветка теней и мягкий низ кривой (Renderer::drawTonemapping)
 +    opts.lighting         = std::clamp(g2m.getI("GRAPHICS","lighting",1), 0, 2);
@@ -18347,7 +18348,7 @@ index 56c5d58..889b7d3 100644
 +    Tempest::Log::i("[g2m] graphics: fps=",opts.fpsLimit," res=",iniFile->getI("INTERNAL","vidResIndex"),
 +                    " shadows=",int(opts.shadowResolution)," view=",int(opts.viewDistance/100.f),"m detail=",opts.detailRatio,
 +                    " upscale=",(opts.sharpUpscale ? "sharp" : "bilinear")," animLod=",int(opts.animLod)," ragdoll=",int(opts.ragdoll),"/",int(opts.ragdollFall),"/",int(opts.ragdollActive),"/",int(opts.ragdollKnockdown),"/",int(opts.ragdollThroes),"/",int(opts.ragdollShove),"/",int(opts.ragdollRise),"/",int(opts.ragdollCombat),
-+                    " occlusion=",int(opts.occlusion)," lighting=",opts.lighting,
++                    " occlusion=",int(opts.occlusion)," footIk=",int(opts.footIk)," lighting=",opts.lighting,
 +                    " wind=",int(iniFile->getI("ENGINE","zWindEnabled")!=0 ? opts.windRange/100.f : 0.f),"m");
 +    }
 +  readControls(g2m,opts);
@@ -18357,7 +18358,7 @@ index 56c5d58..889b7d3 100644
    defaults.reset(new IniFile());
    defaults->set("GAME", "enableMouse",         1);
    defaults->set("GAME", "mouseSensitivity",    0.5f);
-@@ -523,6 +602,18 @@ void Gothic::setBenchmarkMode(Benchmark b) {
+@@ -523,6 +603,18 @@ void Gothic::setBenchmarkMode(Benchmark b) {
    isBenchmark = b;
    }
  
@@ -18376,7 +18377,7 @@ index 56c5d58..889b7d3 100644
  const Gothic::Options& Gothic::options() {
    assert(instance!=nullptr);
    return instance->opts;
-@@ -644,7 +735,12 @@ void Gothic::updateAnimation(uint64_t dt) {
+@@ -644,7 +736,12 @@ void Gothic::updateAnimation(uint64_t dt) {
    }
  
  void Gothic::quickSave() {
@@ -18389,7 +18390,7 @@ index 56c5d58..889b7d3 100644
    }
  
  void Gothic::quickLoad() {
-@@ -749,27 +845,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
+@@ -749,27 +846,38 @@ std::unique_ptr<zenkit::DaedalusVm> Gothic::createPhoenixVm(std::string_view dat
    }
  
  zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const ScriptLang lang) {
@@ -18437,7 +18438,7 @@ index 56c5d58..889b7d3 100644
    if(!FileUtil::exists(path) && int(lang)>=0) {
      gscript = CommandLine::inst().scriptPath(lang);
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
-@@ -783,6 +890,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
+@@ -783,6 +891,7 @@ zenkit::DaedalusScript Gothic::loadScript(std::string_view datFile, const Script
      path    = caseInsensitiveSegment(gscript,str16,Dir::FT_File);
      }
  
@@ -18446,7 +18447,7 @@ index 56c5d58..889b7d3 100644
    zenkit::DaedalusScript script;
    script.load(buf.get());
 diff --git a/common/gothic.h b/common/gothic.h
-index 2654cc4..69e1b42 100644
+index 2654cc4..8c458bb 100644
 --- a/common/gothic.h
 +++ b/common/gothic.h
 @@ -15,6 +15,7 @@
@@ -18457,7 +18458,7 @@ index 2654cc4..69e1b42 100644
  
  class VersionInfo;
  class CameraDefinitions;
-@@ -71,11 +72,48 @@ class Gothic final {
+@@ -71,11 +72,49 @@ class Gothic final {
        bool     showHealthBar     = true;
        uint8_t  showManaBar       = 2;
        uint8_t  showSwimBar       = 1;
@@ -18478,6 +18479,7 @@ index 2654cc4..69e1b42 100644
 +      bool     ragdollRise       = true; // упавшие встают телом, без анимации: процедурные фазы подъёма (S_GetUp)
 +      bool     ragdollCombat     = true; // бой телом: удары, блок, стойка, шаги - кукла, попадание - клинком (game/fightbody.h)
 +      bool     occlusion         = true; // не рисовать заслонённое (HiZ); выключить - проверить пропадающие стены
++      bool     footIk            = true; // ноги героя по рельефу стоя: ступни на камни, ступеньки, тела (FootPlant)
 +      // лук и арбалет: прицел сам наводится на грудь цели в фокусе (game/rangedaim.h); ключ [CONTROLS] aimAssist,
 +      // меняется и посреди игры (Gothic::reloadControls)
 +      bool     aimAssist         = true;
@@ -18506,7 +18508,7 @@ index 2654cc4..69e1b42 100644
      bool         isInGameAndAlive() const;
  
      std::string_view defaultWorld()       const;
-@@ -127,6 +165,10 @@ class Gothic final {
+@@ -127,6 +166,10 @@ class Gothic final {
      void         setMarvinEnabled(bool m);
  
      static auto  options() -> const Options&;
@@ -18517,7 +18519,7 @@ index 2654cc4..69e1b42 100644
      static float interfaceScale(const Tempest::Widget* w);
  
      bool         isGodMode() const { return godMode; }
-@@ -222,6 +264,7 @@ class Gothic final {
+@@ -222,6 +265,7 @@ class Gothic final {
    private:
      VersionInfo                             vinfo;
      Options                                 opts;
@@ -18525,7 +18527,7 @@ index 2654cc4..69e1b42 100644
      std::mt19937                            randGen;
      uint16_t                                pauseSum=0;
      bool                                    isMarvin       = false;
-@@ -257,6 +300,7 @@ class Gothic final {
+@@ -257,6 +301,7 @@ class Gothic final {
  
      std::mutex                              syncSnd;
      Tempest::SoundDevice                    sndDev;
@@ -18560,7 +18562,7 @@ index 1bf7897..a6854f8 100644
      auto* pso = &Shaders::inst().visibilityPassSh;
      if(viewport==SceneGlobals::V_Main)
 diff --git a/common/graphics/mdlvisual.cpp b/common/graphics/mdlvisual.cpp
-index cc2576c..38ab8d0 100644
+index cc2576c..41193fa 100644
 --- a/common/graphics/mdlvisual.cpp
 +++ b/common/graphics/mdlvisual.cpp
 @@ -1,6 +1,7 @@
@@ -18595,7 +18597,7 @@ index cc2576c..38ab8d0 100644
    it->setCount(1);
  
    npc.delItem(itm->clsId(),1);
-@@ -818,6 +825,80 @@ uint16_t MdlVisual::comboLength() const {
+@@ -818,6 +825,84 @@ uint16_t MdlVisual::comboLength() const {
    return skInst->comboLength();
    }
  
@@ -18612,6 +18614,10 @@ index cc2576c..38ab8d0 100644
 +
 +void MdlVisual::setInjury(const Injury& inj) {
 +  skInst->setInjury(inj);
++  }
++
++void MdlVisual::setFootPlant(const FootPlant& fp) {
++  skInst->setFootPlant(fp);
 +  }
 +
 +void MdlVisual::clearRagdollPose() {
@@ -18676,7 +18682,7 @@ index cc2576c..38ab8d0 100644
  Bounds MdlVisual::bounds() const {
    auto b = view.bounds();
    if(!head.view.isEmpty())
-@@ -858,6 +939,8 @@ void MdlVisual::rebindAttaches(const Skeleton& to) {
+@@ -858,6 +943,8 @@ void MdlVisual::rebindAttaches(const Skeleton& to) {
      i.view.bindAttaches(*skInst,to);
    pfx.view.bindAttaches(*skInst,to);
    hnpcVisual.view.bindAttaches(*skInst,to);
@@ -18685,7 +18691,7 @@ index cc2576c..38ab8d0 100644
    }
  
  template<class View>
-@@ -881,6 +964,10 @@ void MdlVisual::syncAttaches() {
+@@ -881,6 +968,10 @@ void MdlVisual::syncAttaches() {
      }
    pfx.view.setObjMatrix(pos);
    hnpcVisual.view.setObjMatrix(pos);
@@ -18697,20 +18703,21 @@ index cc2576c..38ab8d0 100644
      auto& pose = *skInst;
      auto  p    = pos;
 diff --git a/common/graphics/mdlvisual.h b/common/graphics/mdlvisual.h
-index dadfd6d..6afd8d0 100644
+index dadfd6d..5bf3872 100644
 --- a/common/graphics/mdlvisual.h
 +++ b/common/graphics/mdlvisual.h
-@@ -7,6 +7,9 @@
+@@ -7,6 +7,10 @@
  #include "meshobjects.h"
  #include "effect.h"
  
 +struct Injury;
 +struct Stance;
++struct FootPlant;
 +
  class Serialize;
  class ObjVisual;
  class Npc;
-@@ -114,6 +117,26 @@ class MdlVisual final {
+@@ -114,6 +118,27 @@ class MdlVisual final {
  
      Bounds                         bounds() const;
  
@@ -18721,6 +18728,7 @@ index dadfd6d..6afd8d0 100644
 +                                                        const std::vector<Tempest::Matrix4x4>& rel, size_t root, float weight,
 +                                                        const Stance& stance);
 +    void                           setInjury(const Injury& inj);
++    void                           setFootPlant(const FootPlant& fp); // Gothic II Mobile: ноги по рельефу
 +    void                           clearRagdollPose();
 +    // Gothic II Mobile: бой телом - процедурная поза вместо анимации (Pose::setProcPose); оружие ближнего боя: габариты
 +    // модели в системе её слота (lo, hi), есть ли она
@@ -18737,7 +18745,7 @@ index dadfd6d..6afd8d0 100644
    private:
      template<class View>
      struct Attach {
-@@ -136,6 +159,13 @@ class MdlVisual final {
+@@ -136,6 +161,13 @@ class MdlVisual final {
        size_t                     boneId=size_t(-1);
        };
  
@@ -18751,7 +18759,7 @@ index dadfd6d..6afd8d0 100644
      void implSetBody(Npc* npc, World& world, MeshObjects::Mesh&& body, const int32_t version);
      void setSlotAttachment(MeshObjects::Mesh&& itm, std::string_view bone);
  
-@@ -163,6 +193,7 @@ class MdlVisual final {
+@@ -163,6 +195,7 @@ class MdlVisual final {
      PfxSlot                        pfx;
  
      TorchSlot                      torch;
@@ -19464,10 +19472,10 @@ index 0000000..2480959
 +  };
 diff --git a/common/graphics/mesh/injury.cpp b/common/graphics/mesh/injury.cpp
 new file mode 100644
-index 0000000..f7a727a
+index 0000000..6950226
 --- /dev/null
 +++ b/common/graphics/mesh/injury.cpp
-@@ -0,0 +1,580 @@
+@@ -0,0 +1,673 @@
 +#include "injury.h"
 +
 +#include "limbik.h"
@@ -19542,9 +19550,12 @@ index 0000000..f7a727a
 +  for(size_t i=0; i<n; ++i) {
 +    r->parent[i] = sk.nodes[i].parent<n ? sk.nodes[i].parent : size_t(-1);
 +    const std::string nm = upperName(sk.nodes[i].name);
++    const int side = has(nm," L ") ? 0 : (has(nm," R ") ? 1 : -1);
++    // Gothic II Mobile: носок (первая кость пальцев стопы) - для ног по рельефу
++    if(side>=0 && has(nm,"TOE") && !has(nm,"NUB") && r->toe[side]==size_t(-1) && nm.rfind("ZS_",0)!=0)
++      r->toe[side] = i;
 +    if(nm.rfind("ZS_",0)==0 || has(nm,"NUB") || has(nm,"FINGER") || has(nm,"TOE"))
 +      continue;
-+    const int side = has(nm," L ") ? 0 : (has(nm," R ") ? 1 : -1);
 +    if(has(nm,"PELVIS"))
 +      r->pelvis = i;
 +    else if(has(nm,"SPINE"))
@@ -19583,6 +19594,10 @@ index 0000000..f7a727a
 +               isAncestor(r->thigh[s],r->calf[s]) && isAncestor(r->calf[s],r->foot[s]);
 +    const Vec3 up = origin(sk.tr[r->head]) - origin(sk.tr[r->pelvis]);
 +    human &= up.y>0.6f*up.length() && up.length()>10.f;
++    // носок - потомок стопы, иначе его нет
++    for(int s=0; s<2; ++s)
++      if(r->toe[s]<n && !isAncestor(r->foot[s],r->toe[s]))
++        r->toe[s] = size_t(-1);
 +    }
 +  if(!human)
 +    return nullptr;
@@ -19762,6 +19777,92 @@ index 0000000..f7a727a
 +    solve(t,c,f,at,fwd);
 +    Matrix4x4 fa = footA[i];
 +    setOrigin(fa,origin(f));
++    setWorld(w,thigh[i],t);
++    setWorld(w,calf[i],c);
++    setWorld(w,foot[i],fa);
++    }
++  rebuild(w);
++  }
++
++bool InjuryRig::feet(const Matrix4x4* world, size_t count, Vec3 ankle[2], Vec3 toeAt[2]) const {
++  if(world==nullptr || count<parent.size())
++    return false;
++  for(int i=0; i<2; ++i) {
++    ankle[i] = origin(world[foot[i]]);
++    toeAt[i] = toe[i]<parent.size() ? origin(world[toe[i]]) : ankle[i];
++    }
++  return true;
++  }
++
++void InjuryRig::applyPlant(const FootPlant& fp, const Matrix4x4& obj, Matrix4x4* world, size_t count) const {
++  // Ноги по рельефу (как foot IK в современных играх): анимация считает землю ровной на высоте модели. Лодыжка
++  // встаёт выше или ниже на высоту своей земли, носок не уходит в землю (стопа наклоняется по склону, на ступеньку -
++  // носком вверх, ступенька вниз под носком - стопа ровно), таз опускается к нижней ступне, колени гнутся (IK)
++  if(!fp.isActive() || count<parent.size())
++    return;
++  Work w;
++  w.w = world;
++  w.local.resize(parent.size());
++  for(size_t i=0; i<parent.size(); ++i) {
++    const size_t p = parent[i];
++    w.local[i] = (p<parent.size()) ? relative(world[p],world[i]) : world[i];
++    }
++  const float sc = std::clamp(axis(obj,1).length(), 0.3f, 3.f);
++  Vec3 fwd = horizontal(axis(obj,2));
++  if(fwd.length()<0.5f)
++    fwd = Vec3(0,0,1);
++  const float     k  = std::clamp(fp.weight,0.f,1.f);
++  const Vec3      up = Vec3(0,1,0);
++  const Matrix4x4 footA[2] = {world[foot[0]], world[foot[1]]};
++
++  float lift[2]  = {fp.ankle[0], fp.ankle[1]};
++  float pitch[2] = {};
++  Vec3  dirF[2]  = {fwd, fwd};
++  for(int i=0; i<2; ++i) {
++    if(toe[i]>=parent.size())
++      continue;
++    Vec3 v = origin(world[toe[i]]) - origin(footA[i]);
++    v.y = 0;
++    const float lh = v.length();
++    if(lh<3.f*sc)
++      continue;
++    dirF[i] = v/lh;
++    const float slope = std::atan((fp.toe[i]-fp.ankle[i])/lh);
++    float       a     = std::clamp(slope, -deg(15.f), deg(30.f));
++    // край ступеньки под носком (круче 35 вниз): пятка на ступеньке, стопа ровно - плавно, без перескока
++    if(slope<-deg(35.f))
++      a *= 1.f-smooth((-deg(35.f)-slope)/deg(15.f));
++    pitch[i] = a;
++    // носок не в землю: чего не взял наклон стопы - поднимает лодыжка
++    lift[i] = std::max(lift[i], fp.toe[i] - lh*std::tan(a));
++    }
++  // таз - к нижней ступне (выше - чуть: прямая нога не дотянется), ступни поднимаются от него не выше колена к груди
++  const float drop = std::clamp(std::min(lift[0],lift[1]), -36.f*sc, 6.f*sc);
++  for(int i=0; i<2; ++i)
++    lift[i] = std::min(lift[i], drop + 50.f*sc);
++
++  if(std::abs(drop*k)>0.01f) {
++    // опускаясь, таз чуть уходит назад (так приседает человек: колени не уходят далеко вперёд, вес над ступнями)
++    Matrix4x4 m = world[pelvis];
++    setOrigin(m, origin(m) + up*(drop*k) - fwd*(0.3f*std::max(0.f,-drop)*k));
++    setWorld(w,pelvis,m);
++    rebuild(w);
++    }
++  for(int i=0; i<2; ++i) {
++    const Vec3 at = origin(footA[i]) + up*(lift[i]*k);
++    Matrix4x4 t = w.w[thigh[i]], c = w.w[calf[i]], f = w.w[foot[i]];
++    solve(t,c,f,at,fwd);
++    // стопа - как в анимации (не поворачивается вместе с голенью), по наклону земли: вдоль и поперёк
++    Matrix4x4 fa = footA[i];
++    setOrigin(fa,origin(f));
++    const float a = pitch[i]*k;
++    if(std::abs(a)>1e-4f)
++      rotateBasis(fa, dirF[i], dirF[i]*std::cos(a) + up*std::sin(a));
++    const float r = std::clamp(fp.roll[i],-deg(20.f),deg(20.f))*k;
++    if(std::abs(r)>1e-4f) {
++      const Vec3 left = Vec3::crossProduct(up,dirF[i]);
++      rotateBasis(fa, up, up*std::cos(r) + left*std::sin(r));
++      }
 +    setWorld(w,thigh[i],t);
 +    setWorld(w,calf[i],c);
 +    setWorld(w,foot[i],fa);
@@ -20050,10 +20151,10 @@ index 0000000..f7a727a
 +  }
 diff --git a/common/graphics/mesh/injury.h b/common/graphics/mesh/injury.h
 new file mode 100644
-index 0000000..fe4bd6f
+index 0000000..5076352
 --- /dev/null
 +++ b/common/graphics/mesh/injury.h
-@@ -0,0 +1,298 @@
+@@ -0,0 +1,315 @@
 +#pragma once
 +
 +#include <Tempest/Matrix4x4>
@@ -20301,6 +20402,18 @@ index 0000000..fe4bd6f
 +  bool isActive() const { return weight>0.001f; }
 +  };
 +
++// Gothic II Mobile: ноги по рельефу (Npc::tickFootPlant, только герой, стоя): высота земли под лодыжкой и носком
++// каждой ступни относительно земли модели (начало матрицы объекта), уже сглаженная во времени. Таз опускается к
++// нижней ступне, ступни встают на свою землю (IK ног, колени гнутся), стопа ложится по наклону
++struct FootPlant final {
++  float ankle[2] = {};  // земля под лодыжкой, см (+ выше земли модели)
++  float toe[2]   = {};  // земля под носком, см
++  float roll[2]  = {};  // наклон земли поперёк стопы, рад: нормаль земли отклонена влево от стопы (влево - up x вперёд)
++  float weight   = 0;   // доля слоя на экране
++
++  bool isActive() const { return weight>0.001f; }
++  };
++
 +class InjuryRig final {
 +  public:
 +    enum Zone : uint8_t {
@@ -20329,6 +20442,10 @@ index 0000000..fe4bd6f
 +    void      apply(const Injury& inj, const Tempest::Matrix4x4& obj, Tempest::Matrix4x4* world, size_t count) const;
 +    // Стойка активного регдолла: таз и ноги (поверх анимации и слоя ран)
 +    void      applyStance(const Stance& st, const Tempest::Matrix4x4& obj, Tempest::Matrix4x4* world, size_t count) const;
++    // Ноги по рельефу: поверх анимации и слоя ран
++    void      applyPlant(const FootPlant& fp, const Tempest::Matrix4x4& obj, Tempest::Matrix4x4* world, size_t count) const;
++    // Где ступни: лодыжка и носок (если у скелета есть кость носка - иначе точка впереди лодыжки), в мире
++    bool      feet(const Tempest::Matrix4x4* world, size_t count, Tempest::Vec3 ankle[2], Tempest::Vec3 toeAt[2]) const;
 +
 +  private:
 +    InjuryRig() = default;
@@ -20340,6 +20457,7 @@ index 0000000..fe4bd6f
 +    std::vector<size_t>   bendable;  // позвонки выше крепления бёдер - их гнуть, не сдвигая ног
 +    size_t                upper[2] = {size_t(-1),size_t(-1)}, fore[2] = {size_t(-1),size_t(-1)}, hand[2] = {size_t(-1),size_t(-1)};
 +    size_t                thigh[2] = {size_t(-1),size_t(-1)}, calf[2] = {size_t(-1),size_t(-1)}, foot[2] = {size_t(-1),size_t(-1)};
++    size_t                toe[2]   = {size_t(-1),size_t(-1)};
 +    std::vector<size_t>   parent;
 +    std::vector<uint16_t> order;     // от корней к концам
 +
@@ -20506,20 +20624,21 @@ index 0000000..69d1a10
 +
 +}
 diff --git a/common/graphics/mesh/pose.cpp b/common/graphics/mesh/pose.cpp
-index 9a4f166..6cab95e 100644
+index 9a4f166..122aba4 100644
 --- a/common/graphics/mesh/pose.cpp
 +++ b/common/graphics/mesh/pose.cpp
-@@ -148,6 +148,9 @@ void Pose::setSkeleton(const Skeleton* sk) {
+@@ -148,6 +148,10 @@ void Pose::setSkeleton(const Skeleton* sk) {
      }
    for(auto& i:hasSamples)
      i = S_None;
 +  clearRagdoll();
 +  injRig       = skeleton!=nullptr ? InjuryRig::of(*skeleton) : nullptr;
 +  injury       = Injury();
++  plant        = FootPlant();
    trY          = skeleton->rootTr.y;
    needToUpdate = true;
    if(lay.size()>0) //TODO
-@@ -316,10 +319,11 @@ void Pose::processLayers(AnimationSolver& solver, uint64_t tickCount) {
+@@ -316,10 +320,11 @@ void Pose::processLayers(AnimationSolver& solver, uint64_t tickCount) {
  
  bool Pose::update(uint64_t tickCount, bool force) {
    if(lay.size()==0) {
@@ -20533,7 +20652,7 @@ index 9a4f166..6cab95e 100644
      lastUpdate   = tickCount;
      return ret;
      }
-@@ -344,8 +348,10 @@ bool Pose::update(uint64_t tickCount, bool force) {
+@@ -344,8 +349,10 @@ bool Pose::update(uint64_t tickCount, bool force) {
      needToUpdate = needMkSkeleton;
      }
  
@@ -20545,7 +20664,7 @@ index 9a4f166..6cab95e 100644
      return true;
      }
    return false;
-@@ -429,11 +435,22 @@ bool Pose::updateFrame(const Animation::Sequence &s, BodyState bs, uint64_t sBle
+@@ -429,11 +436,25 @@ bool Pose::updateFrame(const Animation::Sequence &s, BodyState bs, uint64_t sBle
  void Pose::mkSkeleton(const Tempest::Matrix4x4& mt) {
    if(skeleton==nullptr)
      return;
@@ -20565,10 +20684,13 @@ index 9a4f166..6cab95e 100644
 +  // Gothic II Mobile: раненое тело - поверх анимации (лежащее тело ведёт кукла)
 +  if(injRig!=nullptr && injury.isActive() && ragWeight<=0.f)
 +    injRig->apply(injury,mt,tr,numBones);
++  // Gothic II Mobile: ноги по рельефу - последним (ступни встают на землю поверх всех слоёв)
++  if(injRig!=nullptr && plant.isActive() && ragWeight<=0.f)
++    injRig->applyPlant(plant,mt,tr,numBones);
    }
  
  void Pose::implMkSkeleton(const Matrix4x4 &mt) {
-@@ -443,7 +460,7 @@ void Pose::implMkSkeleton(const Matrix4x4 &mt) {
+@@ -443,7 +464,7 @@ void Pose::implMkSkeleton(const Matrix4x4 &mt) {
    auto  BIP01_HEAD = skeleton->BIP01_HEAD;
    for(size_t i=0; i<nodes.size(); ++i) {
      size_t parent = nodes[i].parent;
@@ -20577,7 +20699,7 @@ index 9a4f166..6cab95e 100644
  
      if(parent<Resources::MAX_NUM_SKELETAL_NODES)
        tr[i] = tr[parent]*mat; else
-@@ -454,6 +471,8 @@ void Pose::implMkSkeleton(const Matrix4x4 &mt) {
+@@ -454,6 +475,8 @@ void Pose::implMkSkeleton(const Matrix4x4 &mt) {
        m.rotateOY(headRotY);
        m.rotateOX(headRotX);
        }
@@ -20586,7 +20708,7 @@ index 9a4f166..6cab95e 100644
      }
    }
  
-@@ -464,8 +483,10 @@ void Pose::implMkSkeleton(const Tempest::Matrix4x4 &mt, size_t parent) {
+@@ -464,8 +487,10 @@ void Pose::implMkSkeleton(const Tempest::Matrix4x4 &mt, size_t parent) {
    for(size_t i=0;i<nodes.size();++i){
      if(nodes[i].parent!=parent)
        continue;
@@ -20598,7 +20720,7 @@ index 9a4f166..6cab95e 100644
      implMkSkeleton(tr[i],i);
      }
    }
-@@ -790,6 +811,25 @@ uint16_t Pose::comboLength() const {
+@@ -790,6 +815,25 @@ uint16_t Pose::comboLength() const {
    return combo.len();
    }
  
@@ -20624,7 +20746,7 @@ index 9a4f166..6cab95e 100644
  const Tempest::Matrix4x4 Pose::rootNode() const {
    size_t id = 0;
    if(skeleton->rootNodes.size())
-@@ -799,8 +839,7 @@ const Tempest::Matrix4x4 Pose::rootNode() const {
+@@ -799,8 +843,7 @@ const Tempest::Matrix4x4 Pose::rootNode() const {
    if(id>=nodes.size())
      return Matrix4x4::mkIdentity();
  
@@ -20634,7 +20756,7 @@ index 9a4f166..6cab95e 100644
    }
  
  const Matrix4x4 Pose::rootBone() const {
-@@ -899,7 +938,401 @@ const Matrix4x4* Pose::transform() const {
+@@ -899,7 +942,418 @@ const Matrix4x4* Pose::transform() const {
    return tr;
    }
  
@@ -20727,6 +20849,23 @@ index 9a4f166..6cab95e 100644
 +  ragWeight    = 0;
 +  ragDirty     = true;
 +  needToUpdate = true;
++  }
++
++void Pose::setFootPlant(const FootPlant& fp) {
++  bool same = std::abs(fp.weight-plant.weight)<0.002f && fp.isActive()==plant.isActive();
++  for(int i=0; i<2 && same; ++i)
++    same = std::abs(fp.ankle[i]-plant.ankle[i])<0.05f && std::abs(fp.toe[i]-plant.toe[i])<0.05f &&
++           std::abs(fp.roll[i]-plant.roll[i])<0.001f;
++  if(same)
++    return;
++  plant    = fp;
++  ragDirty = true;
++  }
++
++bool Pose::feet(Tempest::Vec3 ankle[2], Tempest::Vec3 toe[2]) const {
++  if(injRig==nullptr)
++    return false;
++  return injRig->feet(tr,numBones,ankle,toe);
 +  }
 +
 +void Pose::setInjury(const Injury& inj) {
@@ -21037,7 +21176,7 @@ index 9a4f166..6cab95e 100644
      return Vec3();
  
 diff --git a/common/graphics/mesh/pose.h b/common/graphics/mesh/pose.h
-index 216d392..18e2b4c 100644
+index 216d392..e126066 100644
 --- a/common/graphics/mesh/pose.h
 +++ b/common/graphics/mesh/pose.h
 @@ -6,6 +6,7 @@
@@ -21057,7 +21196,7 @@ index 216d392..18e2b4c 100644
  
      float              translateY() const { return trY; }
      auto               rootNode() const -> const Tempest::Matrix4x4;
-@@ -90,6 +93,45 @@ class Pose final {
+@@ -90,6 +93,49 @@ class Pose final {
  
      const Tempest::Matrix4x4* transform() const;
  
@@ -21073,6 +21212,10 @@ index 216d392..18e2b4c 100644
 +                                        const Stance& stance);
 +    // Раненое тело (injury.h): держится за рану, хромает, горбится - слой поверх анимации, и в цели куклы
 +    void               setInjury(const Injury& inj);
++    // Ноги по рельефу (injury.h, FootPlant): слой поверх анимации и ран, только без куклы
++    void               setFootPlant(const FootPlant& fp);
++    // Где ступни сейчас на экране: лодыжки и носки в мире (false - не человек)
++    bool               feet(Tempest::Vec3 ankle[2], Tempest::Vec3 toe[2]) const;
 +    void               clearRagdoll();
 +    bool               hasRagdoll() const { return ragWeight>0.f || ragActive; }
 +    // Мировые матрицы костей по одной анимации, без регдолла (цель мышц куклы, Ragdoll::setTarget)
@@ -21103,7 +21246,7 @@ index 216d392..18e2b4c 100644
    private:
      enum SampleStatus : uint8_t {
        S_None  = 0,
-@@ -114,9 +156,15 @@ class Pose final {
+@@ -114,9 +160,15 @@ class Pose final {
        };
  
      auto mkBaseTranslation() -> Tempest::Vec3;
@@ -21119,7 +21262,7 @@ index 216d392..18e2b4c 100644
  
      bool updateFrame(const Animation::Sequence &s, BodyState bs, uint64_t sBlend, uint64_t barrier, uint64_t sTime, uint64_t now);
  
-@@ -153,4 +201,24 @@ class Pose final {
+@@ -153,4 +205,25 @@ class Pose final {
      zenkit::AnimationSample         prev      [Resources::MAX_NUM_SKELETAL_NODES] = {};
      Tempest::Matrix4x4              tr        [Resources::MAX_NUM_SKELETAL_NODES] = {};
      Tempest::Matrix4x4              pos;
@@ -21143,6 +21286,7 @@ index 216d392..18e2b4c 100644
 +    bool                            procOn    = false;
 +    Injury                          injury;
 +    const InjuryRig*                injRig = nullptr;
++    FootPlant                       plant;
    };
 diff --git a/common/graphics/meshobjects.cpp b/common/graphics/meshobjects.cpp
 index cd3875e..7c23319 100644
@@ -36978,7 +37122,7 @@ index b45a9bd..35a566d 100644
      bool                isCracked() const { return isLockCracked; }
      bool                needToLockpick(const Npc& pl) const;
 diff --git a/common/world/objects/npc.cpp b/common/world/objects/npc.cpp
-index e015398..50d36b0 100644
+index e015398..1432627 100644
 --- a/common/world/objects/npc.cpp
 +++ b/common/world/objects/npc.cpp
 @@ -3,11 +3,17 @@
@@ -37365,7 +37509,7 @@ index e015398..50d36b0 100644
          break;
          }
        case zenkit::MdsEventType::SET_FIGHT_MODE:
-@@ -2344,6 +2552,35 @@ void Npc::tick(uint64_t dt) {
+@@ -2344,6 +2552,36 @@ void Npc::tick(uint64_t dt) {
  
    tickAnimationTags();
  
@@ -37392,6 +37536,7 @@ index e015398..50d36b0 100644
 +  if(isPlayer())
 +    tickShove();
 +  tickInjury();
++  tickFootPlant(dt);
 +  tickSeparate(dt);
 +  visual.tickStuck(owner.tickCount());
 +  // живой лежит по физике: ни ИИ, ни перемещения, пока не встанет
@@ -37401,7 +37546,7 @@ index e015398..50d36b0 100644
    if(!visual.pose().hasAnim())
      setAnim(AnimationSolver::Idle);
  
-@@ -2380,7 +2617,8 @@ void Npc::tick(uint64_t dt) {
+@@ -2380,7 +2618,8 @@ void Npc::tick(uint64_t dt) {
      if(!isPlayer() && go2.flag!=GT_Flee && faiWaitTime<owner.tickCount() && currentTarget!=nullptr) {
        implTurnToFai(*currentTarget,dt);
        }
@@ -37411,7 +37556,7 @@ index e015398..50d36b0 100644
      return;
      }
  
-@@ -2398,7 +2636,9 @@ void Npc::tick(uint64_t dt) {
+@@ -2398,7 +2637,9 @@ void Npc::tick(uint64_t dt) {
        }
      }
  
@@ -37422,7 +37567,7 @@ index e015398..50d36b0 100644
    implAiTick(dt);
    }
  
-@@ -2529,6 +2769,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2529,6 +2770,11 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          }
        break;
      case AI_StartState:
@@ -37434,7 +37579,7 @@ index e015398..50d36b0 100644
        // NOTE: a new state can be stater within a daly routiine, such as TA_Sleep, with: ZS_GotoBed -> ZS_Sleep.
        // In such cases it's important to preserve aiState.eTime.
        if(startState(act.func,act.s0,aiState.eTime,act.i0==0)) {
-@@ -2579,7 +2824,13 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2579,7 +2825,13 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
          break;
          }
        else if(bs==BS_UNCONSCIOUS || bs==BS_LIE) {
@@ -37449,7 +37594,7 @@ index e015398..50d36b0 100644
            queue.pushFront(std::move(act)); else
            implAniWait(visual.pose().animationTotalTime());
          }
-@@ -2593,14 +2844,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2593,14 +2845,19 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_EquipArmor:
        invent.equipArmor(act.i0,*this);
        break;
@@ -37472,7 +37617,7 @@ index e015398..50d36b0 100644
        break;
      case AI_UseMob: {
        if(act.i0<0) {
-@@ -2740,6 +2996,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
+@@ -2740,6 +2997,9 @@ void Npc::nextAiAction(AiQueue& queue, uint64_t dt) {
      case AI_OutputSvm:
      case AI_OutputSvmOverlay:{
        if(performOutput(act)) {
@@ -37482,7 +37627,7 @@ index e015398..50d36b0 100644
          if(aiPolicy!=NpcProcessPolicy::AiFar2) {
            uint64_t msgTime = 0;
            if(act.act==AI_Output) {
-@@ -3504,6 +3763,8 @@ void Npc::dropItem(size_t id, size_t count) {
+@@ -3504,6 +3764,8 @@ void Npc::dropItem(size_t id, size_t count) {
      mat = visual.pose().bone(rightHand);
  
    auto it = owner.addItemDyn(id,mat,hnpc->symbol_index());
@@ -37491,7 +37636,7 @@ index e015398..50d36b0 100644
    it->setCount(count);
    invent.delItem(id,count,*this);
    }
-@@ -3793,6 +4054,10 @@ bool Npc::canFinish(Npc& oth) {
+@@ -3793,6 +4055,10 @@ bool Npc::canFinish(Npc& oth) {
    if(!oth.isUnconscious())
      return false;
  
@@ -37502,7 +37647,7 @@ index e015398..50d36b0 100644
    if(!fghAlgo.isInFinishRange(*this,oth,owner.script()))
      return false;
    return true;
-@@ -3836,6 +4101,14 @@ bool Npc::finishingMove() {
+@@ -3836,6 +4102,14 @@ bool Npc::finishingMove() {
      return false;
  
    if(doAttack(Anim::AttackFinish,BS_HIT)) {
@@ -37517,7 +37662,7 @@ index e015398..50d36b0 100644
      currentTarget->hnpc->attribute[ATR_HITPOINTS] = 0;
      currentTarget->checkHealth(true,false);
      owner.sendPassivePerc(*this,*this,*currentTarget,PERC_ASSESSMURDER);
-@@ -4091,13 +4364,22 @@ bool Npc::shootBow(Interactive* focOverride) {
+@@ -4091,13 +4365,22 @@ bool Npc::shootBow(Interactive* focOverride) {
    if(itm==nullptr)
      return false;
  
@@ -37542,7 +37687,7 @@ index e015398..50d36b0 100644
    if(Gothic::inst().version().game==1) {
      b.setHitChance(float(hnpc->attribute[ATR_DEXTERITY])/100.f);
      if(rgn!=nullptr && rgn->isCrossbow())
-@@ -4158,10 +4440,84 @@ bool Npc::isPrehit() const {
+@@ -4158,10 +4441,84 @@ bool Npc::isPrehit() const {
    return visual.pose().isPrehit(owner.tickCount());
    }
  
@@ -37627,7 +37772,7 @@ index e015398..50d36b0 100644
  void Npc::setPerceptionTime(uint64_t time) {
    perceptionTime = time;
    }
-@@ -4238,6 +4594,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
+@@ -4238,6 +4595,10 @@ bool Npc::perceptionProcess(Npc &pl, Npc* victim, float quadDist, PercType perc)
      return false;
      }
  
@@ -37638,7 +37783,7 @@ index e015398..50d36b0 100644
    float r = float(world().script().percRanges().at(perc, hnpc->senses_range));
    r = r*r;
  
-@@ -4292,6 +4652,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
+@@ -4292,6 +4653,9 @@ bool Npc::setInteraction(Interactive *id, bool quick) {
  void Npc::quitInteraction() {
    if(currentInteract==nullptr)
      return;
@@ -37648,7 +37793,7 @@ index e015398..50d36b0 100644
    if(invTorch)
      processDefInvTorch();
    setDirectionY(0);
-@@ -4356,6 +4719,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
+@@ -4356,6 +4720,37 @@ void Npc::addRoutine(gtime s, gtime e, uint32_t callback, std::string_view point
      });
    }
  
@@ -37686,7 +37831,7 @@ index e015398..50d36b0 100644
  void Npc::excRoutine(size_t callback) {
    routines.clear();
    owner.script().invokeState(this,currentOther,currentVictim,callback);
-@@ -4818,7 +5212,1469 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
+@@ -4818,7 +5213,1591 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
      durtyTranform = 0;
      }
  
@@ -38241,6 +38386,128 @@ index e015398..50d36b0 100644
 +    return;
 +  visual.setInjury(inj);
 +  injuryShown = inj.isActive();
++  }
++
++namespace {
++// Сглаживание без рывков (пружина с критическим затуханием, как SmoothDamp): плавно трогается и плавно доходит
++float smoothDamp(float cur, float target, float& vel, float smoothTime, float dt) {
++  const float omega = 2.f/smoothTime;
++  const float x     = omega*dt;
++  const float e     = 1.f/(1.f + x + 0.48f*x*x + 0.235f*x*x*x);
++  const float diff  = cur-target;
++  const float temp  = (vel + omega*diff)*dt;
++  vel = (vel - omega*temp)*e;
++  return target + (diff + temp)*e;
++  }
++}
++
++void Npc::tickFootPlant(uint64_t dt) {
++  // Ноги по рельефу (injury.h, FootPlant; InjuryRig::applyPlant): только герой и только стоя. Под лодыжкой и носком
++  // каждой ступни - луч вниз (земля, постройки, лестницы) и тела лежащих рядом (по частям тела, Ragdoll::rayTest):
++  // нога не уходит в камень, ступеньку, труп и не висит над ямкой. Высоты сглажены во времени (без дёрганий), слой
++  // проявляется, когда герой остановился, и уходит, когда пошёл. Четыре луча на кадр
++  if(dt==0 && plantShown)
++    return; // пауза: всё на месте
++  auto&       pose = visual.pose();
++  const auto  bs   = bodyStateMasked();
++  const bool  can  = isPlayer() && Gothic::options().footIk && owner.physic()!=nullptr && ragdoll==nullptr &&
++                     !pose.hasRagdoll() && !pose.hasProcPose() && !isDown() && interactive()==nullptr &&
++                     !isSwim() && !isDive() && !mvAlgo.isInAir() && !mvAlgo.isFalling() && !mvAlgo.isSlide() &&
++                     !mvAlgo.isClimb() && !mvAlgo.isJumpUp() && !pose.isAttackAnim() && !pose.isJumpAnim() &&
++                     (bs==BS_STAND || bs==BS_SNEAK || bs==BS_ITEMINTERACT || bs==BS_TAKEITEM || bs==BS_DROPITEM);
++  Vec3 vel = ragVelocity*1000.f; // см/с
++  vel.y = 0;
++  // стоит - вся, идёт - нет (шаги анимации по ровной земле не переставить: ступни поехали бы)
++  const float spd    = vel.length();
++  const float target = can ? 1.f-LimbIk::smooth((spd-15.f)/60.f) : 0.f;
++  const float t      = float(std::min<uint64_t>(dt,100))/1000.f;
++  const bool  fresh  = plantW<=0.f;
++  if(plantW<target)
++    plantW = std::min(target, plantW+t*4.f); else
++    plantW = std::max(target, plantW-t*7.f);
++
++  Vec3 ankle[2], toe[2];
++  if(plantW<=0.f || !pose.feet(ankle,toe)) {
++    plantW = 0;
++    if(plantShown) {
++      visual.setFootPlant(FootPlant());
++      plantShown = false;
++      }
++    return;
++    }
++
++  // тела рядом, на которые можно наступить: убитые, оглушённые, упавшие (по частям тела, как стрела)
++  Npc*   lying[6] = {};
++  size_t nLying   = 0;
++  owner.detectNpc(position(), 160.f, [&](Npc& n) {
++    if(&n==this || nLying>=6 || !(n.isDown() || n.isRagdollFall()))
++      return;
++    auto sk = n.visual.visualSkeleton();
++    if(sk!=nullptr && Ragdoll::hasLayout(*sk))
++      lying[nLying++] = &n;
++    });
++
++  // земля модели - высота NPC (анимация считает землю ровной на ней); луч - от высоты ступеньки до глубины ямки
++  const float refY = position().y;
++  const float top  = refY+45.f, bot = refY-70.f;
++  auto ground = [&](const Vec3& at, Vec3* normal) -> float {
++    float g   = bot;
++    bool  hit = false;
++    auto  r   = owner.physic()->ray(Vec3(at.x,top,at.z), Vec3(at.x,bot,at.z));
++    if(r.hasCol && r.v.y>bot) {
++      g   = r.v.y;
++      hit = true;
++      if(normal!=nullptr && r.n.y>0.5f)
++        *normal = Vec3::normalize(r.n);
++      }
++    for(size_t i=0; i<nLying; ++i) {
++      auto& n = *lying[i];
++      auto& p = n.visual.pose();
++      Ragdoll::RayHit rh;
++      if(Ragdoll::rayTest(*n.visual.visualSkeleton(), p.transform(), p.boneCount(), Vec3(at.x,top,at.z), Vec3(at.x,g,at.z), rh) &&
++         rh.t>0.01f) {
++        // части тела - по кости, одежда толще на пару сантиметров
++        g   = std::min(rh.at.y+2.f, top);
++        hit = true;
++        if(normal!=nullptr)
++          *normal = Vec3(0,1,0);
++        }
++      }
++    // нет земли (обрыв) или яма глубже ступеньки - ступня как в анимации: не шагнёт в пропасть
++    const float d = g-refY;
++    if(!hit || d<-45.f)
++      return 0.f;
++    return d;
++    };
++
++  float want[6] = {};
++  for(int i=0; i<2; ++i) {
++    Vec3 n = Vec3(0,1,0);
++    want[i]   = ground(ankle[i],&n);
++    want[2+i] = (toe[i]-ankle[i]).length()>1.f ? ground(toe[i],nullptr) : want[i];
++    // наклон земли поперёк стопы: нормаль к «влево» от стопы (как в InjuryRig::applyPlant)
++    Vec3 dir = toe[i]-ankle[i];
++    dir.y = 0;
++    if(dir.length()>1.f) {
++      const Vec3 left = Vec3::crossProduct(Vec3(0,1,0),Vec3::normalize(dir));
++      want[4+i] = std::clamp(std::atan2(Vec3::dotProduct(n,left),n.y), -0.35f, 0.35f);
++      }
++    }
++
++  // только проявился - сразу на месте (доля ещё ноль - рывка нет); дальше - плавно: край ступеньки под ступнёй,
++  // переступил на месте, тело рядом шевельнулось
++  float* cur[6] = {&plant.ankle[0],&plant.ankle[1],&plant.toe[0],&plant.toe[1],&plant.roll[0],&plant.roll[1]};
++  for(int i=0; i<6; ++i) {
++    if(fresh) {
++      *cur[i]     = want[i];
++      plantVel[i] = 0;
++      } else {
++      *cur[i] = smoothDamp(*cur[i], want[i], plantVel[i], i<4 ? 0.09f : 0.15f, std::max(t,0.001f));
++      }
++    }
++  plant.weight = LimbIk::smooth(plantW);
++  visual.setFootPlant(plant);
++  plantShown = true;
 +  }
 +
 +bool Npc::isStandingPose() const {
@@ -39157,7 +39424,7 @@ index e015398..50d36b0 100644
 +    ragBreath.start(Breathing::Steady, int64_t(owner.tickCount()), uint32_t(id)*2654435761u);
 +  }
 diff --git a/common/world/objects/npc.h b/common/world/objects/npc.h
-index 7309936..ad61554 100644
+index 7309936..b243048 100644
 --- a/common/world/objects/npc.h
 +++ b/common/world/objects/npc.h
 @@ -8,8 +8,10 @@
@@ -39305,7 +39572,7 @@ index 7309936..ad61554 100644
  
        void             save(Serialize& fout) const;
        void             load(Serialize&  fin);
-@@ -514,6 +614,68 @@ class Npc final {
+@@ -514,6 +614,69 @@ class Npc final {
      Npc*      updateNearestBody();
      bool      checkHealth(bool onChange, bool forceKill);
      void      onNoHealth(bool death, HitSound sndMask);
@@ -39365,6 +39632,7 @@ index 7309936..ad61554 100644
 +    // Gothic II Mobile: раненое тело - держится за рану, хромает, горбится (graphics/mesh/injury.h)
 +    void      noteWound(const Tempest::Vec3& at, float damage);
 +    void      tickInjury();
++    void      tickFootPlant(uint64_t dt);
 +    float     limpNow(uint64_t now) const;
 +    float     painNow(uint64_t now) const;
 +    Tempest::Vec3 meleeHitPoint(const Npc& other) const;
@@ -39374,7 +39642,7 @@ index 7309936..ad61554 100644
      bool      hasAutoroll() const;
      bool      prepareTurn();
      void      stopWalkAnimation();
-@@ -522,6 +684,9 @@ class Npc final {
+@@ -522,6 +685,9 @@ class Npc final {
      void      takeDrownDamage();
  
      void      dropTorch(bool burnout = false);
@@ -39384,7 +39652,7 @@ index 7309936..ad61554 100644
  
      void      saveAiState(Serialize& fout) const;
      void      loadAiState(Serialize& fin);
-@@ -555,10 +720,107 @@ class Npc final {
+@@ -555,10 +721,112 @@ class Npc final {
  
      // visual props (cache)
      uint8_t                        durtyTranform=0;
@@ -39474,6 +39742,11 @@ index 7309936..ad61554 100644
 +    uint64_t                       painAt    = 0;
 +    float                          painSide  = 0;
 +    bool                           injuryShown = false;
++    // ноги по рельефу (герой стоя, FootPlant): высоты земли под ступнями - сглаженные (и их скорости), доля слоя
++    FootPlant                      plant;
++    float                          plantVel[6] = {};
++    float                          plantW      = 0;
++    bool                           plantShown  = false;
 +    // толчок с разбега (герой): в кого врежется (gripId), чем (Injury::Brace), какой стороной, насколько готов, когда
 +    // врезался, куда руки
 +    uint32_t                       shoveId    = 0;
@@ -39492,7 +39765,7 @@ index 7309936..ad61554 100644
      WalkBit                        wlkMode                 =WalkBit::WM_Run;
      int32_t                        trGuild                 =GIL_NONE;
      int32_t                        talentsSk[TALENT_MAX_G2]={};
-@@ -608,6 +870,8 @@ class Npc final {
+@@ -608,6 +876,8 @@ class Npc final {
      AiQueue                        aiQueue;
      AiQueue                        aiQueueOverlay;
      std::vector<Routine>           routines;
@@ -39501,7 +39774,7 @@ index 7309936..ad61554 100644
  
      Interactive*                   currentInteract=nullptr;
      Npc*                           currentOther   =nullptr;
-@@ -629,6 +893,7 @@ class Npc final {
+@@ -629,6 +899,7 @@ class Npc final {
  
      MoveAlgo                       mvAlgo;
      FightAlgo                      fghAlgo;
